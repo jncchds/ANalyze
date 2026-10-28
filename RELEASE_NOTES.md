@@ -2,7 +2,7 @@
 
 ## v0.1.5 — 2026-10-28
 
-- feat: desktop app for Windows, macOS and Linux (Electron, server bundled): pick folders to analyze with the system folder picker, add or remove them in Settings; built by the same CI pipeline as the Docker image and attached to version releases
+- feat: desktop app for Windows, macOS and Linux (Electron, server bundled): pick folders to analyze with the system folder picker, add or remove them in Settings; built by the same CI pipeline as the Docker image and published as the GitHub release for each version (from VERSION, no tag needed)
 - fix: root and path checks work with Windows paths, and ffmpeg is found on Windows
 
 ## v0.1.4 — 2026-10-28

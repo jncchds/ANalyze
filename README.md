@@ -58,7 +58,7 @@ mount roots with `:ro` or set `ANalyze__ReadOnly=true`.
 
 ANalyze also runs as a desktop app for Windows, macOS and Linux: the same server and UI in a window, for analyzing the
 disks of the computer it runs on. Download it from the [GitHub releases](https://github.com/jncchds/ANalyze/releases)
-(every build of `main` also leaves the apps as workflow artifacts):
+— each version that reaches `main` gets a release `v<VERSION>` automatically (no tags to push):
 
 | OS | Files |
 |---|---|

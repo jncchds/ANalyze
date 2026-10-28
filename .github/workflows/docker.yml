@@ -132,20 +132,35 @@ jobs:
             desktop/dist/*.exe
           if-no-files-found: error
 
-  # Version tags (v*) also publish the apps as a GitHub release.
+  # Builds of main publish the apps as the GitHub release v<VERSION>: created (with its tag) the first time a version
+  # reaches main, its files replaced by later builds of the same version. Notes come from that version's RELEASE_NOTES.md section.
   release:
     needs: desktop
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency: release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: apps
           merge-multiple: true
 
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: apps/*
-          generate_release_notes: true
+      - name: Create or update the release
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          tag="v$version"
+          # The "## v<version> — date" section, without its heading.
+          awk -v h="## $tag " 'index($0, h) == 1 { on = 1; next } on && /^## / { exit } on' RELEASE_NOTES.md > notes.md
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release edit "$tag" --notes-file notes.md
+            gh release upload "$tag" apps/* --clobber
+          else
+            gh release create "$tag" apps/* --target "$GITHUB_SHA" --title "ANalyze $version" --notes-file notes.md --latest
+          fi

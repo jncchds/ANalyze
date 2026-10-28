@@ -227,4 +227,5 @@ Platform notes: paths stay `/`-separated in `Entries.RelPath` on every OS; `Root
 Windows). Hard links remain Linux-only; elsewhere `Native` falls back to managed APIs (no inode/device, so duplicate identity uses row ids).
 
 CI (`.github/workflows/docker.yml`, job `desktop`): Linux x64+arm64 (AppImage, tar.gz), macOS x64+arm64 (dmg, zip, ad-hoc signed), Windows x64
-(NSIS installer, zip) on every non-PR build, uploaded as artifacts; `v*` tags also attach them to a GitHub release (job `release`).
+(NSIS installer, zip) on every non-PR build, uploaded as artifacts. Builds of `main` publish them as the GitHub release `v<VERSION>` (job `release`):
+created with its tag when a new version first reaches main (notes = that version's `RELEASE_NOTES.md` section), files replaced by later builds of the same version.
