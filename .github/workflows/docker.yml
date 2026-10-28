@@ -64,7 +64,8 @@ jobs:
         with:
           images: ${{ env.IMAGE }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            # Explicit ref check: {{is_default_branch}} depends on the repo setting at run time and skipped "latest" once.
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=${{ steps.version.outputs.value }}
             type=sha,prefix=sha-,format=short
           labels: |

@@ -10,6 +10,7 @@
 - feat: Immich and PhotoPrism integrations — copies of library photos elsewhere on disk, files never indexed
 - feat: Docker integration — finds each app's container and turns its volume mounts into path mappings automatically (also used by Plex)
 - feat: disabled integrations collapse on the Integrations page; enabling one adds its page to the sidebar
+- fix: every build of main publishes the `latest` Docker image tag
 
 ## v0.1.0 — 2026-10-28
 
