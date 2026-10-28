@@ -18,6 +18,9 @@ public sealed class TestApp : WebApplicationFactory<Program>
     public bool ReadOnly { get; init; }
     public Func<IList<ChatMessage>, string>? AiReply { get; init; }
 
+    /// <summary>Extra service registrations (e.g. a fake integration).</summary>
+    public Action<IServiceCollection>? ExtraServices { get; init; }
+
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) } };
 
     public TestApp()
@@ -40,6 +43,8 @@ public sealed class TestApp : WebApplicationFactory<Program>
                 s.RemoveAll<IAiClientFactory>();
                 s.AddSingleton<IAiClientFactory>(new FakeAiFactory(AiReply));
             }
+
+            ExtraServices?.Invoke(s);
         });
     }
 

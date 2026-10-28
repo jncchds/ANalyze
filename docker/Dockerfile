@@ -24,6 +24,11 @@ COPY src/ANalyze.Ai/ANalyze.Ai.csproj src/ANalyze.Ai/
 COPY src/ANalyze.Actions/ANalyze.Actions.csproj src/ANalyze.Actions/
 COPY src/ANalyze.Integrations/ANalyze.Integrations.csproj src/ANalyze.Integrations/
 COPY src/ANalyze.Integrations.Plex/ANalyze.Integrations.Plex.csproj src/ANalyze.Integrations.Plex/
+COPY src/ANalyze.Integrations.Arr/ANalyze.Integrations.Arr.csproj src/ANalyze.Integrations.Arr/
+COPY src/ANalyze.Integrations.Downloads/ANalyze.Integrations.Downloads.csproj src/ANalyze.Integrations.Downloads/
+COPY src/ANalyze.Integrations.Jellyfin/ANalyze.Integrations.Jellyfin.csproj src/ANalyze.Integrations.Jellyfin/
+COPY src/ANalyze.Integrations.Photos/ANalyze.Integrations.Photos.csproj src/ANalyze.Integrations.Photos/
+COPY src/ANalyze.Integrations.Docker/ANalyze.Integrations.Docker.csproj src/ANalyze.Integrations.Docker/
 COPY src/ANalyze.Web/ANalyze.Web.csproj src/ANalyze.Web/
 RUN dotnet restore src/ANalyze.Web/ANalyze.Web.csproj -a $TARGETARCH
 COPY src/ src/

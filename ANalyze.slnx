@@ -8,6 +8,11 @@
     <Project Path="src/ANalyze.Actions/ANalyze.Actions.csproj" />
     <Project Path="src/ANalyze.Integrations/ANalyze.Integrations.csproj" />
     <Project Path="src/ANalyze.Integrations.Plex/ANalyze.Integrations.Plex.csproj" />
+    <Project Path="src/ANalyze.Integrations.Arr/ANalyze.Integrations.Arr.csproj" />
+    <Project Path="src/ANalyze.Integrations.Downloads/ANalyze.Integrations.Downloads.csproj" />
+    <Project Path="src/ANalyze.Integrations.Jellyfin/ANalyze.Integrations.Jellyfin.csproj" />
+    <Project Path="src/ANalyze.Integrations.Photos/ANalyze.Integrations.Photos.csproj" />
+    <Project Path="src/ANalyze.Integrations.Docker/ANalyze.Integrations.Docker.csproj" />
     <Project Path="src/ANalyze.Web/ANalyze.Web.csproj" />
   </Folder>
   <Folder Name="/tests/">

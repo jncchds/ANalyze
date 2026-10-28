@@ -285,4 +285,13 @@ export interface Integration {
   fields: IntegrationField[]
   settings: IntegrationSettings
   status: { running: boolean; lastSync?: string; lastResult?: { ok: boolean; message: string; items: number; matched: number } }
+  /** Path mappings found automatically (Docker). */
+  auto?: AutoMappings[]
+}
+
+export interface AutoMappings {
+  source: string
+  container?: string
+  mappings: { from: string; to: string }[]
+  note?: string
 }

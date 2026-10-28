@@ -20,8 +20,13 @@ SQLite (WAL) in /data/analyze.db
 | `ANalyze.Preview` | Thumbnails (SkiaSharp, ffmpeg for video), paged text/hex reads, archive listing (SharpCompress), metadata (MetadataExtractor, TagLib). |
 | `ANalyze.Actions` | `PlanBuilder` (manual/template/dedupe plans), `PathTemplate`, `DedupeSelector`, `PlanExecutor` + `PlanQueue`, `TrashService` + janitor. |
 | `ANalyze.Ai` | `AiService` (classify, suggest rules), `Prompts` (every prompt and JSON schema), `IAiClientFactory` (OpenAI-compatible via Microsoft.Extensions.AI). |
-| `ANalyze.Integrations` | Plugin contract `IIntegration`, `IntegrationHost` (settings with encrypted secrets, sync, auto-sync after scans), `Annotations` writer. |
-| `ANalyze.Integrations.Plex` | Plex plugin: `PlexClient`, `PathMatcher`, `PlexIntegration`, `PlexEndpoints`. |
+| `ANalyze.Integrations` | Plugin contract `IIntegration`, `IntegrationHost` (settings with encrypted secrets, sync, auto-sync after scans), `Annotations` writer, `PathMatcher`, `IntegrationPaths` (configured + automatic mappings), shared HTTP clients, and `Items/` — the `ItemIntegration` base class with its shared endpoints. |
+| `ANalyze.Integrations.Plex` | Plex plugin: `PlexClient`, `PlexIntegration`, `PlexEndpoints`. |
+| `ANalyze.Integrations.Arr` | Sonarr, Radarr, Lidarr (`ArrIntegration` base). |
+| `ANalyze.Integrations.Downloads` | qBittorrent, Transmission, SABnzbd (`DownloadIntegration` base). |
+| `ANalyze.Integrations.Jellyfin` | Jellyfin and Emby (`MediaServerIntegration` base). |
+| `ANalyze.Integrations.Photos` | Immich and PhotoPrism. |
+| `ANalyze.Integrations.Docker` | Docker: `DockerClient` (unix socket or TCP), `DockerState`, `DockerPaths` (`IPathMappingSource`), `MountMath`. |
 | `ANalyze.Web` | `Program.cs`, `Endpoints/*`, `JobHub`, auth, SPA in `ClientApp/`. |
 
 ## Data model
@@ -38,6 +43,9 @@ SQLite (WAL) in /data/analyze.db
 - **AiResults** (cache by content hash or path+size+mtime; unapplied rows = review queue), **AiRuleSuggestions**.
 - **Annotations** — integration labels per entry (`Source`, `Kind`, `Label`, `State`, `Url`). Integrations replace their own rows on each sync.
 - **PlexItems** — Plex media parts with the matched `EntryId`.
+- **IntegrationItems** — files/folders known to every `ItemIntegration` plugin (`Source`, `Kind`, `ExternalId`, `Title`, `GroupKey`/`GroupTitle`,
+  `ExternalPath`, `Size`, `IsDir`, `State`, `Detail`, `AddedAt`/`LastUsedAt`, `PlayCount`, `Url`, matched `EntryId` + `MatchedBy`). A plugin replaces
+  its own rows on each sync.
 - **Settings** — key/value JSON: `app` (`AppSettings`), `integration:<id>` (`IntegrationSettings`, secrets encrypted with data protection).
 
 Times are unix seconds in Entries; `DateTimeOffset` columns are stored as binary longs (`DateTimeOffsetToBinaryConverter`, set globally) so
@@ -98,10 +106,47 @@ Front end: `ClientApp/src/integrations/registry.tsx` maps an id to a lazy page; 
 To add one: new project `src/ANalyze.Integrations.<Name>` referencing `ANalyze.Integrations`, implement `IIntegration`, register with
 `services.AddIntegration<T>()` in `Program.cs`, add the project to the Dockerfile restore list and the solution, optionally add a UI page to the registry.
 
+`IIntegration.DockerHints` (image/name words) and `UrlField` let the Docker plugin find an app's container. `IntegrationPaths.ForAsync` returns the
+configured `mappings` followed by automatic ones from every `IPathMappingSource` (a configured mapping wins for the same prefix); failures there are
+logged and ignored. `GET /integrations` returns them as `auto` so the settings form shows them. Enabling an integration that has a UI page also shows
+it in the sidebar (there is no separate visibility setting).
+
+### ItemIntegration (shared base)
+
+Plugins that list files from another app derive from `Items/ItemIntegration` and implement `FetchAsync` → `Snapshot(Items, Folders)`. The base
+matches each `ExternalItem` with `PathMatcher` (files by path+size, folders by path or name+total size, `IsDir = null` tries both), stores
+`IntegrationItems`, writes annotations (item label/badge/url, optional parent/grandparent folder labels, `root` annotations for `ExternalFolder.IsRoot`)
+and maps the shared endpoints under `/integrations/{id}`: `summary`, `groups` (titles by size; filters `watchedOld`, `neverWatched`, `old`, `missing`;
+`kind`, `state`, `q`, `sort`), `group?key=`, `unmatched`, `untracked?mode=files|top` (entries in root folders no item covers; `top` lists direct children
+that are neither items nor containers of items/roots), `copies` (files outside the items with the same `FullHash`, different inode) and
+`suggest-mappings`. `MapExtra` adds plugin-specific routes (`*arr`: `POST unmonitor {keys}` via the app's editor endpoint).
+
+Badges `seeding` / `downloading` mark files a download client is using: `PlanBuilder` excludes trash/move/delete items that are, contain or sit inside
+such an entry (hard links are allowed — the content stays).
+
+- **Sonarr/Radarr/Lidarr** — `X-Api-Key`, `/api/v3` (`/api/v1` Lidarr). Items: episode/movie/track files (quality, monitored); folders: root folders
+  (roots) and series/movie/artist folders.
+- **qBittorrent** (cookie login, Referer header), **Transmission** (RPC with the 409 session-id handshake, basic auth), **SABnzbd** (`api?mode=`):
+  items are torrents/downloads (`IsDir = null`), states seeding/downloading/completed/error/failed; roots are the default, incomplete and category folders.
+- **Jellyfin/Emby** — `X-Emby-Token`; `/Users/{id}/Items` (Movie, Episode, Audio with MediaSources and the chosen user's UserData); library
+  locations are roots. Emby uses the `/emby` prefix.
+- **Immich** (`x-api-key`, `POST /api/search/metadata`, external library import paths as roots when the key is an admin's) and **PhotoPrism**
+  (Bearer token, `/api/v1/photos?merged=true`, files relative to the configured originals folder).
+
+### Docker
+
+`DockerClient` talks to `unix:///var/run/docker.sock` (or `tcp://…`, e.g. a socket proxy) and only reads `/version` and `/containers/json`.
+`DockerState` caches a snapshot for a minute and finds ANalyze's own container from the hostname (= short container id) or the configured name;
+outside a container its mounts are `/ → /`. For another app's container (override `id=container`, else the URL host matching a container name,
+compose service or IP, else a unique published port, else `DockerHints` in the image/name), `MountMath.Mappings` pairs mounts that overlap on the host:
+other `/movies` ← host `/mnt/media/movies`, ours `/library` ← host `/mnt/media` ⇒ `/movies → /library/movies` (and the reverse case when our mount
+is inside theirs). Only mappings that reach a scanned root are used. Sync labels local folders that other containers mount (`mount` annotations).
+`GET /integrations/docker/containers` feeds the Docker page.
+
 ### Plex
 
 `PlexClient` reads sections and media parts (movies `type=1`, episodes `type=4`, tracks `type=10`, paged). `PathMatcher` resolves Plex paths:
-configured mappings → mappings detected by locating sample files by name+size and splitting at the common path suffix → per-file name+size
+configured and Docker mappings → mappings detected by locating sample files by name+size and splitting at the common path suffix → per-file name+size
 (+ parent folder name). Sync replaces `PlexItems` and the `plex` annotations: files (movie/episode/track + watched state + Plex Web link),
 their parent/grandparent folders (movie, season/show, album/artist) and the library folders.
 

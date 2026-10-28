@@ -20,8 +20,9 @@ the folders to analyze, open the web UI, press **Scan now**.
   metadata (EXIF, tags), and a hex viewer for everything else.
 - **Actions** — trash, move (with path templates like `Sorted/{category}/{mtime:yyyy}/{name}`), delete, or replace
   duplicates with hard links. Every change is a **plan** you review first; trash and moves can be undone.
-- **Integrations** — plugins that cross-reference other apps. **Plex** marks movies, shows and music in the browser and
-  ranks titles by size and watch state.
+- **Integrations** — plugins that cross-reference other apps: **Plex**, **Jellyfin**, **Emby**, **Sonarr**, **Radarr**,
+  **Lidarr**, **qBittorrent**, **Transmission**, **SABnzbd**, **Immich**, **PhotoPrism**, plus **Docker**, which works out the path
+  mappings between containers for all of them.
 - **Release notes** — what changed in each version, right in the UI (click the version next to the logo).
 
 ## Quick start
@@ -104,8 +105,33 @@ By default only paths, names, sizes, types and dates are sent; optionally the fi
 
 ## Integrations
 
-Integrations are plugins (`IIntegration`) with their own settings form, sync job, API and optional page. They label
-files and folders, and the labels appear in Browse and Search.
+Integrations are plugins (`IIntegration`) with their own settings form, sync job, API and page. They label
+files and folders, and the labels appear in Browse and Search. Turn one on under **Integrations**: enabling it also
+adds its page to the sidebar, and disabling it hides it again.
+
+| Integration | What it adds |
+|---|---|
+| **Plex**, **Jellyfin**, **Emby** | Movies, shows and music labelled in Browse; titles ranked by size and watch state (*watched long ago*, *never watched*); media in library folders the server does not know. |
+| **Sonarr**, **Radarr**, **Lidarr** | Managed files labelled with quality; **files the app does not track** in its root folders (old upgrades, extras, failed imports); **orphan folders**; **Unmonitor** a title before cleaning it up so it is not downloaded again. |
+| **qBittorrent**, **Transmission**, **SABnzbd** | Seeding and downloading items are **protected** — cleanup plans skip them; finished downloads ranked by size and age; files in the download folders the client **no longer knows**; library files **copied instead of hard-linked** (fix them in Duplicates → Dedupe with *hard link*). |
+| **Immich**, **PhotoPrism** | Library photos and videos labelled; **copies outside the library** (exports, old backups, phone dumps); files in the library folders that were never indexed. |
+| **Docker** | Finds each app's container and turns the volume mounts into path mappings for the integrations above, so `/movies` in Radarr is matched to `/library/movies` here without typing anything. Labels folders that other containers mount. |
+
+### Path mappings
+
+Apps in other containers see the same files under other paths. Each integration tries, in order: mappings you
+entered, mappings from **Docker**, mappings detected from sample files (name + size), then file name + size per file.
+To use Docker, mount the socket read-only and enable **Integrations → Docker**:
+
+```yaml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+```
+
+ANalyze only reads the container list (`/containers/json`). For tighter control, point it at a
+[docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) with `CONTAINERS=1` (`tcp://docker-proxy:2375`).
+The app's container is found from the integration's URL (container name, compose service or IP), a published port, or
+its image name; name it explicitly under *Container per app* (`radarr=radarr-4k`) when several match.
 
 ### Plex
 
@@ -120,7 +146,7 @@ files and folders, and the labels appear in Browse and Search.
   Leave *Path mappings* empty to let ANalyze detect them from sample files, press **Suggest from files**, or add them by
   hand. Files that still don't match are found by name and size.
 
-Environment seeding example:
+Environment seeding example (works the same for every integration id: `sonarr`, `qbittorrent`, `docker`, …):
 
 ```
 ANalyze__Integrations__plex__Enabled=true

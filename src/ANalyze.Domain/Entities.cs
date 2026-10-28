@@ -243,6 +243,43 @@ public sealed class PlexItem
     public string? Url { get; set; }
 }
 
+/// <summary>
+/// One file or folder another app knows about (an *arr movie file, a torrent, a Jellyfin episode, an Immich asset…),
+/// matched to a scanned entry. Shared by all integrations built on <c>ItemIntegration</c>; Plex keeps its own table.
+/// </summary>
+public sealed class IntegrationItem
+{
+    public long Id { get; set; }
+    /// <summary>Integration id, e.g. "radarr".</summary>
+    public required string Source { get; set; }
+    /// <summary>What the item is: movie, episode, track, torrent, download, asset…</summary>
+    public required string Kind { get; set; }
+    public required string ExternalId { get; set; }
+    public required string Title { get; set; }
+    /// <summary>Items are ranked by group: a movie, a show, an artist, a torrent.</summary>
+    public string? GroupKey { get; set; }
+    public string? GroupTitle { get; set; }
+    /// <summary>Season, album, category…</summary>
+    public string? SubTitle { get; set; }
+    public int? Year { get; set; }
+    public required string ExternalPath { get; set; }
+    public long Size { get; set; }
+    public bool IsDir { get; set; }
+    /// <summary>App-specific state: monitored, seeding, completed, watched, favorite…</summary>
+    public string? State { get; set; }
+    /// <summary>Quality, resolution, category, ratio…</summary>
+    public string? Detail { get; set; }
+    /// <summary>Unix seconds.</summary>
+    public long? AddedAt { get; set; }
+    /// <summary>Unix seconds: last played, completed…</summary>
+    public long? LastUsedAt { get; set; }
+    public int PlayCount { get; set; }
+    public string? Url { get; set; }
+    public long? EntryId { get; set; }
+    /// <summary>How the item was matched: mapping, detected, name.</summary>
+    public string? MatchedBy { get; set; }
+}
+
 public sealed class Setting
 {
     public required string Key { get; set; }

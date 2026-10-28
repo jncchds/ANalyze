@@ -466,6 +466,85 @@ namespace ANalyze.Infrastructure.Data.Migrations
                     b.ToTable("Annotations");
                 });
 
+            modelBuilder.Entity("ANalyze.Domain.IntegrationItem", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("AddedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Detail")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("EntryId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ExternalId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ExternalPath")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("GroupKey")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("GroupTitle")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsDir")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("LastUsedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("MatchedBy")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("PlayCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("Size")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("State")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SubTitle")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Url")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("Year")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EntryId");
+
+                    b.HasIndex("Source", "GroupKey");
+
+                    b.HasIndex("Source", "Kind");
+
+                    b.ToTable("IntegrationItems");
+                });
+
             modelBuilder.Entity("ANalyze.Domain.PlexItem", b =>
                 {
                     b.Property<long>("Id")

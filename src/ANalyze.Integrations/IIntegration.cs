@@ -33,7 +33,23 @@ public interface IIntegration
 
     /// <summary>Plugin-specific endpoints, mapped under /api/v1/integrations/{Id} (already authorized).</summary>
     void MapEndpoints(RouteGroupBuilder group);
+
+    /// <summary>Words that identify this app's Docker container by image or name (used for automatic path mappings).</summary>
+    IReadOnlyList<string> DockerHints => [Id];
+
+    /// <summary>Settings key holding the app's URL, used to find its container. Null when the app has no URL.</summary>
+    string? UrlField => Fields.Any(f => f.Key == "url") ? "url" : null;
 }
+
+/// <summary>Supplies path mappings found automatically (e.g. from Docker mounts) for an integration.</summary>
+public interface IPathMappingSource
+{
+    Task<AutoMappings?> ForAsync(IIntegration integration, IntegrationSettings settings, CancellationToken ct);
+}
+
+/// <param name="Source">Who found them, e.g. "docker".</param>
+/// <param name="Container">The other app's container, when known.</param>
+public sealed record AutoMappings(string Source, string? Container, IReadOnlyList<PathMapping> Mappings, string? Note = null);
 
 /// <param name="Type">text, url, password (secret), bool, number, mappings (list of From → To path pairs), select.</param>
 public sealed record IntegrationField(

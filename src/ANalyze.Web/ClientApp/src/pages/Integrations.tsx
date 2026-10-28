@@ -3,7 +3,7 @@ import { Link } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useIntegrations } from '../api/hooks'
-import type { Integration, IntegrationField, IntegrationSettings } from '../api/types'
+import type { AutoMappings, Integration, IntegrationField, IntegrationSettings } from '../api/types'
 import { Empty, ErrorBox, Field, Loading, PageTitle, Section, Toggle } from '../components/ui'
 import { isActive, useJob } from '../hooks/useJobs'
 import { integrationUi } from '../integrations/registry'
@@ -22,7 +22,16 @@ export default function Integrations() {
   return (
     <>
       <PageTitle subtitle="Plugins that cross-reference your files with other apps. Labels they add show up next to files and folders in Browse and Search.">Integrations</PageTitle>
-      {!q.data?.length ? <Empty>No integrations installed.</Empty> : <div className="space-y-4">{q.data.map((i) => <IntegrationCard key={i.id} integration={i} />)}</div>}
+      {!q.data?.length ? (
+        <Empty>No integrations installed.</Empty>
+      ) : (
+        <div className="space-y-4">
+          {/* Enabled ones first; enabling one also adds its page to the sidebar. */}
+          {[...q.data].sort((a, b) => Number(b.settings.enabled) - Number(a.settings.enabled)).map((i) => (
+            <IntegrationCard key={i.id} integration={i} />
+          ))}
+        </div>
+      )}
     </>
   )
 }
@@ -74,12 +83,22 @@ function IntegrationCard({ integration }: { integration: Integration }) {
     >
       <p className="mb-3 text-sm muted">{integration.description}</p>
       <div className="mb-3 flex flex-wrap gap-6">
-        <Toggle checked={s.enabled} onChange={(v) => update({ enabled: v })} label="Enabled" />
-        <Toggle checked={s.syncAfterScan} onChange={(v) => update({ syncAfterScan: v })} label="Sync after every scan" />
+        <Toggle checked={s.enabled} onChange={(v) => update({ enabled: v })} label="Enabled" hint={ui ? 'Also shows its page in the sidebar.' : undefined} />
+        {s.enabled && <Toggle checked={s.syncAfterScan} onChange={(v) => update({ syncAfterScan: v })} label="Sync after every scan" />}
       </div>
+      {!s.enabled ? (
+        dirty && (
+          <div className="flex justify-end">
+            <button className="btn-primary" onClick={() => save.mutate()} disabled={save.isPending}>
+              Save
+            </button>
+          </div>
+        )
+      ) : (
+      <>
       <div className="grid gap-3 md:grid-cols-2">
         {integration.fields.map((f) => (
-          <FieldInput key={f.key} field={f} value={s.values[f.key]} onChange={(v) => setValue(f.key, v)} onSuggest={f.type === 'mappings' ? () => suggest.mutate() : undefined} suggestions={suggest.data} suggesting={suggest.isPending} />
+          <FieldInput key={f.key} field={f} value={s.values[f.key]} onChange={(v) => setValue(f.key, v)} onSuggest={f.type === 'mappings' ? () => suggest.mutate() : undefined} suggestions={suggest.data} suggesting={suggest.isPending} auto={integration.auto} />
         ))}
       </div>
       {suggest.error && <div className="mt-2"><ErrorBox error={suggest.error} /></div>}
@@ -113,17 +132,20 @@ function IntegrationCard({ integration }: { integration: Integration }) {
           Save
         </button>
       </div>
+      </>
+      )}
     </Section>
   )
 }
 
-function FieldInput({ field, value, onChange, onSuggest, suggestions, suggesting }: {
+function FieldInput({ field, value, onChange, onSuggest, suggestions, suggesting, auto }: {
   field: IntegrationField
   value: unknown
   onChange: (v: unknown) => void
   onSuggest?: () => void
   suggestions?: Mapping[]
   suggesting?: boolean
+  auto?: AutoMappings[]
 }) {
   switch (field.type) {
     case 'bool':
@@ -180,6 +202,21 @@ function FieldInput({ field, value, onChange, onSuggest, suggestions, suggesting
               )}
             </div>
           )}
+          {auto?.map((a) => (
+            <div key={a.source} className="mt-2 rounded-md border border-line bg-surface-2 p-2 text-xs">
+              <div className="mb-1 font-semibold">
+                🐳 From {a.source === 'docker' ? 'Docker' : a.source}
+                {a.container ? `: container "${a.container}"` : ''} <span className="font-normal muted">(used automatically)</span>
+              </div>
+              {a.note && <div className="muted">{a.note}</div>}
+              {a.mappings.map((m) => (
+                <div key={m.from} className="truncate font-mono">
+                  {m.from} <span className="muted">→</span> {m.to}
+                </div>
+              ))}
+              {a.container && a.mappings.length === 0 && <div className="muted">The container shares no folder with ANalyze's roots.</div>}
+            </div>
+          ))}
           {field.help && <span className="mt-1 block text-xs muted">{field.help}</span>}
         </div>
       )

@@ -180,8 +180,7 @@ public sealed class IntegrationHost(
         var s = new IntegrationSettings
         {
             Enabled = bool.TryParse(section["Enabled"], out var en) && en,
-            SyncAfterScan = !bool.TryParse(section["SyncAfterScan"], out var sas) || sas,
-        };
+            SyncAfterScan = !bool.TryParse(section["SyncAfterScan"], out var sas) || sas,        };
         foreach (var f in integration.Fields)
         {
             var v = section[f.Key];
@@ -211,8 +210,7 @@ public sealed class IntegrationHost(
     private static IntegrationSettings Clone(IntegrationSettings s) => new()
     {
         Enabled = s.Enabled,
-        SyncAfterScan = s.SyncAfterScan,
-        Values = (JsonObject)s.Values.DeepClone(),
+        SyncAfterScan = s.SyncAfterScan,        Values = (JsonObject)s.Values.DeepClone(),
     };
 }
 
@@ -261,6 +259,15 @@ public static class DependencyInjection
     public static IServiceCollection AddIntegrations(this IServiceCollection services)
     {
         services.AddSingleton<IntegrationHost>();
+        services.AddSingleton<IntegrationPaths>();
+        services.AddSingleton<Items.ItemServices>();
+        services.AddHttpClient(IntegrationHttp.Name, c => c.Timeout = TimeSpan.FromMinutes(2));
+        services.AddHttpClient(IntegrationHttp.Insecure, c => c.Timeout = TimeSpan.FromMinutes(2))
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+            {
+                // Only used when the user enables "accept self-signed certificates" for their own server.
+                ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
+            });
         services.AddHostedService<IntegrationAutoSync>();
         return services;
     }

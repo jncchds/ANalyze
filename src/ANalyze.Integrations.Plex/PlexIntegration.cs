@@ -12,7 +12,7 @@ namespace ANalyze.Integrations.Plex;
 /// and which titles take the most space. Plex often runs in its own container where the same files have other paths,
 /// so matching tries configured mappings, then mappings detected from sample files, then file name + size.
 /// </summary>
-public sealed class PlexIntegration(IHttpClientFactory http, SqliteSetup sqlite, RootRegistry roots, ILogger<PlexIntegration> log) : IIntegration
+public sealed class PlexIntegration(IHttpClientFactory http, SqliteSetup sqlite, RootRegistry roots, IntegrationPaths paths, ILogger<PlexIntegration> log) : IIntegration
 {
     public const string HttpClientName = "plex";
     public const string HttpClientInsecure = "plex-insecure";
@@ -25,13 +25,15 @@ public sealed class PlexIntegration(IHttpClientFactory http, SqliteSetup sqlite,
 
     public string Icon => "clapperboard";
 
+    public IReadOnlyList<string> DockerHints => ["plex", "pms-docker"];
+
     public IReadOnlyList<IntegrationField> Fields { get; } =
     [
         new("url", "Server URL", "url", "Address of Plex Media Server as seen from the ANalyze container.", Placeholder: "http://192.168.1.10:32400"),
         new("token", "X-Plex-Token", "password", "Plex Web → any item → ⋯ → Get Info → View XML: the token is in the URL (X-Plex-Token=…)."),
         new("mappings", "Path mappings", "mappings",
             "Only needed when Plex sees the files under other paths (e.g. Plex container /data/movies ↔ ANalyze /library/Movies). " +
-            "Leave empty to detect automatically; use \"Suggest\" to fill it in."),
+            "Leave empty to use Docker mounts (Docker integration) or detect them from sample files; use \"Suggest\" to fill it in."),
         new("allowInvalidCertificate", "Accept self-signed certificates", "bool", "For https URLs with a certificate the container does not trust.", JsonValue.Create(false)),
         new("watchedDays", "Watched long ago (days)", "number", "Titles last watched before this are cleanup candidates.", JsonValue.Create(180)),
         new("unwatchedDays", "Never watched, added more than (days) ago", "number", null, JsonValue.Create(365)),
@@ -86,7 +88,7 @@ public sealed class PlexIntegration(IHttpClientFactory http, SqliteSetup sqlite,
 
         progress.Report(new IntegrationProgress("matching", 0, files.Count));
         using var conn = sqlite.Open();
-        var matcher = new PathMatcher(conn, roots, settings.GetMappings("mappings"));
+        var matcher = new PathMatcher(conn, roots, await paths.ForAsync(this, settings, ct));
         matcher.Detect(files.Select(f => (f.File, f.Size)));
         var stored = Store(conn, files, sections, matcher, baseUrl, machineId, progress);
         log.LogInformation("Plex sync: {Files} files, {Matched} matched ({Detected})", files.Count, stored.Matched, string.Join(", ", matcher.Detected.Select(m => $"{m.From} → {m.To}")));

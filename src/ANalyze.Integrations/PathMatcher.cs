@@ -1,39 +1,43 @@
 using ANalyze.Infrastructure.Roots;
 using Microsoft.Data.Sqlite;
 
-namespace ANalyze.Integrations.Plex;
+namespace ANalyze.Integrations;
 
 /// <summary>
 /// Finds the scanned entry for a path reported by another system, in three steps:
-/// 1. configured path mappings, 2. mappings detected from sample files found by name and size,
-/// 3. per-file fallback by name + size (+ parent folder name to break ties).
+/// 1. known path mappings (configured, then detected from Docker), 2. mappings learned from sample files found by
+/// name and size, 3. per-item fallback by name + size (+ parent folder name to break ties).
 /// </summary>
-internal sealed class PathMatcher(SqliteConnection conn, RootRegistry roots, IReadOnlyList<PathMapping> configured)
+public sealed class PathMatcher(SqliteConnection conn, RootRegistry roots, IReadOnlyList<PathMapping> configured)
 {
     private readonly List<PathMapping> _detected = [];
 
     public IReadOnlyList<PathMapping> Detected => _detected;
 
-    /// <summary>Learns prefix mappings from up to <paramref name="sample"/> files that the configured mappings do not resolve.</summary>
-    public void Detect(IEnumerable<(string Path, long Size)> files, int sample = 60)
+    /// <summary>Learns prefix mappings from up to <paramref name="sample"/> files that the known mappings do not resolve.</summary>
+    public void Detect(IEnumerable<(string Path, long Size)> files, int sample = 60) =>
+        Detect(files.Select(f => (f.Path, f.Size, false)), sample);
+
+    /// <summary>Same as <see cref="Detect(IEnumerable{ValueTuple{string, long}}, int)"/>, for files or folders (a folder matches by name and total size).</summary>
+    public void Detect(IEnumerable<(string Path, long Size, bool IsDir)> items, int sample = 60)
     {
         var votes = new Dictionary<(string, string), int>();
         var tried = 0;
-        foreach (var (path, size) in files)
+        foreach (var (path, size, isDir) in items)
         {
             if (tried >= sample)
             {
                 break;
             }
 
-            if (ByMapping(path, configured) is not null)
+            if (ByMapping(path, configured, isDir) is not null)
             {
                 continue;
             }
 
             tried++;
-            var norm = path.Replace('\\', '/');
-            foreach (var local in ByName(norm, size).Select(c => c.Full))
+            var norm = Normalize(path);
+            foreach (var local in ByName(norm, size, isDir).Select(c => c.Full))
             {
                 var (from, to) = CommonSuffixSplit(norm, local);
                 if (from.Length > 0 && to.Length > 0 && from != to)
@@ -53,20 +57,27 @@ internal sealed class PathMatcher(SqliteConnection conn, RootRegistry roots, IRe
         }
     }
 
-    public (long? EntryId, string? By) Match(string path, long size)
+    public (long? EntryId, string? By) Match(string path, long size) => Match(path, size, false);
+
+    public (long? EntryId, string? By) Match(string path, long size, bool isDir)
     {
-        if (ByMapping(path, configured) is { } a)
+        if (ByMapping(path, configured, isDir) is { } a)
         {
             return (a, "mapping");
         }
 
-        if (ByMapping(path, _detected) is { } b)
+        if (ByMapping(path, _detected, isDir) is { } b)
         {
             return (b, "detected");
         }
 
-        var norm = path.Replace('\\', '/');
-        var candidates = ByName(norm, size);
+        var norm = Normalize(path);
+        if (norm.Length == 0)
+        {
+            return (null, null);
+        }
+
+        var candidates = ByName(norm, size, isDir);
         if (candidates.Count == 1)
         {
             return (candidates[0].Id, "name");
@@ -85,13 +96,25 @@ internal sealed class PathMatcher(SqliteConnection conn, RootRegistry roots, IRe
         return (null, null);
     }
 
-    /// <summary>Directory entry for an external folder path (library locations).</summary>
+    /// <summary>Matches a path whose type is unknown: a file first, then a folder.</summary>
+    public (long? EntryId, string? By, bool IsDir) MatchAny(string path, long size)
+    {
+        var (id, by) = Match(path, size, false);
+        if (id is not null)
+        {
+            return (id, by, false);
+        }
+
+        (id, by) = Match(path, size, true);
+        return (id, by, id is not null);
+    }
+
+    /// <summary>Directory entry for an external folder path (library locations); only mappings, no name fallback.</summary>
     public long? FindDir(string path)
     {
         foreach (var mappings in new[] { configured, (IReadOnlyList<PathMapping>)_detected })
         {
-            var local = IntegrationSettings.MapPath(path, mappings);
-            if (Lookup(local, dir: true) is { } id)
+            if (Lookup(IntegrationSettings.MapPath(path, mappings), dir: true) is { } id)
             {
                 return id;
             }
@@ -127,21 +150,19 @@ internal sealed class PathMatcher(SqliteConnection conn, RootRegistry roots, IRe
         return (parent, grand);
     }
 
-    private long? ByMapping(string path, IReadOnlyList<PathMapping> mappings)
-    {
-        var local = IntegrationSettings.MapPath(path, mappings);
-        return Lookup(local, dir: false);
-    }
+    private long? ByMapping(string path, IReadOnlyList<PathMapping> mappings, bool dir) =>
+        Lookup(IntegrationSettings.MapPath(path, mappings), dir);
 
     private long? Lookup(string localPath, bool dir)
     {
+        localPath = localPath.Length > 1 ? localPath.TrimEnd('/') : localPath;
         var root = roots.All.Where(r => RootRegistry.IsUnder(r.Path, localPath)).OrderByDescending(r => r.Path.Length).FirstOrDefault();
         if (root is null)
         {
             return null;
         }
 
-        var rel = localPath.Length == root.Path.Length ? "" : localPath[(root.Path.Length + 1)..];
+        var rel = localPath.Length <= root.Path.Length ? "" : localPath[(root.Path.TrimEnd('/').Length + 1)..];
         using var q = conn.CreateCommand();
         q.CommandText = "SELECT Id FROM Entries WHERE RootId = $r AND RelPath = $p AND IsDir = $d";
         q.Parameters.AddWithValue("$r", root.Id);
@@ -150,11 +171,18 @@ internal sealed class PathMatcher(SqliteConnection conn, RootRegistry roots, IRe
         return q.ExecuteScalar() as long?;
     }
 
-    private List<(long Id, string Full)> ByName(string path, long size)
+    private List<(long Id, string Full)> ByName(string path, long size, bool dir)
     {
         var name = path[(path.LastIndexOf('/') + 1)..];
+        if (name.Length == 0)
+        {
+            return [];
+        }
+
         using var q = conn.CreateCommand();
-        q.CommandText = "SELECT Id, RootId, RelPath FROM Entries WHERE IsDir = 0 AND Size = $s AND Name = $n LIMIT 10";
+        q.CommandText = dir
+            ? "SELECT Id, RootId, RelPath FROM Entries WHERE IsDir = 1 AND TotalSize = $s AND Name = $n AND RelPath <> '' LIMIT 10"
+            : "SELECT Id, RootId, RelPath FROM Entries WHERE IsDir = 0 AND Size = $s AND Name = $n LIMIT 10";
         q.Parameters.AddWithValue("$s", size);
         q.Parameters.AddWithValue("$n", name);
         using var r = q.ExecuteReader();
@@ -168,6 +196,12 @@ internal sealed class PathMatcher(SqliteConnection conn, RootRegistry roots, IRe
         }
 
         return list;
+    }
+
+    private static string Normalize(string path)
+    {
+        var p = path.Replace('\\', '/');
+        return p.Length > 1 ? p.TrimEnd('/') : p;
     }
 
     private static string? Segment(string path, int fromEnd)

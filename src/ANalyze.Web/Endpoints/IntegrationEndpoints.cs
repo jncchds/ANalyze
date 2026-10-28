@@ -10,16 +10,20 @@ public static class IntegrationEndpoints
         var host = api.ServiceProvider().GetRequiredService<IntegrationHost>();
         var g = api.MapGroup("/integrations");
 
-        g.MapGet("", async (IntegrationHost h, CancellationToken ct) =>
+        g.MapGet("", async (IntegrationHost h, IntegrationPaths paths, CancellationToken ct) =>
         {
             var list = new List<object>();
             foreach (var i in h.All)
             {
+                var settings = await h.LoadAsync(i.Id, ct);
+                // Mappings found automatically (Docker), shown next to the mappings field.
+                var auto = settings.Enabled && i.Fields.Any(f => f.Type == "mappings") ? await paths.AutoAsync(i, settings, ct) : [];
                 list.Add(new
                 {
                     i.Id, i.Name, i.Description, i.Icon, i.Fields,
                     settings = await h.LoadMaskedAsync(i.Id, ct),
                     status = h.Status(i.Id),
+                    auto,
                 });
             }
 

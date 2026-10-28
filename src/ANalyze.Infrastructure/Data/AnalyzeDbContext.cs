@@ -23,6 +23,7 @@ public sealed class AnalyzeDbContext(DbContextOptions<AnalyzeDbContext> options)
     public DbSet<Setting> Settings => Set<Setting>();
     public DbSet<PlexItem> PlexItems => Set<PlexItem>();
     public DbSet<EntryAnnotation> Annotations => Set<EntryAnnotation>();
+    public DbSet<IntegrationItem> IntegrationItems => Set<IntegrationItem>();
 
     protected override void ConfigureConventions(ModelConfigurationBuilder b)
     {
@@ -100,6 +101,13 @@ public sealed class AnalyzeDbContext(DbContextOptions<AnalyzeDbContext> options)
             e.HasIndex(x => x.EntryId);
             e.HasIndex(x => x.RatingKey);
             e.HasIndex(x => x.ShowTitle);
+        });
+
+        m.Entity<IntegrationItem>(e =>
+        {
+            e.HasIndex(x => x.EntryId);
+            e.HasIndex(x => new { x.Source, x.Kind });
+            e.HasIndex(x => new { x.Source, x.GroupKey });
         });
     }
 

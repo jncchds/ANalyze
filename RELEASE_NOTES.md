@@ -4,6 +4,12 @@
 
 - feat: release notes page in the UI (linked from the version pill, which marks versions you haven't read yet)
 - feat: "ANalyze by CHDS" title and credits to CHDS and Claude
+- feat: Sonarr, Radarr and Lidarr integrations — managed files labelled, files and folders they don't track, unmonitor before cleanup
+- feat: qBittorrent, Transmission and SABnzbd integrations — seeding/downloading files are protected from cleanup plans, finished downloads, orphans in download folders, copies that should be hard links
+- feat: Jellyfin and Emby integrations — titles by size and watch state, media the server doesn't know
+- feat: Immich and PhotoPrism integrations — copies of library photos elsewhere on disk, files never indexed
+- feat: Docker integration — finds each app's container and turns its volume mounts into path mappings automatically (also used by Plex)
+- feat: disabled integrations collapse on the Integrations page; enabling one adds its page to the sidebar
 
 ## v0.1.0 — 2026-10-28
 

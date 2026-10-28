@@ -25,6 +25,8 @@ services:
       # ANalyze__Integrations__plex__token: ""
       # Plex in its own container sees the same files under other paths: "plex path=ANalyze path;…" (auto-detected when empty).
       # ANalyze__Integrations__plex__mappings: "/data/movies=/library/Movies;/data/tv=/library/TV"
+      # Same pattern for every integration: sonarr, radarr, lidarr, qbittorrent, transmission, sabnzbd, jellyfin, emby, immich, photoprism, docker.
+      # ANalyze__Integrations__docker__Enabled: "true"
       TZ: "${TZ:-UTC}"
     ports:
       - "8080:8080"
@@ -32,6 +34,8 @@ services:
       - analyze-data:/data
       # Read-write enables actions (trash, move, dedupe). Use :ro to only analyze.
       - ${ANALYZE_LIBRARY:-./library}:/library
+      # Optional: lets the Docker integration work out path mappings for Plex, Sonarr, qBittorrent… (read-only).
+      # - /var/run/docker.sock:/var/run/docker.sock:ro
       # - /mnt/media:/media:ro
 
 volumes:

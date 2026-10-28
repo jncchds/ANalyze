@@ -110,9 +110,42 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
             plan.Items.Add(item);
         }
 
+        await MarkInUseAsync(db, plan.Items, ct);
         db.ActionPlans.Add(plan);
         await db.SaveChangesAsync(ct);
         return plan;
+    }
+
+    /// <summary>Badges integrations put on files another app is using right now (download clients).</summary>
+    public static readonly string[] InUseStates = ["seeding", "downloading"];
+
+    /// <summary>
+    /// Leaves out items that are, contain or sit inside something a download client is seeding or downloading:
+    /// trashing, moving or deleting them would break the torrent. Hard links keep the content, so they are allowed.
+    /// </summary>
+    private static async Task MarkInUseAsync(AnalyzeDbContext db, IEnumerable<ActionItem> items, CancellationToken ct)
+    {
+        var inUse = await (from a in db.Annotations.AsNoTracking()
+                           join e in db.Entries.AsNoTracking() on a.EntryId equals e.Id
+                           where a.State != null && InUseStates.Contains(a.State)
+                           select new { e.RootId, e.RelPath, a.Label, a.State }).ToListAsync(ct);
+        if (inUse.Count == 0)
+        {
+            return;
+        }
+
+        static bool Related(string a, string b) =>
+            a == b || a.Length == 0 || b.Length == 0 || a.StartsWith(b + "/", StringComparison.Ordinal) || b.StartsWith(a + "/", StringComparison.Ordinal);
+
+        foreach (var item in items.Where(i => i.Included && i.Op != ActionOp.Hardlink))
+        {
+            var hit = inUse.FirstOrDefault(u => u.RootId == item.RootId && Related(u.RelPath, item.SourcePath));
+            if (hit is not null)
+            {
+                item.Included = false;
+                item.Warning = $"In use ({hit.State}): {hit.Label}";
+            }
+        }
     }
 
     public async Task<ActionPlan> CreateDedupeAsync(DedupePlanRequest req, CancellationToken ct)
@@ -199,6 +232,7 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
             }
         }
 
+        await MarkInUseAsync(db, plan.Items, ct);
         db.ActionPlans.Add(plan);
         await db.SaveChangesAsync(ct);
         return plan;

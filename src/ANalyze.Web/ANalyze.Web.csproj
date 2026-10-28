@@ -27,7 +27,12 @@
   <ItemGroup>
     <ProjectReference Include="..\ANalyze.Actions\ANalyze.Actions.csproj" />
     <ProjectReference Include="..\ANalyze.Ai\ANalyze.Ai.csproj" />
+    <ProjectReference Include="..\ANalyze.Integrations.Arr\ANalyze.Integrations.Arr.csproj" />
+    <ProjectReference Include="..\ANalyze.Integrations.Docker\ANalyze.Integrations.Docker.csproj" />
+    <ProjectReference Include="..\ANalyze.Integrations.Downloads\ANalyze.Integrations.Downloads.csproj" />
+    <ProjectReference Include="..\ANalyze.Integrations.Jellyfin\ANalyze.Integrations.Jellyfin.csproj" />
     <ProjectReference Include="..\ANalyze.Integrations.Plex\ANalyze.Integrations.Plex.csproj" />
+    <ProjectReference Include="..\ANalyze.Integrations.Photos\ANalyze.Integrations.Photos.csproj" />
     <ProjectReference Include="..\ANalyze.Preview\ANalyze.Preview.csproj" />
   </ItemGroup>
 
