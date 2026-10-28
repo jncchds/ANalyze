@@ -57,11 +57,16 @@ One scan at a time (`ScanQueue` → `ScanWorker`, guarded by `JobLock` with plan
 
 1. **Walk** (`Walker`): depth-first; per directory it loads existing children by `ParentId`, `lstat`s every name (`Native.LStat` → `statx`),
    inserts new rows, updates changed files (size/mtime/inode/type) and resets their detection and hashes, deletes vanished subtrees,
-   and writes directory aggregates on the way back up. Symlinks are recorded, never followed; other filesystems below a root are listed
-   but not entered unless enabled. Unreadable directories keep their previous contents. Writes are batched (5000 per transaction).
+   and writes directory aggregates on the way back up. New files get `Kind`/`Mime` from the extension at insert (detection refines them).
+   Directories with no known size (first scan) get running totals at every commit, from the walker's stack of open folders; rescans keep the
+   previous complete size until the folder is done. Symlinks are recorded, never followed; other filesystems below a root are listed
+   but not entered unless enabled (entries below such a folder left from an earlier scan are deleted). Unreadable directories keep their
+   previous contents. Writes are batched (5000 per transaction). A cancelled or failed scan ends with `RollupDirectories` (every folder of the
+   scanned roots recomputed from its children, deepest first).
    Subtree scans (`ScanRequest.SubPath`) start at the deepest existing directory, create missing directory entries (`EnsureDirChain`) and
    then recompute the ancestors (`RecomputeAncestors`).
-2. **Detect**: `FileTypes.FromExtension`, or magic bytes of the first 4 KB when the extension is unknown.
+2. **Detect**: `FileTypes.FromExtension`, or magic bytes of the first 4 KB when the extension is unknown. Until a file is detected, the API reports its type
+   from the extension (`EntryDto.From`).
 3. **Categorize** (`Categorizer`): rules for every file in scope; precedence manual > rule > AI; tags always from rules.
 4. **Duplicates** (`DuplicateFinder`, all roots): sizes with ≥ 2 distinct identities (`dev:inode`, or the row id where inodes are unavailable)
    → quick hash (XxHash3 of 3×64 KB + size) → full hash (XxHash128) only on quick-hash collisions; files ≤ 192 KB get the full hash directly.

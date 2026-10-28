@@ -30,7 +30,11 @@ public sealed record EntryDto(
     public static EntryDto From(Entry e) => new(
         e.Id, e.RootId, e.ParentId, e.Name, e.RelPath, e.IsDir, e.IsSymlink, e.BrokenLink,
         e.IsDir ? e.TotalSize : e.Size, e.IsDir ? e.TotalAlloc : e.AllocSize, e.FileCount, e.DirCount,
-        e.MTime, e.ATime, e.Kind, e.Mime, e.Ext, e.CategoryId, e.CategorySource, SplitTags(e.Tags), e.FullHash, e.NLink, e.Error);
+        e.MTime, e.ATime, KindOf(e), e.Mime ?? (e.Detected ? null : ANalyze.Scanner.FileTypes.FromExtension(e.Ext)?.Mime), e.Ext, e.CategoryId, e.CategorySource, SplitTags(e.Tags), e.FullHash, e.NLink, e.Error);
+
+    /// <summary>Files not yet through detection (scan still running or stopped early) get their type from the extension.</summary>
+    private static FileKind KindOf(Entry e) =>
+        e.IsDir || e.Detected || e.Kind != FileKind.Unknown ? e.Kind : ANalyze.Scanner.FileTypes.FromExtension(e.Ext)?.Kind ?? FileKind.Unknown;
 
     public static string[] SplitTags(string? tags) =>
         string.IsNullOrEmpty(tags) ? [] : tags.Split('|', StringSplitOptions.RemoveEmptyEntries);

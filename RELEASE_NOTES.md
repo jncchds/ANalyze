@@ -1,5 +1,11 @@
 # Release Notes
 
+## v0.1.3 — 2026-10-28
+
+- fix: folders no longer show 0 bytes during a first scan (running totals) or after a scan that stopped or failed (sizes are recomputed)
+- fix: a folder on another filesystem that is not scanned drops entries left from an earlier scan instead of showing them under a 0-byte folder
+- fix: previews work as soon as a file is found: the file type comes from the extension right away instead of only after the whole scan
+
 ## v0.1.2 — 2026-10-28
 
 - fix: the Docker image build includes RELEASE_NOTES.md (the 0.1.1 image failed to build)

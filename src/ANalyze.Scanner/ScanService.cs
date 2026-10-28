@@ -97,6 +97,23 @@ public sealed class ScanService(
             message = e.Message;
         }
 
+        if (status != ScanStatus.Completed)
+        {
+            // A walk that stopped half-way leaves the folders above the last finished one with old or running totals.
+            try
+            {
+                using var conn = sqlite.Open();
+                foreach (var root in targets)
+                {
+                    RollupDirectories(conn, root.Id);
+                }
+            }
+            catch (Exception e) when (e is SqliteException or InvalidOperationException)
+            {
+                log.LogWarning(e, "Could not recompute folder sizes after scan {Id}", run.Id);
+            }
+        }
+
         await using (var db = await dbf.CreateDbContextAsync(CancellationToken.None))
         {
             var row = await db.Scans.FirstAsync(x => x.Id == run.Id, CancellationToken.None);
@@ -194,6 +211,36 @@ public sealed class ScanService(
         {
             RecomputeAncestors(conn, startId);
         }
+    }
+
+    /// <summary>Recomputes every folder's totals of a root from its children, deepest folders first.</summary>
+    public static void RollupDirectories(SqliteConnection conn, int rootId)
+    {
+        using var tx = conn.BeginTransaction();
+        using var max = conn.CreateCommand();
+        max.Transaction = tx;
+        max.CommandText = "SELECT COALESCE(MAX(Depth), 0) FROM Entries WHERE RootId = $r AND IsDir = 1";
+        max.Parameters.AddWithValue("$r", rootId);
+        var deepest = Convert.ToInt32(max.ExecuteScalar());
+        using var update = conn.CreateCommand();
+        update.Transaction = tx;
+        update.CommandText = """
+            UPDATE Entries SET
+                TotalSize = COALESCE((SELECT SUM(TotalSize) FROM Entries c WHERE c.ParentId = Entries.Id), 0),
+                TotalAlloc = COALESCE((SELECT SUM(TotalAlloc) FROM Entries c WHERE c.ParentId = Entries.Id), 0),
+                FileCount = COALESCE((SELECT SUM(FileCount) FROM Entries c WHERE c.ParentId = Entries.Id), 0),
+                DirCount = COALESCE((SELECT SUM(DirCount + IsDir) FROM Entries c WHERE c.ParentId = Entries.Id), 0)
+            WHERE RootId = $r AND IsDir = 1 AND Depth = $d
+            """;
+        update.Parameters.AddWithValue("$r", rootId);
+        update.Parameters.Add(new SqliteParameter("$d", null));
+        for (var d = deepest; d >= 0; d--)
+        {
+            update.Parameters["$d"].Value = d;
+            update.ExecuteNonQuery();
+        }
+
+        tx.Commit();
     }
 
     /// <summary>After a subtree scan, refresh the aggregates of every directory above it.</summary>

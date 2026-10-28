@@ -30,6 +30,20 @@ internal sealed class Walker : IDisposable
     private readonly SqliteCommand _updateDir;
     private readonly SqliteCommand _deleteOne;
     private readonly SqliteCommand _deleteTree;
+    private readonly SqliteCommand _updatePartial;
+
+    /// <summary>Directories being walked, outermost first (for running totals while a scan is in progress).</summary>
+    private readonly List<Frame> _frames = [];
+
+    private sealed class Frame(long id, bool fresh)
+    {
+        public long Id { get; } = id;
+
+        /// <summary>No size was known before this scan, so a running total is better than 0.</summary>
+        public bool Fresh { get; } = fresh;
+
+        public Agg Total { get; set; }
+    }
 
     public Walker(SqliteConnection db, ScanContext ctx, int rootId, string rootPath, bool crossFs, IgnoreMatcher ignore)
     {
@@ -47,10 +61,10 @@ internal sealed class Walker : IDisposable
             INSERT INTO Entries (RootId, ParentId, Name, RelPath, Depth, IsDir, IsSymlink, LinkTarget, BrokenLink, Size, AllocSize, MTime, ATime, CTime,
                 Inode, Dev, NLink, Ext, Mime, Kind, Detected, CategoryId, CategorySource, Tags, QuickHash, FullHash, Error, TotalSize, TotalAlloc, FileCount, DirCount)
             VALUES ($root, $parent, $name, $rel, $depth, $isDir, $isLink, $target, $broken, $size, $alloc, $mtime, $atime, $ctime,
-                $inode, $dev, $nlink, $ext, NULL, 0, $detected, NULL, 0, NULL, NULL, NULL, 0, $size, $alloc, $files, 0);
+                $inode, $dev, $nlink, $ext, $mime, $kind, $detected, NULL, 0, NULL, NULL, NULL, 0, $size, $alloc, $files, 0);
             SELECT last_insert_rowid();
             """, "$root", "$parent", "$name", "$rel", "$depth", "$isDir", "$isLink", "$target", "$broken", "$size", "$alloc", "$mtime", "$atime", "$ctime",
-            "$inode", "$dev", "$nlink", "$ext", "$detected", "$files");
+            "$inode", "$dev", "$nlink", "$ext", "$mime", "$kind", "$detected", "$files");
         _updateFile = Cmd("""
             UPDATE Entries SET IsSymlink=$isLink, LinkTarget=$target, BrokenLink=$broken, Size=$size, AllocSize=$alloc, MTime=$mtime, ATime=$atime, CTime=$ctime,
                 Inode=$inode, Dev=$dev, NLink=$nlink, Detected=$detected, QuickHash=NULL, FullHash=NULL, Error=0, TotalSize=$size, TotalAlloc=$alloc
@@ -64,6 +78,8 @@ internal sealed class Walker : IDisposable
             """, "$size", "$alloc", "$files", "$dirs", "$mtime", "$atime", "$ctime", "$inode", "$dev", "$nlink", "$error", "$id");
         _deleteOne = Cmd("DELETE FROM Entries WHERE Id=$id", "$id");
         _deleteTree = Cmd("DELETE FROM Entries WHERE RootId=$root AND RelPath >= $from AND RelPath < $to", "$root", "$from", "$to");
+        _updatePartial = Cmd("UPDATE Entries SET TotalSize=$size, TotalAlloc=$alloc, FileCount=$files, DirCount=$dirs WHERE Id=$id",
+            "$size", "$alloc", "$files", "$dirs", "$id");
     }
 
     public readonly record struct Agg(long Size, long Alloc, long Files, long Dirs, bool Error);
@@ -116,15 +132,33 @@ internal sealed class Walker : IDisposable
     /// <summary>Scans one directory recursively and stores its aggregates.</summary>
     public Agg ScanDirectory(long dirId, string fullPath, string relPath, int depth, long rootDev)
     {
-        var agg = Walk(dirId, fullPath, relPath, depth, rootDev);
+        using var known = Cmd("SELECT FileCount FROM Entries WHERE Id=$id", "$id");
+        known.Parameters["$id"].Value = dirId;
+        var fresh = known.ExecuteScalar() is not long files || files == 0;
+        var agg = Walk(dirId, fullPath, relPath, depth, rootDev, fresh);
         var st = Native.LStat(fullPath);
         UpdateDir(dirId, agg, st);
         Commit();
         return agg;
     }
 
-    private Agg Walk(long dirId, string fullPath, string relPath, int depth, long rootDev)
+    private Agg Walk(long dirId, string fullPath, string relPath, int depth, long rootDev, bool fresh)
     {
+        var frame = new Frame(dirId, fresh);
+        _frames.Add(frame);
+        try
+        {
+            return WalkChildren(frame, fullPath, relPath, depth, rootDev);
+        }
+        finally
+        {
+            _frames.RemoveAt(_frames.Count - 1);
+        }
+    }
+
+    private Agg WalkChildren(Frame frame, string fullPath, string relPath, int depth, long rootDev)
+    {
+        var dirId = frame.Id;
         _ctx.Ct.ThrowIfCancellationRequested();
         _ctx.DirsSeen++;
         _ctx.Current = relPath.Length == 0 ? "/" : relPath;
@@ -197,12 +231,17 @@ internal sealed class Walker : IDisposable
                 Agg sub;
                 if (!_crossFs && rootDev != 0 && st.Dev != rootDev)
                 {
-                    // Another filesystem mounted below the root: listed, not descended into.
+                    // Another filesystem mounted below the root: listed, not descended into. Entries from an earlier scan that
+                    // did descend (cross-filesystem setting on) would otherwise keep their sizes under a 0-byte folder.
                     sub = new Agg(0, 0, 0, 0, false);
+                    if (hadOld)
+                    {
+                        DeleteBelow(childRel);
+                    }
                 }
                 else
                 {
-                    sub = Walk(id, childFull, childRel, depth + 1, rootDev);
+                    sub = Walk(id, childFull, childRel, depth + 1, rootDev, fresh: !hadOld || old.Agg.Files == 0);
                 }
 
                 if (!hadOld || old.Agg != sub || old.MTime != st.MTime)
@@ -211,6 +250,7 @@ internal sealed class Walker : IDisposable
                 }
 
                 total = Add(total, sub, isDir: true);
+                frame.Total = total;
             }
             else
             {
@@ -258,6 +298,7 @@ internal sealed class Walker : IDisposable
                 _ctx.FilesSeen++;
                 _ctx.BytesSeen += size;
                 total = Add(total, new Agg(size, alloc, 1, 0, false), isDir: false);
+                frame.Total = total;
             }
         }
 
@@ -317,7 +358,12 @@ internal sealed class Walker : IDisposable
         p["$inode"].Value = st.Inode;
         p["$dev"].Value = st.Dev;
         p["$nlink"].Value = st.NLink;
-        p["$ext"].Value = isDir ? DBNull.Value : (object?)FileTypes.ExtensionOf(name) ?? DBNull.Value;
+        var ext = isDir ? null : FileTypes.ExtensionOf(name);
+        p["$ext"].Value = (object?)ext ?? DBNull.Value;
+        // Type from the extension right away (previews work while the scan runs); detection refines it later.
+        var byExt = !isDir && st.IsRegular ? FileTypes.FromExtension(ext) : null;
+        p["$mime"].Value = (object?)byExt?.Mime ?? DBNull.Value;
+        p["$kind"].Value = (int)(byExt?.Kind ?? Domain.FileKind.Unknown);
         // Directories and symlinks need no content detection.
         p["$detected"].Value = isDir || !st.IsRegular;
         p["$files"].Value = isDir ? 0 : 1;
@@ -372,6 +418,12 @@ internal sealed class Walker : IDisposable
     private void DeleteTree(long id, string relPath)
     {
         DeleteOne(id);
+        DeleteBelow(relPath);
+    }
+
+    /// <summary>Deletes everything below <paramref name="relPath"/>, keeping the folder itself.</summary>
+    private void DeleteBelow(string relPath)
+    {
         _deleteTree.Parameters["$root"].Value = _rootId;
         _deleteTree.Parameters["$from"].Value = relPath + "/";
         // '0' is the character after '/', so this range is exactly the paths below relPath.
@@ -396,15 +448,41 @@ internal sealed class Walker : IDisposable
 
     public void Commit()
     {
+        WriteRunningTotals();
         _tx.Commit();
         _tx.Dispose();
         _tx = _db.BeginTransaction();
-        foreach (var c in new[] { _selChildren, _insert, _updateFile, _updateATime, _updateDir, _deleteOne, _deleteTree })
+        foreach (var c in new[] { _selChildren, _insert, _updateFile, _updateATime, _updateDir, _deleteOne, _deleteTree, _updatePartial })
         {
             c.Transaction = _tx;
         }
 
         _pending = 0;
+    }
+
+    /// <summary>
+    /// While a folder is still being walked its stored size is only written at the end, so on a first scan the folders above
+    /// the current one would read 0 bytes. Give those (and only those: rescans keep the previous complete size) a running total:
+    /// what is done inside them so far, including the unfinished folders below.
+    /// </summary>
+    private void WriteRunningTotals()
+    {
+        var below = new Agg(0, 0, 0, 0, false);
+        for (var i = _frames.Count - 1; i >= 0; i--)
+        {
+            var f = _frames[i];
+            below = new Agg(f.Total.Size + below.Size, f.Total.Alloc + below.Alloc, f.Total.Files + below.Files, f.Total.Dirs + below.Dirs, false);
+            if (f.Fresh)
+            {
+                var p = _updatePartial.Parameters;
+                p["$size"].Value = below.Size;
+                p["$alloc"].Value = below.Alloc;
+                p["$files"].Value = below.Files;
+                p["$dirs"].Value = below.Dirs;
+                p["$id"].Value = f.Id;
+                _updatePartial.ExecuteNonQuery();
+            }
+        }
     }
 
     private SqliteCommand Cmd(string sql, params string[] parameters)
@@ -425,7 +503,7 @@ internal sealed class Walker : IDisposable
     {
         _tx.Commit();
         _tx.Dispose();
-        foreach (var c in new[] { _selChildren, _insert, _updateFile, _updateATime, _updateDir, _deleteOne, _deleteTree })
+        foreach (var c in new[] { _selChildren, _insert, _updateFile, _updateATime, _updateDir, _deleteOne, _deleteTree, _updatePartial })
         {
             c.Dispose();
         }
