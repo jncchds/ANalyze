@@ -29,17 +29,15 @@ namespace ANalyze.Infrastructure.Data.Migrations
                     Id = table.Column<long>(type: "INTEGER", nullable: false)
                         .Annotation("Sqlite:Autoincrement", true),
                     State = table.Column<string>(type: "TEXT", nullable: false),
-                    EntryId = table.Column<long>(type: "INTEGER", nullable: true),
-                    LocalRootId = table.Column<int>(type: "INTEGER", nullable: true),
-                    LocalRelPath = table.Column<string>(type: "TEXT", nullable: true),
-                    SourcePath = table.Column<string>(type: "TEXT", nullable: true),
+                    IsDir = table.Column<bool>(type: "INTEGER", nullable: false),
+                    EntryId = table.Column<long>(type: "INTEGER", nullable: false),
+                    LocalRootId = table.Column<int>(type: "INTEGER", nullable: false),
+                    LocalRelPath = table.Column<string>(type: "TEXT", nullable: false),
                     Size = table.Column<long>(type: "INTEGER", nullable: false),
-                    MTime = table.Column<long>(type: "INTEGER", nullable: false),
-                    Hash = table.Column<string>(type: "TEXT", nullable: true),
-                    LocalSize = table.Column<long>(type: "INTEGER", nullable: true),
-                    LocalMTime = table.Column<long>(type: "INTEGER", nullable: true),
-                    LocalHash = table.Column<string>(type: "TEXT", nullable: true),
-                    Side = table.Column<string>(type: "TEXT", nullable: true)
+                    ParentSize = table.Column<long>(type: "INTEGER", nullable: true),
+                    Verified = table.Column<bool>(type: "INTEGER", nullable: false),
+                    Children = table.Column<int>(type: "INTEGER", nullable: false),
+                    SyncedChildren = table.Column<int>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -52,14 +50,14 @@ namespace ANalyze.Infrastructure.Data.Migrations
                 column: "EntryId");
 
             migrationBuilder.CreateIndex(
+                name: "IX_BackupFiles_IsDir_State",
+                table: "BackupFiles",
+                columns: new[] { "IsDir", "State" });
+
+            migrationBuilder.CreateIndex(
                 name: "IX_BackupFiles_LocalRootId_LocalRelPath",
                 table: "BackupFiles",
                 columns: new[] { "LocalRootId", "LocalRelPath" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_BackupFiles_State",
-                table: "BackupFiles",
-                column: "State");
         }
 
         /// <inheritdoc />

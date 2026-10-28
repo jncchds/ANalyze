@@ -54,7 +54,7 @@ public static class BrowseEndpoints
                 copies,
                 linkTarget = e.LinkTarget,
                 ai = ai is null ? null : new { ai.Id, ai.Category, ai.Tags, ai.Confidence, ai.Reason, ai.Applied, ai.Model },
-                backup = backup is null ? null : new { backup.State, backup.Side, backup.SourcePath, backup.Size, backup.MTime, parentHashed = backup.Hash != null },
+                backup = backup is null ? null : new { backup.State, backup.IsDir, backup.ParentSize, backup.Verified, backup.Children, backup.SyncedChildren },
                 annotations = (await AnnotationsFor(db, [id], ct)).GetValueOrDefault(id) ?? [],
             });
         });

@@ -1,31 +1,21 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { api } from '../../api/client'
 import { BarList } from '../../components/charts'
 import { EntryDrawer } from '../../components/EntryDrawer'
-import { PlanDialog } from '../../components/PlanDialog'
 import { Empty, ErrorBox, Loading, PageTitle, Section, ShareBar, Stat, Tabs } from '../../components/ui'
-import { ago, bytes, count, date, pct } from '../../lib/format'
+import { ago, bytes, count, pct } from '../../lib/format'
 
-type State = 'verified' | 'matched' | 'outdated' | 'corrupt' | 'missing' | 'extra'
+type FileState = 'synced' | 'corrupt' | 'missing' | 'unsynced'
 
-const STATES: { id: State; label: string; color: string; hint: string }[] = [
-  { id: 'verified', label: 'Verified', color: 'var(--accent)', hint: 'Same content: both hashes are equal.' },
-  { id: 'matched', label: 'Same size and date', color: 'color-mix(in srgb, var(--accent) 55%, transparent)', hint: 'Content not compared — a hash is missing on one side.' },
-  { id: 'outdated', label: 'Outdated', color: 'var(--amber)', hint: 'Another version: size or date differ.' },
-  { id: 'corrupt', label: 'Corrupt', color: 'var(--danger)', hint: 'Same size and date, different content: one copy is damaged.' },
-  { id: 'missing', label: 'Missing', color: 'color-mix(in srgb, var(--amber) 55%, transparent)', hint: 'On the parent, not in this backup.' },
-  { id: 'extra', label: 'Only here', color: 'var(--text-muted)', hint: 'In the backup folders but not on the parent (deleted there?).' },
+const FILE_STATES: { id: FileState; label: string; color: string; hint: string }[] = [
+  { id: 'synced', label: 'Synchronized', color: 'var(--accent)', hint: 'The backup has a file at the same path.' },
+  { id: 'corrupt', label: 'Corrupted', color: 'var(--danger)', hint: 'In a synchronized folder, but the copy on the backup has another size or content hash.' },
+  { id: 'missing', label: 'Missing', color: 'var(--amber)', hint: 'In a synchronized folder, but not on the backup.' },
+  { id: 'unsynced', label: 'Not synchronized', color: 'var(--text-muted)', hint: 'Not on the backup, in a folder that is not synchronized.' },
 ]
-const stateInfo = (s: string) => STATES.find((x) => x.id === s)
-
-interface Counts {
-  files: number
-  size: number
-  states: Partial<Record<State, { files: number; size: number }>>
-}
 
 interface Target {
   parentPath: string
@@ -41,35 +31,50 @@ interface Summary {
     syncedAt: string
     parentName: string
     url: string
-    info: { version?: string; hashAllFiles: boolean; verifyAfterDays: number; roots: { path: string; files: number; size: number; hashed: number }[] }
+    info: { version?: string; hashAllFiles: boolean; roots: { path: string; files: number; hashed: number }[] }
     detected: { from: string; to: string }[]
     unmapped: number
     hashesCompared: boolean
   }
   targets?: Target[]
-  byState: { state: State; files: number; size: number }[]
-  corruptBySide: { side: string; files: number }[]
-  unmapped: { files: number; size: number }
-  local: { hashAllFiles: boolean; verifyAfterDays: number }
+  files: { state: FileState; files: number; size: number }[]
+  verified: number
+  folders: { total: number; synced: number }
+  threshold: number
+  local: { hashAllFiles: boolean }
+}
+
+interface FolderRow {
+  entryId: number
+  name: string
+  path: string
+  state: 'synced' | 'unsynced'
+  children: number
+  synced: number
+  size: number
+}
+
+interface FolderView {
+  path: string
+  self?: Omit<FolderRow, 'name' | 'path'>
+  folders: FolderRow[]
+  files: { state: FileState; files: number; size: number }[]
 }
 
 interface FileRow {
   id: number
-  state: State
-  side?: string
-  entryId?: number
-  rootId?: number
-  relPath?: string
-  sourcePath?: string
+  state: FileState
+  entryId: number
+  relPath: string
+  parentPath?: string
   size: number
-  mtime: number
-  localSize?: number
-  localMTime?: number
+  parentSize?: number
+  verified: boolean
 }
 
-type Tab = 'folders' | State
+type Tab = 'folders' | FileState
 
-/** Backup page of the "ANalyze parent" integration: how this instance's copy compares with the parent's files. */
+/** Backup page of the "ANalyze parent" integration: what of this instance is synchronized to the backup server (the parent). */
 export default function BackupPage() {
   const [tab, setTab] = useState<Tab>('folders')
   const q = useQuery({ queryKey: ['parent', 'summary'], queryFn: () => api<Summary>('/integrations/parent/summary') })
@@ -83,26 +88,24 @@ export default function BackupPage() {
       <>
         <PageTitle>Backup</PageTitle>
         <Empty>
-          Not compared yet. Enter the parent's URL and token on the <Link to="/integrations" className="link">Integrations</Link> page and sync.
+          Not compared yet. Enter the backup server's URL and token on the <Link to="/integrations" className="link">Integrations</Link> page and sync.
         </Empty>
       </>
     )
 
-  const by = (st: State) => s.byState.find((x) => x.state === st) ?? { state: st, files: 0, size: 0 }
-  const parentFiles = s.byState.filter((x) => x.state !== 'extra').reduce((a, x) => a + x.files, 0)
-  const parentSize = s.byState.filter((x) => x.state !== 'extra').reduce((a, x) => a + x.size, 0)
-  const okSize = by('verified').size + by('matched').size
-  const okFiles = by('verified').files + by('matched').files
-  const attention = by('missing').files + by('outdated').files + by('corrupt').files
-  const parentHashed = snap.info.roots.reduce((a, r) => a + r.hashed, 0)
-  const parentTotal = snap.info.roots.reduce((a, r) => a + r.files, 0)
+  const by = (st: FileState) => s.files.find((x) => x.state === st) ?? { state: st, files: 0, size: 0 }
+  const allFiles = s.files.reduce((a, x) => a + x.files, 0)
+  const allSize = s.files.reduce((a, x) => a + x.size, 0)
+  const onBackup = by('synced').files + by('corrupt').files
+  const onBackupSize = by('synced').size + by('corrupt').size
+  const threshold = Math.round(s.threshold * 100)
 
   return (
     <>
       <PageTitle
         subtitle={
           <>
-            Parent <span className="font-mono">{snap.url}</span> · ANalyze {snap.info.version ?? '?'} · compared {ago(snap.syncedAt)}
+            Backup server <span className="font-mono">{snap.url}</span> · ANalyze {snap.info.version ?? '?'} · compared {ago(snap.syncedAt)}
           </>
         }
         actions={
@@ -111,22 +114,16 @@ export default function BackupPage() {
           </button>
         }
       >
-        Backup of {snap.parentName}
+        Backup on {snap.parentName}
       </PageTitle>
       {sync.error && <ErrorBox error={sync.error} />}
 
       <div className="mb-4 space-y-2">
-        {(!snap.info.hashAllFiles || !s.local.hashAllFiles) && (
+        {(!snap.info.hashAllFiles || !s.local.hashAllFiles || !snap.hashesCompared) && (
           <Notice>
-            Content can only be compared when both instances hash every file ({!snap.info.hashAllFiles && 'the parent'}
-            {!snap.info.hashAllFiles && !s.local.hashAllFiles && ' and '}
-            {!s.local.hashAllFiles && 'this one'} {!snap.info.hashAllFiles && !s.local.hashAllFiles ? "don't" : "doesn't"}): turn on Settings → Integrity &amp; backups →
-            "Hash every file". Until then files count as backed up by size and date. Parent: {pct(parentHashed, parentTotal)} of files hashed.
-          </Notice>
-        )}
-        {s.local.verifyAfterDays === 0 && (
-          <Notice muted>
-            Turn on "Re-verify hashes" in Settings (here and on the parent) to detect bit rot in copies that were fine when first compared, and to tell which copy changed.
+            Corrupted files are found by size only until both instances hash every file (Settings → Integrity &amp; backups → "Hash every file"
+            {!snap.info.hashAllFiles ? ' — off on the backup server' : ''}
+            {!s.local.hashAllFiles ? ' — off here' : ''}).
           </Notice>
         )}
         {snap.detected.length > 0 && (
@@ -135,25 +132,25 @@ export default function BackupPage() {
             <Link to="/integrations" className="link">Integrations</Link> page to make them permanent.
           </Notice>
         )}
-        {s.unmapped.files > 0 && (
+        {s.targets?.some((t) => !t.entryId) && (
           <Notice>
-            {count(s.unmapped.files)} files ({bytes(s.unmapped.size)}) of the parent map to no scanned folder here. Add a path mapping for them.
+            Some of the backup's folders match no folder here: {s.targets.filter((t) => !t.entryId).map((t) => t.parentPath).join(', ')}. Add a path mapping.
           </Notice>
         )}
       </div>
 
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="Backed up" value={pct(okSize, parentSize)} hint={`${bytes(okSize)} of ${bytes(parentSize)} · ${count(okFiles)} of ${count(parentFiles)} files`} tone="accent" />
-        <Stat label="Verified by content" value={count(by('verified').files)} hint={bytes(by('verified').size)} />
-        <Stat label="Need attention" value={count(attention)} hint={`${count(by('corrupt').files)} corrupt · ${count(by('missing').files)} missing · ${count(by('outdated').files)} outdated`} tone={attention ? 'amber' : undefined} />
-        <Stat label="Only in the backup" value={count(by('extra').files)} hint={bytes(by('extra').size)} />
+        <Stat label="Files on the backup" value={pct(onBackupSize, allSize)} hint={`${bytes(onBackupSize)} of ${bytes(allSize)} · ${count(onBackup)} of ${count(allFiles)} files`} tone="accent" />
+        <Stat label="Synchronized folders" value={`${count(s.folders.synced)} / ${count(s.folders.total)}`} hint={`≥ ${threshold}% of their direct content on the backup, or identical`} />
+        <Stat label="Corrupted" value={count(by('corrupt').files)} hint={`${bytes(by('corrupt').size)} · other size or hash on the backup`} tone={by('corrupt').files ? 'amber' : undefined} />
+        <Stat label="Missing" value={count(by('missing').files)} hint={`${bytes(by('missing').size)} · in synchronized folders`} tone={by('missing').files ? 'amber' : undefined} />
       </div>
 
       <div className="mb-4 grid gap-4 lg:grid-cols-2">
-        <Section title="By state">
+        <Section title="Files by state">
           <BarList
-            total={parentSize + by('extra').size}
-            items={STATES.filter((x) => by(x.id).files > 0).map((x) => ({
+            total={allSize}
+            items={FILE_STATES.filter((x) => by(x.id).files > 0).map((x) => ({
               key: x.id,
               color: x.color,
               hint: x.hint,
@@ -166,13 +163,14 @@ export default function BackupPage() {
               onClick: () => setTab(x.id),
             }))}
           />
+          {s.verified > 0 && <p className="mt-2 text-xs muted">{count(s.verified)} synchronized files have the same content hash on both sides.</p>}
         </Section>
-        <Section title="Folders">
+        <Section title="Backed-up folders">
           <ul className="space-y-2 text-sm">
             {s.targets?.map((t) => (
               <li key={t.parentPath}>
                 <div className="font-mono text-xs">
-                  {snap.parentName}:{t.parentPath} <span className="muted">→</span> {t.localPath}
+                  {t.localPath} <span className="muted">→</span> {snap.parentName}:{t.parentPath}
                 </div>
                 {t.entryId ? (
                   <Link to={`/browse/${t.entryId}`} className="link text-xs">
@@ -184,14 +182,6 @@ export default function BackupPage() {
               </li>
             ))}
           </ul>
-          {by('corrupt').files > 0 && (
-            <p className="mt-3 text-xs muted">
-              Corrupt:{' '}
-              {s.corruptBySide
-                .map((x) => `${count(x.files)} ${x.side === 'source' ? 'damaged on the parent (this copy is good)' : x.side === 'backup' ? 'damaged here' : 'side unknown'}`)
-                .join(' · ')}
-            </p>
-          )}
         </Section>
       </div>
 
@@ -200,39 +190,39 @@ export default function BackupPage() {
         onChange={setTab}
         tabs={[
           { id: 'folders', label: 'Folders' },
-          ...STATES.filter((x) => by(x.id).files > 0).map((x) => ({ id: x.id as Tab, label: `${x.label} (${count(by(x.id).files)})` })),
+          ...FILE_STATES.filter((x) => by(x.id).files > 0).map((x) => ({ id: x.id as Tab, label: `${x.label} (${count(by(x.id).files)})` })),
         ]}
       />
-      {tab === 'folders' ? <Folders targets={(s.targets ?? []).filter((t) => t.rootId !== undefined)} /> : <Files key={tab} state={tab} parent={snap.parentName} />}
+      {tab === 'folders' ? <Folders targets={(s.targets ?? []).filter((t) => t.entryId)} threshold={threshold} /> : <Files key={tab} state={tab} />}
     </>
   )
 }
 
-function Notice({ children, muted }: { children: React.ReactNode; muted?: boolean }) {
+function Notice({ children, muted }: { children: ReactNode; muted?: boolean }) {
   return <p className={clsx('rounded-md px-3 py-2 text-sm', muted ? 'bg-surface-2 muted' : 'bg-amber-faint text-amber')}>{children}</p>
 }
 
-/** Summary of one folder's counts: "3 missing · 1 corrupt", or ✓. */
-function CountText({ c }: { c: Counts }) {
-  const parts = (['missing', 'corrupt', 'outdated', 'extra'] as State[]).filter((st) => c.states[st]?.files).map((st) => `${count(c.states[st]!.files)} ${st === 'extra' ? 'only here' : st}`)
-  if (parts.length === 0) return <span className="text-xs text-accent">✓ backed up{c.states.verified?.files === c.files ? ' · verified' : ''}</span>
-  return <span className={clsx('text-xs', c.states.corrupt?.files ? 'text-danger' : 'text-amber')}>{parts.join(' · ')}</span>
+function FolderPill({ state, children, synced }: { state: string; children: number; synced: number }) {
+  const share = children ? ` · ${pct(synced, children)}` : ''
+  return state === 'synced' ? <span className="chip">Synchronized{share}</span> : <span className="pill-amber">Not synchronized{share}</span>
 }
 
-function Folders({ targets }: { targets: Target[] }) {
+function Folders({ targets, threshold }: { targets: Target[]; threshold: number }) {
   const [target, setTarget] = useState(0)
-  const t = targets[target]
   const [path, setPath] = useState<string | null>(null)
+  const [preview, setPreview] = useState<number | null>(null)
+  const t = targets[target]
   const current = path ?? t?.relPath ?? ''
   const q = useQuery({
     queryKey: ['parent', 'folders', t?.rootId, current],
-    queryFn: () => api<{ path: string; entryId?: number; folders: { name: string; path: string; entryId?: number; counts: Counts }[]; here?: Counts }>('/integrations/parent/folders', { query: { rootId: t!.rootId, path: current } }),
+    queryFn: () => api<FolderView>('/integrations/parent/folders', { query: { rootId: t!.rootId, path: current } }),
     enabled: !!t,
   })
-  if (!t) return <Empty>No backup folder was found here.</Empty>
+  if (!t) return <Empty>No backed-up folder was found here.</Empty>
   const base = t.relPath ?? ''
   const crumbs = current.length > base.length ? current.slice(base.length).split('/').filter(Boolean) : []
-  const max = Math.max(1, ...(q.data?.folders.map((f) => f.counts.size) ?? []))
+  const max = Math.max(1, ...(q.data?.folders.map((f) => f.size) ?? []))
+  const self = q.data?.self
   return (
     <>
       <div className="mb-3 flex flex-wrap items-center gap-1 text-sm">
@@ -244,11 +234,11 @@ function Folders({ targets }: { targets: Target[] }) {
               setTarget(Number(e.target.value))
               setPath(null)
             }}
-            aria-label="Backup folder"
+            aria-label="Backed-up folder"
           >
             {targets.map((x, i) => (
               <option key={x.parentPath} value={i}>
-                {x.parentPath}
+                {x.localPath}
               </option>
             ))}
           </select>
@@ -264,132 +254,137 @@ function Folders({ targets }: { targets: Target[] }) {
             </button>
           </span>
         ))}
+        {self && (
+          <span className="ml-2">
+            <FolderPill state={self.state} children={self.children} synced={self.synced} />
+          </span>
+        )}
         <span className="flex-1" />
-        {q.data?.entryId && (
-          <Link className="btn-ghost px-2 py-1 text-xs" to={`/browse/${q.data.entryId}`}>
+        {self && (
+          <Link className="btn-ghost px-2 py-1 text-xs" to={`/browse/${self.entryId}`}>
             Open in Browse
           </Link>
         )}
       </div>
+      {self && (
+        <p className="mb-3 text-xs muted">
+          {count(self.synced)} of {count(self.children)} direct items are on the backup — a folder is synchronized at {threshold}% or when it is identical.
+        </p>
+      )}
       {q.isLoading ? (
         <Loading />
       ) : q.error ? (
         <ErrorBox error={q.error} />
-      ) : !q.data?.folders.length && !q.data?.here ? (
+      ) : !q.data?.folders.length && !q.data?.files.length ? (
         <Empty>Nothing here.</Empty>
       ) : (
-        <div className="card divide-y divide-line/60">
-          {q.data.folders.map((f) => (
-            <button key={f.path} className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-accent-faint" onClick={() => setPath(f.path)}>
-              <span className="w-5 shrink-0 text-center">📁</span>
-              <span className="min-w-0 flex-1">
-                <span className="flex flex-wrap items-baseline gap-2">
-                  <span className="truncate text-sm font-medium">{f.name}</span>
-                  <CountText c={f.counts} />
-                  {!f.entryId && <span className="text-xs text-amber">folder missing here</span>}
-                </span>
-                <ShareBar value={f.counts.size} max={max} className="mt-1 max-w-md" />
-              </span>
-              <span className="text-xs muted">{count(f.counts.files)} files</span>
-              <span className="w-20 text-right text-sm font-semibold tabular">{bytes(f.counts.size)}</span>
-            </button>
-          ))}
-          {q.data.here && (
-            <div className="flex items-center gap-3 px-3 py-2 text-sm">
-              <span className="w-5 shrink-0 text-center">📄</span>
-              <span className="min-w-0 flex-1">
-                <span className="mr-2 muted">Files directly in this folder</span>
-                <CountText c={q.data.here} />
-              </span>
-              <span className="text-xs muted">{count(q.data.here.files)} files</span>
-              <span className="w-20 text-right font-semibold tabular">{bytes(q.data.here.size)}</span>
+        <>
+          {q.data.folders.length > 0 && (
+            <div className="card mb-4 divide-y divide-line/60">
+              {q.data.folders.map((f) => (
+                <button key={f.path} className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-accent-faint" onClick={() => setPath(f.path)}>
+                  <span className="w-5 shrink-0 text-center">📁</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-baseline gap-2">
+                      <span className="truncate text-sm font-medium">{f.name}</span>
+                      <FolderPill state={f.state} children={f.children} synced={f.synced} />
+                    </span>
+                    <ShareBar value={f.size} max={max} className="mt-1 max-w-md" />
+                  </span>
+                  <span className="text-xs muted">{count(f.children)} items</span>
+                  <span className="w-20 text-right text-sm font-semibold tabular">{bytes(f.size)}</span>
+                </button>
+              ))}
             </div>
           )}
-        </div>
+          {q.data.files.length > 0 && (
+            <Section title="Files directly in this folder">
+              <p className="mb-2 text-xs muted">
+                {FILE_STATES.filter((x) => q.data!.files.some((f) => f.state === x.id))
+                  .map((x) => `${count(q.data!.files.find((f) => f.state === x.id)!.files)} ${x.label.toLowerCase()}`)
+                  .join(' · ')}
+              </p>
+              <FileList rootId={t.rootId!} path={current} direct onOpen={setPreview} />
+            </Section>
+          )}
+        </>
+      )}
+      <EntryDrawer id={preview} onClose={() => setPreview(null)} />
+    </>
+  )
+}
+
+function detail(f: FileRow) {
+  switch (f.state) {
+    case 'corrupt':
+      return f.parentSize !== undefined && f.parentSize !== f.size ? `backup has ${bytes(f.parentSize)}, here ${bytes(f.size)}` : 'same size, other content hash on the backup'
+    case 'missing':
+      return `not on the backup${f.parentPath ? ` (${f.parentPath})` : ''}`
+    case 'unsynced':
+      return 'not on the backup; its folder is not synchronized'
+    default:
+      return f.verified ? 'same content hash on the backup' : 'on the backup'
+  }
+}
+
+const STATE_TONE: Record<FileState, string> = { synced: 'chip', corrupt: 'rounded bg-danger/10 px-1.5 text-xs text-danger', missing: 'pill-amber', unsynced: 'pill-muted' }
+
+function FileList({ state, rootId, path, direct, q, onOpen }: { state?: FileState; rootId?: number; path?: string; direct?: boolean; q?: string; onOpen: (id: number) => void }) {
+  const [pages, setPages] = useState(1)
+  const r = useQuery({
+    queryKey: ['parent', 'files', state, rootId, path, direct, q, pages],
+    queryFn: () => api<{ total: number; totalSize: number; items: FileRow[] }>('/integrations/parent/files', { query: { state, rootId, path, direct, q, limit: 200 * pages } }),
+  })
+  if (r.isLoading) return <Loading />
+  if (r.error) return <ErrorBox error={r.error} />
+  if (!r.data?.items.length) return <Empty>No files.</Empty>
+  return (
+    <>
+      <div className="divide-y divide-line/60">
+        {r.data.items.map((f) => (
+          <button key={f.id} className="flex w-full items-center gap-3 px-1 py-1.5 text-left text-sm hover:bg-accent-faint" onClick={() => onOpen(f.entryId)}>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate" title={f.parentPath}>
+                {f.relPath}
+              </span>
+              <span className={clsx('block truncate text-xs', f.state === 'corrupt' ? 'text-danger' : 'muted')}>{detail(f)}</span>
+            </span>
+            {!state && <span className={STATE_TONE[f.state]}>{FILE_STATES.find((x) => x.id === f.state)?.label}</span>}
+            <span className="w-20 text-right tabular">{bytes(f.size)}</span>
+          </button>
+        ))}
+      </div>
+      {r.data.total > r.data.items.length && (
+        <button className="btn-ghost mt-2" onClick={() => setPages(pages + 1)}>
+          Show more ({count(r.data.total - r.data.items.length)} left)
+        </button>
       )}
     </>
   )
 }
 
-function detail(f: FileRow, parent: string) {
-  switch (f.state) {
-    case 'corrupt':
-      return f.side === 'source' ? `damaged on ${parent} — this copy is the good one` : f.side === 'backup' ? 'this backup copy is damaged' : 'same size and date, different content'
-    case 'outdated':
-      return `${parent}: ${bytes(f.size)}, ${date(f.mtime)} · here: ${bytes(f.localSize)}, ${date(f.localMTime)}`
-    case 'missing':
-      return f.relPath ? `expected at ${f.relPath}` : 'no folder here for it'
-    case 'extra':
-      return `not on ${parent}`
-    default:
-      return date(f.mtime)
-  }
-}
-
-function Files({ state, parent }: { state: State; parent: string }) {
+function Files({ state }: { state: FileState }) {
   const [q, setQ] = useState('')
-  const [pages, setPages] = useState(1)
   const [preview, setPreview] = useState<number | null>(null)
-  const [plan, setPlan] = useState(false)
-  const r = useQuery({
-    queryKey: ['parent', 'files', state, q, pages],
-    queryFn: () => api<{ total: number; totalSize: number; items: FileRow[] }>('/integrations/parent/files', { query: { state, q, limit: 200 * pages } }),
+  const totals = useQuery({
+    queryKey: ['parent', 'files', state, q, 'totals'],
+    queryFn: () => api<{ total: number; totalSize: number }>('/integrations/parent/files', { query: { state, q, limit: 1 } }),
   })
-  const info = stateInfo(state)
-  const ids = r.data?.items.flatMap((f) => (f.entryId ? [f.entryId] : [])) ?? []
   return (
     <>
-      <p className="mb-3 text-sm muted">{info?.hint}</p>
+      <p className="mb-3 text-sm muted">{FILE_STATES.find((x) => x.id === state)?.hint}</p>
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <input className="input max-w-xs" placeholder="Path…" value={q} onChange={(e) => setQ(e.target.value)} />
-        {r.data && (
-          <span className="flex-1 text-sm muted">
-            {count(r.data.total)} files · {bytes(r.data.totalSize)}
+        {totals.data && (
+          <span className="text-sm muted">
+            {count(totals.data.total)} files · {bytes(totals.data.totalSize)}
           </span>
         )}
-        {state === 'extra' && ids.length > 0 && (
-          <button className="btn-secondary" onClick={() => setPlan(true)} title="Files the parent no longer has">
-            Clean up shown…
-          </button>
-        )}
       </div>
-      {r.isLoading ? (
-        <Loading />
-      ) : r.error ? (
-        <ErrorBox error={r.error} />
-      ) : !r.data?.items.length ? (
-        <Empty>No files.</Empty>
-      ) : (
-        <>
-          <div className="card divide-y divide-line/60">
-            {r.data.items.map((f) => (
-              <button
-                key={f.id}
-                className="flex w-full items-center gap-3 px-3 py-1.5 text-left text-sm enabled:hover:bg-accent-faint"
-                disabled={!f.entryId}
-                onClick={() => f.entryId && setPreview(f.entryId)}
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate" title={f.sourcePath}>
-                    {f.relPath ?? f.sourcePath}
-                  </span>
-                  <span className={clsx('block truncate text-xs', state === 'corrupt' ? 'text-danger' : 'muted')}>{detail(f, parent)}</span>
-                </span>
-                <span className="w-20 text-right tabular">{bytes(f.size)}</span>
-              </button>
-            ))}
-          </div>
-          {r.data.total > r.data.items.length && (
-            <button className="btn-ghost mt-2" onClick={() => setPages(pages + 1)}>
-              Show more
-            </button>
-          )}
-        </>
-      )}
+      <div className="card px-3 py-1">
+        <FileList state={state} q={q} onOpen={setPreview} />
+      </div>
       <EntryDrawer id={preview} onClose={() => setPreview(null)} />
-      {state === 'extra' && (
-        <PlanDialog open={plan} onClose={() => setPlan(false)} entryIds={ids} count={ids.length} size={r.data?.items.reduce((a, f) => a + f.size, 0) ?? 0} title={`Only in the backup: ${count(ids.length)} files`} />
-      )}
     </>
   )
 }

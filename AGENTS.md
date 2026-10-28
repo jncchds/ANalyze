@@ -48,10 +48,10 @@ SQLite (WAL) in /data/analyze.db
 - **IntegrationItems** — files/folders known to every `ItemIntegration` plugin (`Source`, `Kind`, `ExternalId`, `Title`, `GroupKey`/`GroupTitle`,
   `ExternalPath`, `Size`, `IsDir`, `State`, `Detail`, `AddedAt`/`LastUsedAt`, `PlayCount`, `Url`, matched `EntryId` + `MatchedBy`). A plugin replaces
   its own rows on each sync.
-- **BackupFiles** — written by the `parent` integration (this instance backs up another ANalyze): one row per parent file (`State` verified/matched/
-  outdated/corrupt/missing, `SourcePath`, the parent's `Size`/`MTime`/`Hash`, the local `EntryId`/`LocalRootId`/`LocalRelPath` where the copy is or
-  should be, `LocalSize`/`LocalMTime`/`LocalHash`, `Side` source/backup for corrupt files) plus `extra` rows for local files in the backup folders that
-  the parent does not have. Replaced on each sync; `Settings["backup:parent"]` keeps the last `BackupSnapshot` (parent info, targets, detected mappings).
+- **BackupFiles** — written by the `parent` integration (the parent is this instance's backup server): one row per local file and folder inside
+  the backed-up folders (`State`: files synced/corrupt/missing/unsynced, folders synced/unsynced; `IsDir`, `EntryId`, `LocalRootId`/`LocalRelPath`,
+  `Size`, `ParentSize` when the parent has the path, `Verified` = equal content hashes, folders' `Children`/`SyncedChildren`). Replaced on each sync;
+  `Settings["backup:parent"]` keeps the last `BackupSnapshot` (parent info, targets, mappings used, detected mappings).
 - **Settings** — key/value JSON: `app` (`AppSettings`), `integration:<id>` (`IntegrationSettings`, secrets encrypted with data protection).
 
 Times are unix seconds in Entries; `DateTimeOffset` columns are stored as binary longs (`DateTimeOffsetToBinaryConverter`, set globally) so
@@ -152,20 +152,27 @@ such an entry (hard links are allowed — the content stays).
 
 ### ANalyze parent (backups between instances)
 
-A parent–child link: the **child** holds a backup of the **parent**'s files and enables the `parent` integration (URL, the parent's
-`ANalyze__ApiToken`, mappings parent path → local path, date tolerance). The parent needs nothing but a token; it always serves
-`GET /api/v1/backup/info` (version, hash algorithm, `HashAllFiles`, roots with file/hash counts) and `GET /api/v1/backup/files?rootId=&after=&limit=`
-(files of one root in `RelPath` order, keyset-paged on the unique index; short JSON names `p s m h c`). Both are behind the normal auth policy.
+A parent–child link: the **parent** is the ANalyze on the backup server, the **child** is the instance whose files are backed up there; the child
+enables the `parent` integration (URL, the parent's `ANalyze__ApiToken`, mappings parent path → local path). The parent needs nothing but a token;
+it always serves `GET /api/v1/backup/info` (version, hash algorithm, `HashAllFiles`, roots with file/hash counts) and
+`GET /api/v1/backup/files?rootId=&after=&limit=` (files and folders of one root in `RelPath` order, keyset-paged on the unique index; short JSON
+names `p s m h c d`). Both are behind the normal auth policy.
 
-`BackupSync` (child): per parent root, if fewer than a fifth of the first 200 files exist at the mapped path, a mapping is detected with
-`PathMatcher.Detect` (name + size) and used for this sync. Each parent file is looked up by `(RootId, RelPath)` and classified (`Classify`):
-missing; empty on both sides or equal hashes → verified; different hashes → corrupt when size and mtime (± tolerance) are equal, else outdated;
-no hash on one side → matched (same size and date) or outdated. For corrupt files the `Side` comes from either side's own `CorruptAt`, else from
-the previous row (the hash both agreed on when verified). Rows go to a temp table; local files inside the target folders that no parent file
-claimed become `extra`; then `BackupFiles` is replaced in one transaction. `BackupAnnotations` labels every local folder with a summary
-(`backup` kind, states ok/missing/corrupt/extra), the target folders (`backup-root`), and problem files (corrupt/outdated/extra, at most 50k);
-fine files are not labelled one by one. `GET /entries/{id}` returns the file's `backup` row. Plugin routes: `summary`, `folders?rootId&path`
-(sub-folder counts per state), `files?state&side&rootId&path&q&sort`, `suggest-mappings`. UI: `integrations/parent/BackupPage.tsx`.
+Rules (`BackupSync`, child side):
+- a **file is synchronized** when the parent has a file at the mapped path;
+- a **folder is synchronized** when at least 80% (`BackupStates.FolderThreshold`) of its direct files and sub-folders, by count, are synchronized,
+  or when it is identical to the parent's folder (same entries, every file same size and hash; this is what makes an empty folder synchronized);
+- inside a synchronized folder (the file's direct parent), a file is **corrupt** when the parent's copy differs in size or — when both hashes are
+  known — hash, and **missing** when the parent does not have it; elsewhere a file the parent lacks is **unsynced**.
+
+Implementation: the parent's tree goes into a temp table at the local paths it maps to (`ParentStage`, indexed by path and parent path). The
+backed-up folders are the parent roots that map to a local folder, else each mapping that starts inside a root (the backup may live in a sub-folder
+on the server). If fewer than a fifth of a root's first 200 files are found at the mapped path, a mapping is detected with `PathMatcher.Detect`
+(name + size). Local entries in those folders (outermost only, no symlinks) are loaded with their parent counterpart and processed deepest first,
+so each folder sees its children's results; then `BackupFiles` is replaced in one transaction. `BackupAnnotations` labels every folder (Synced /
+Not synced · N%, `backup` kind), the backed-up folders (`backup-root`) and corrupt/missing files (at most 50k); other files are not labelled one by
+one. `GET /entries/{id}` returns the entry's `backup` row. Plugin routes: `summary`, `folders?rootId&path` (the folder, its sub-folders, its direct
+files by state), `files?state&rootId&path&direct&q&sort` (with the parent path, mapped back), `suggest-mappings`. UI: `integrations/parent/BackupPage.tsx`.
 
 ### Docker
 

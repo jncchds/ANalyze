@@ -285,31 +285,27 @@ public sealed class IntegrationItem
 }
 
 /// <summary>
-/// How one file of the parent ANalyze (the instance this one backs up) compares with its copy here, or a file that is only here.
-/// Written by the "parent" integration; replaced on each sync.
+/// How a local file or folder compares with the parent ANalyze (the backup server): written by the "parent" integration for every
+/// entry inside the backup folders, replaced on each sync.
 /// </summary>
 public sealed class BackupFile
 {
     public long Id { get; set; }
-    /// <summary>verified, matched, outdated, corrupt, missing or extra (see <c>BackupStates</c>).</summary>
+    /// <summary>Files: synced, corrupt, missing or unsynced. Folders: synced or unsynced (see <c>BackupStates</c>).</summary>
     public required string State { get; set; }
-    /// <summary>Local copy; null when missing here.</summary>
-    public long? EntryId { get; set; }
-    /// <summary>Where the copy is (or should be) here; null when the parent's folder maps to no local root.</summary>
-    public int? LocalRootId { get; set; }
-    public string? LocalRelPath { get; set; }
-    /// <summary>Path on the parent; null for files that exist only here.</summary>
-    public string? SourcePath { get; set; }
-    /// <summary>The parent's size and mtime (for files only here: the local ones).</summary>
+    public bool IsDir { get; set; }
+    public long EntryId { get; set; }
+    public int LocalRootId { get; set; }
+    public required string LocalRelPath { get; set; }
+    /// <summary>Local size (folders: total size).</summary>
     public long Size { get; set; }
-    public long MTime { get; set; }
-    /// <summary>The parent's content hash, when it has one.</summary>
-    public string? Hash { get; set; }
-    public long? LocalSize { get; set; }
-    public long? LocalMTime { get; set; }
-    public string? LocalHash { get; set; }
-    /// <summary>For corrupt files: which copy changed — source (the parent's), backup (this one) or null when unknown.</summary>
-    public string? Side { get; set; }
+    /// <summary>Size on the parent; null when the parent has nothing at that path.</summary>
+    public long? ParentSize { get; set; }
+    /// <summary>Files: both content hashes exist and are equal.</summary>
+    public bool Verified { get; set; }
+    /// <summary>Folders: direct files and sub-folders here, and how many of them are synchronized.</summary>
+    public int Children { get; set; }
+    public int SyncedChildren { get; set; }
 }
 
 public sealed class Setting

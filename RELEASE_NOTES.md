@@ -2,7 +2,7 @@
 
 ## v0.1.4 — 2026-10-28
 
-- feat: "ANalyze parent" integration links two ANalyze instances when one NAS backs up another: the backup shows which of the main NAS's files are backed up (verified by content or by size and date), outdated, corrupt — and which copy changed — missing, or only in the backup, per folder in Browse and on a Backup page
+- feat: "ANalyze parent" integration links two ANalyze instances when one NAS is backed up to another: shows which files and folders are synchronized to the backup server (a folder counts at 80% of its direct content, or when identical) and which files in synchronized folders are corrupted (other size or hash there) or missing there — per folder in Browse and on a Backup page
 - feat: optional hashing of every file and periodic re-verification that flags files whose content changed while size and date stayed the same (possible corruption) — new insight, search filter and a notice in the file details
 - fix: with every file hashed, "Has duplicates" search and dedupe plans still only consider files that have another copy
 

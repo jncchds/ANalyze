@@ -170,7 +170,7 @@ const KIND_ICON: Record<string, string> = {
 /** Badge tone by annotation state: needs attention (amber), damaged (red), otherwise the accent. */
 function annotationTone(state?: string) {
   if (state === 'corrupt') return 'bg-danger/10 text-danger'
-  if (state === 'unwatched' || state === 'missing' || state === 'outdated' || state === 'extra') return 'bg-amber-faint text-amber'
+  if (state === 'unwatched' || state === 'missing' || state === 'unsynced') return 'bg-amber-faint text-amber'
   return 'bg-accent-faint text-accent'
 }
 

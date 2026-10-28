@@ -10,39 +10,43 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace ANalyze.Tests;
 
-public class BackupClassifyTests
+public class BackupRuleTests
 {
-    private static LocalFile L(long size, long mtime, string? hash = null, long? corrupt = null) => new(1, size, mtime, hash, corrupt);
-
-    private static (string, string?) C(ExportFile p, LocalFile? l, PreviousRow? prev = null) => BackupSync.Classify(p, l, 2, true, () => prev);
-
     [Fact]
-    public void States_from_size_date_and_hash()
+    public void Folder_needs_80_percent_of_direct_content_or_identical()
     {
-        Assert.Equal((BackupStates.Missing, null), C(new("a", 10, 100), null));
-        Assert.Equal((BackupStates.Verified, null), C(new("a", 10, 100, "h"), L(10, 500, "h")));
-        Assert.Equal((BackupStates.Matched, null), C(new("a", 10, 100), L(10, 101, "h")));
-        Assert.Equal((BackupStates.Outdated, null), C(new("a", 10, 100), L(11, 100)));
-        Assert.Equal((BackupStates.Outdated, null), C(new("a", 10, 200, "h"), L(10, 100, "x")));
-        Assert.Equal((BackupStates.Verified, null), C(new("a", 0, 100), L(0, 900)));
-        Assert.Equal(BackupStates.Corrupt, C(new("a", 10, 100, "h"), L(10, 100, "x")).Item1);
+        Assert.True(BackupSync.FolderSynced(5, 4, false));
+        Assert.False(BackupSync.FolderSynced(5, 3, false));
+        Assert.True(BackupSync.FolderSynced(10, 10, false));
+        Assert.False(BackupSync.FolderSynced(0, 0, false));
+        Assert.True(BackupSync.FolderSynced(0, 0, true));
     }
 
     [Fact]
-    public void Corrupt_side_from_own_verification_or_history()
+    public void File_states()
     {
-        // The parent's own verification flagged its copy.
-        Assert.Equal(BackupStates.SideSource, C(new("a", 10, 100, "new", 5), L(10, 100, "old")).Item2);
-        Assert.Equal(BackupStates.SideBackup, C(new("a", 10, 100, "old"), L(10, 100, "new", 5)).Item2);
+        Assert.Equal(BackupStates.Synced, BackupSync.FileState(onParent: true, differs: false, folderSynced: true));
+        Assert.Equal(BackupStates.Corrupt, BackupSync.FileState(onParent: true, differs: true, folderSynced: true));
+        Assert.Equal(BackupStates.Missing, BackupSync.FileState(onParent: false, differs: false, folderSynced: true));
+        // Outside synchronized folders a file is only synchronized or not.
+        Assert.Equal(BackupStates.Synced, BackupSync.FileState(onParent: true, differs: true, folderSynced: false));
+        Assert.Equal(BackupStates.Unsynced, BackupSync.FileState(onParent: false, differs: false, folderSynced: false));
+    }
 
-        // Both agreed on "old" last time: whoever no longer has it changed.
-        var agreed = new PreviousRow(BackupStates.Verified, "old", "old", null);
-        Assert.Equal(BackupStates.SideBackup, C(new("a", 10, 100, "old"), L(10, 100, "new"), agreed).Item2);
-        Assert.Equal(BackupStates.SideSource, C(new("a", 10, 100, "new"), L(10, 100, "old"), agreed).Item2);
+    [Fact]
+    public void Differs_by_size_or_known_hashes()
+    {
+        Assert.True(BackupSync.Differs(10, null, 11, null));
+        Assert.True(BackupSync.Differs(10, "a", 10, "b"));
+        Assert.False(BackupSync.Differs(10, "a", 10, null));
+        Assert.False(BackupSync.Differs(10, "a", 10, "a"));
+    }
 
-        // Still the same pair as last time: the side found then is kept.
-        Assert.Equal(BackupStates.SideSource, C(new("a", 10, 100, "new"), L(10, 100, "old"), new PreviousRow(BackupStates.Corrupt, "new", "old", BackupStates.SideSource)).Item2);
-        Assert.Null(C(new("a", 10, 100, "new"), L(10, 100, "old")).Item2);
+    [Fact]
+    public void Paths_map_back_to_the_parent()
+    {
+        Assert.Equal("/backup/nas1/docs/a.txt", BackupSync.ToParentPath("/library/docs/a.txt", [new PathMapping("/backup/nas1", "/library")]));
+        Assert.Null(BackupSync.ToParentPath("/other/a.txt", [new PathMapping("/backup/nas1", "/library")]));
     }
 
     [Fact]
@@ -55,46 +59,18 @@ public class BackupClassifyTests
 
 public class BackupSyncTests
 {
-    private static void Write(string root, string rel, string content, DateTime mtime)
+    private static void Write(string root, string rel, string content)
     {
         var p = Path.Combine(root, rel);
         Directory.CreateDirectory(Path.GetDirectoryName(p)!);
         File.WriteAllText(p, content);
-        File.SetLastWriteTimeUtc(p, mtime);
     }
 
-    [Fact]
-    public async Task Export_compare_annotate_and_verify()
+    /// <summary>Pages of the export of this instance, limited to one folder that plays the parent's tree.</summary>
+    private static async Task<(ExportInfo Info, List<ExportFile> Files)> ParentFromFolder(HttpClient http, string folder, string parentPath)
     {
-        await using var app = new TestApp();
-        using var http = app.CreateClient();
-        var settings = app.Services.GetRequiredService<SettingsStore>();
-        await settings.SaveAsync(settings.Current with { HashAllFiles = true });
-
-        // "src" plays the parent's files, "bak" their backup here.
-        var t = new DateTime(2024, 5, 1, 12, 0, 0, DateTimeKind.Utc);
-        Write(app.Library, "src/docs/a.txt", "same content", t);
-        Write(app.Library, "bak/docs/a.txt", "same content", t);
-        Write(app.Library, "src/docs/b.txt", "good bytes!", t);
-        Write(app.Library, "bak/docs/b.txt", "BAD bytes!!", t);
-        Write(app.Library, "src/c.txt", "version two, longer", t.AddDays(2));
-        Write(app.Library, "bak/c.txt", "version one", t);
-        Write(app.Library, "src/new/d.txt", "not copied yet", t);
-        Write(app.Library, "bak/e.txt", "deleted on the parent", t);
-        await app.ScanAsync(http);
-
-        // Every file has a hash now, but only real copies count as duplicates (IMG_0002 only has a hard link).
-        var dupSearch = await http.GetFromJsonAsync<JsonElement>("/api/v1/search?duplicates=true&q=IMG_0002");
-        Assert.Equal(0, dupSearch.GetProperty("total").GetInt64());
-        var dups = await http.GetFromJsonAsync<JsonElement>("/api/v1/duplicates");
-        Assert.Equal(2, dups.GetProperty("total").GetInt64());
-
         var info = await http.GetFromJsonAsync<ExportInfo>("/api/v1/backup/info", TestApp.Json);
-        Assert.NotNull(info);
-        Assert.True(info.HashAllFiles);
-        var root = Assert.Single(info.Roots);
-
-        // Small pages to exercise paging; the parent's view is the "src" folder under another path.
+        var root = Assert.Single(info!.Roots);
         var all = new List<ExportFile>();
         string? after = null;
         do
@@ -105,56 +81,114 @@ public class BackupSyncTests
         }
         while (after is not null);
 
-        Assert.Contains(all, f => f.P == "src/docs/a.txt" && f.H is not null);
-        var parentFiles = all.Where(f => f.P.StartsWith("src/", StringComparison.Ordinal)).Select(f => f with { P = f.P[4..] }).ToList();
-        var parent = info with { Roots = [root with { Path = "/nas1/data", Files = parentFiles.Count }] };
-        Task<ExportPage> Fetch(int id, string? from, CancellationToken ct) => Task.FromResult(new ExportPage(parentFiles, null));
+        var files = all.Where(f => f.P.StartsWith(folder + "/", StringComparison.Ordinal)).Select(f => f with { P = f.P[(folder.Length + 1)..] }).ToList();
+        return (info with { Roots = [root with { Path = parentPath, Files = files.Count(f => !f.D) }] }, files);
+    }
+
+    [Fact]
+    public async Task Folders_by_share_and_files_by_folder_state()
+    {
+        await using var app = new TestApp();
+        using var http = app.CreateClient();
+        var settings = app.Services.GetRequiredService<SettingsStore>();
+        await settings.SaveAsync(settings.Current with { HashAllFiles = true });
+
+        // "home" is this instance's data, "bk" plays its copy on the backup server (the parent).
+        foreach (var n in "abcde")
+        {
+            Write(app.Library, $"home/docs/{n}.txt", $"doc {n}");
+        }
+
+        Write(app.Library, "bk/docs/a.txt", "doc a");
+        Write(app.Library, "bk/docs/b.txt", "doc b");
+        Write(app.Library, "bk/docs/c.txt", "doc c, longer on the backup");
+        Write(app.Library, "bk/docs/d.txt", "DOC D");
+        for (var i = 1; i <= 5; i++)
+        {
+            Write(app.Library, $"home/photos/p{i}.jpg", $"photo {i}");
+        }
+
+        Write(app.Library, "bk/photos/p1.jpg", "photo 1");
+        Write(app.Library, "home/top.txt", "top");
+        Write(app.Library, "bk/top.txt", "top");
+        Directory.CreateDirectory(Path.Combine(app.Library, "home/empty"));
+        Directory.CreateDirectory(Path.Combine(app.Library, "bk/empty"));
+        Directory.CreateDirectory(Path.Combine(app.Library, "home/empty2"));
+        await app.ScanAsync(http);
+
+        // Every file has a hash now, but only real copies count as duplicates (IMG_0002 only has a hard link).
+        var dupSearch = await http.GetFromJsonAsync<JsonElement>("/api/v1/search?duplicates=true&q=IMG_0002");
+        Assert.Equal(0, dupSearch.GetProperty("total").GetInt64());
+
+        var (parent, files) = await ParentFromFolder(http, "bk", "/backup/nas1");
+        Assert.Contains(files, f => f.P == "empty" && f.D);
+        Assert.Contains(files, f => f.P == "docs/a.txt" && f.H is not null);
 
         var sqlite = app.Services.GetRequiredService<SqliteSetup>();
         var roots = app.Services.GetRequiredService<RootRegistry>();
         BackupSyncResult result;
         using (var conn = sqlite.Open())
         {
-            result = await new BackupSync(conn, roots, 2).RunAsync(parent, [new PathMapping("/nas1/data", app.Library + "/bak")], Fetch, new Progress<IntegrationProgress>(), CancellationToken.None);
+            result = await new BackupSync(conn, roots).RunAsync(parent, [new PathMapping("/backup/nas1", app.Library + "/home")],
+                (_, _, _) => Task.FromResult(new ExportPage(files, null)), new Progress<IntegrationProgress>(), CancellationToken.None);
             BackupAnnotations.Write(conn, "parent", "nas1", result.Targets);
         }
 
-        Assert.Equal(1, result.Counts[BackupStates.Verified]);
-        Assert.Equal(1, result.Counts[BackupStates.Corrupt]);
-        Assert.Equal(1, result.Counts[BackupStates.Outdated]);
-        Assert.Equal(1, result.Counts[BackupStates.Missing]);
-        Assert.Equal(1, result.Counts[BackupStates.Extra]);
-        var target = Assert.Single(result.Targets);
-        Assert.Equal("bak", target.RelPath);
+        Assert.Equal("home", Assert.Single(result.Targets).RelPath);
+        Assert.Equal(4, result.Files[BackupStates.Synced]);   // a, b, p1, top
+        Assert.Equal(2, result.Files[BackupStates.Corrupt]);  // c (size), d (hash)
+        Assert.Equal(1, result.Files[BackupStates.Missing]);  // e
+        Assert.Equal(4, result.Files[BackupStates.Unsynced]); // p2–p5: their folder is not synchronized
 
         using (var conn = sqlite.Open())
         {
-            var missing = Db.Query(conn, "SELECT LocalRelPath, SourcePath FROM BackupFiles WHERE State = 'missing'", r => (r.GetString(0), r.GetString(1))).Single();
-            Assert.Equal(("bak/new/d.txt", "/nas1/data/new/d.txt"), missing);
+            var states = Db.Query(conn, "SELECT LocalRelPath, State, Children, SyncedChildren FROM BackupFiles WHERE IsDir = 1", r => (r.GetString(0), r.GetString(1), r.GetInt32(2), r.GetInt32(3)))
+                .ToDictionary(x => x.Item1);
+            Assert.Equal(("home/docs", "synced", 5, 4), states["home/docs"]);      // 80%
+            Assert.Equal(("home/photos", "unsynced", 5, 1), states["home/photos"]);
+            Assert.Equal("synced", states["home/empty"].Item2);                    // identical (empty on both)
+            Assert.Equal("unsynced", states["home/empty2"].Item2);                 // not on the parent
+            Assert.Equal(("home", "unsynced", 5, 3), states["home"]);              // docs, empty, top of 5
+
             var labels = Db.Query(conn, "SELECT e.RelPath, a.Kind, a.Label FROM Annotations a JOIN Entries e ON e.Id = a.EntryId WHERE a.Source = 'parent'",
                 r => (Path: r.GetString(0), Kind: r.GetString(1), Label: r.GetString(2)));
-            Assert.Contains(labels, l => l.Path == "bak" && l.Kind == BackupAnnotations.RootKind && l.Label == "Backup of nas1:/nas1/data");
-            Assert.Contains(labels, l => l.Path == "bak" && l.Kind == BackupAnnotations.Kind && l.Label.Contains("1 missing") && l.Label.Contains("1 corrupt"));
-            Assert.Contains(labels, l => l.Path == "bak/docs/b.txt" && l.Label.StartsWith("Content differs", StringComparison.Ordinal));
-            Assert.Contains(labels, l => l.Path == "bak/e.txt" && l.Label == "Only in the backup");
-            Assert.DoesNotContain(labels, l => l.Path == "bak/docs/a.txt");
+            Assert.Contains(labels, l => l.Path == "home" && l.Kind == BackupAnnotations.RootKind && l.Label == "Backed up to nas1:/backup/nas1");
+            Assert.Contains(labels, l => l.Path == "home/docs" && l.Label == "Synced");
+            Assert.Contains(labels, l => l.Path == "home/photos" && l.Label == "Not synced · 20%");
+            Assert.Contains(labels, l => l.Path == "home/docs/d.txt" && l.Label.StartsWith("Corrupted", StringComparison.Ordinal));
+            Assert.Contains(labels, l => l.Path == "home/docs/e.txt" && l.Label == "Missing from the backup");
+            Assert.DoesNotContain(labels, l => l.Path == "home/photos/p2.jpg");
         }
 
         // Plugin views.
-        var folders = await http.GetFromJsonAsync<JsonElement>($"/api/v1/integrations/parent/folders?rootId={target.RootId}&path=bak");
-        Assert.Contains(folders.GetProperty("folders").EnumerateArray(), f => f.GetProperty("name").GetString() == "docs");
+        var folder = await http.GetFromJsonAsync<JsonElement>($"/api/v1/integrations/parent/folders?rootId=1&path=home");
+        Assert.Equal("unsynced", folder.GetProperty("self").GetProperty("state").GetString());
+        Assert.Contains(folder.GetProperty("folders").EnumerateArray(), f => f.GetProperty("name").GetString() == "docs" && f.GetProperty("state").GetString() == "synced");
         var corrupt = await http.GetFromJsonAsync<JsonElement>("/api/v1/integrations/parent/files?state=corrupt");
-        Assert.Equal(1, corrupt.GetProperty("total").GetInt64());
+        Assert.Equal(2, corrupt.GetProperty("total").GetInt64());
         var entryId = corrupt.GetProperty("items")[0].GetProperty("entryId").GetInt64();
         var details = await http.GetFromJsonAsync<JsonElement>($"/api/v1/entries/{entryId}");
         Assert.Equal("corrupt", details.GetProperty("backup").GetProperty("state").GetString());
+    }
 
-        // Bit rot in the backup copy of a.txt: same size and mtime, other bytes. Verification finds it.
-        var aPath = Path.Combine(app.Library, "bak/docs/a.txt");
-        File.WriteAllText(aPath, "SAME content");
-        File.SetLastWriteTimeUtc(aPath, t);
+    [Fact]
+    public async Task Verification_flags_content_that_changed_silently()
+    {
+        await using var app = new TestApp();
+        using var http = app.CreateClient();
+        var settings = app.Services.GetRequiredService<SettingsStore>();
+        await settings.SaveAsync(settings.Current with { HashAllFiles = true });
+        var path = Path.Combine(app.Library, "docs/a.txt");
+        var t = new DateTime(2024, 5, 1, 12, 0, 0, DateTimeKind.Utc);
+        Write(app.Library, "docs/a.txt", "same content");
+        File.SetLastWriteTimeUtc(path, t);
+        await app.ScanAsync(http);
+
+        // Bit rot: same size and mtime, other bytes.
+        File.WriteAllText(path, "SAME content");
+        File.SetLastWriteTimeUtc(path, t);
         await settings.SaveAsync(settings.Current with { VerifyAfterDays = 1 });
-        using (var conn = sqlite.Open())
+        using (var conn = app.Services.GetRequiredService<SqliteSetup>().Open())
         {
             Db.Query(conn, "UPDATE Entries SET HashedAt = 1 WHERE IsDir = 0 RETURNING Id", r => r.GetInt64(0));
         }
@@ -162,16 +196,6 @@ public class BackupSyncTests
         await app.ScanAsync(http);
         var flagged = await http.GetFromJsonAsync<JsonElement>("/api/v1/search?corrupt=true");
         Assert.Equal("a.txt", Assert.Single(flagged.GetProperty("items").EnumerateArray()).GetProperty("name").GetString());
-
-        // The next comparison knows it is the backup copy that changed.
-        using (var conn = sqlite.Open())
-        {
-            result = await new BackupSync(conn, roots, 2).RunAsync(parent, [new PathMapping("/nas1/data", app.Library + "/bak")], Fetch, new Progress<IntegrationProgress>(), CancellationToken.None);
-            var side = Db.Query(conn, "SELECT Side FROM BackupFiles WHERE LocalRelPath = 'bak/docs/a.txt'", r => r.IsDBNull(0) ? null : r.GetString(0)).Single();
-            Assert.Equal(BackupStates.SideBackup, side);
-        }
-
-        Assert.Equal(2, result.Counts[BackupStates.Corrupt]);
     }
 
     [Fact]
@@ -179,19 +203,22 @@ public class BackupSyncTests
     {
         await using var app = new TestApp();
         using var http = app.CreateClient();
-        var t = new DateTime(2024, 5, 1, 12, 0, 0, DateTimeKind.Utc);
         for (var i = 0; i < 4; i++)
         {
-            Write(app.Library, $"copy/music/song{i}.mp3", new string('x', 100 + i), t);
+            Write(app.Library, $"copy/music/song{i}.mp3", new string('x', 100 + i));
         }
 
         await app.ScanAsync(http);
-        var files = Enumerable.Range(0, 4).Select(i => new ExportFile($"music/song{i}.mp3", 100 + i, new DateTimeOffset(t).ToUnixTimeSeconds())).ToList();
-        var info = new ExportInfo("ANalyze", "test", "nas1", BackupExport.HashAlgorithm, false, 0, [new ExportRoot(1, "/srv/media", "media", 4, 0, 0, null)]);
+        // On the server the copy lives in a sub-folder of its root: /srv/media is this instance's "copy" folder.
+        var files = Enumerable.Range(0, 4).Select(i => new ExportFile($"media/music/song{i}.mp3", 100 + i, 0))
+            .Prepend(new ExportFile("media/music", 406, 0, D: true)).Prepend(new ExportFile("media", 406, 0, D: true)).ToList();
+        var info = new ExportInfo("ANalyze", "test", "nas1", BackupExport.HashAlgorithm, false, 0, [new ExportRoot(1, "/srv", "srv", 4, 0, 0, null)]);
         using var conn = app.Services.GetRequiredService<SqliteSetup>().Open();
-        var result = await new BackupSync(conn, app.Services.GetRequiredService<RootRegistry>(), 2)
+        var result = await new BackupSync(conn, app.Services.GetRequiredService<RootRegistry>())
             .RunAsync(info, [], (_, _, _) => Task.FromResult(new ExportPage(files, null)), new Progress<IntegrationProgress>(), CancellationToken.None);
-        Assert.Equal(4, result.Counts[BackupStates.Matched]);
         Assert.Equal(new PathMapping("/srv/media", app.Library + "/copy"), Assert.Single(result.Detected));
+        Assert.Equal("/srv/media", Assert.Single(result.Targets).ParentPath);
+        Assert.Equal(4, result.Files[BackupStates.Synced]);
+        Assert.Equal(2, result.SyncedFolders); // copy and copy/music
     }
 }

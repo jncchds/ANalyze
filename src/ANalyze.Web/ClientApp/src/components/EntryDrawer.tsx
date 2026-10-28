@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import clsx from 'clsx'
 import { api, fileUrl } from '../api/client'
 import { useCategories, useCategoryMap, useSummary } from '../api/hooks'
 import type { Annotation, Entry } from '../api/types'
@@ -18,16 +19,25 @@ interface EntryDetail {
   linkTarget?: string
   ai?: { id: number; category: string; tags: string[]; confidence: number; reason?: string; applied: boolean; model: string }
   annotations: Annotation[]
-  /** How this file compares with the parent ANalyze, when this instance is its backup. */
-  backup?: { state: string; side?: string; sourcePath?: string; size: number; mTime: number; parentHashed: boolean }
+  /** How this entry compares with the backup server (the parent ANalyze integration). */
+  backup?: { state: string; isDir: boolean; parentSize?: number; verified: boolean; children: number; syncedChildren: number }
 }
 
-const BACKUP_TEXT: Record<string, string> = {
-  verified: 'Backed up — same content as on the parent (hash verified)',
-  matched: 'Backed up — same size and date as on the parent (content not compared)',
-  outdated: 'Another version than on the parent',
-  corrupt: 'Same size and date as on the parent, but different content',
-  extra: 'Only in the backup — not on the parent',
+function backupText(b: NonNullable<EntryDetail['backup']>, size: number) {
+  if (b.isDir)
+    return b.state === 'synced'
+      ? `Synchronized to the backup${b.children ? ` — ${b.syncedChildren} of ${b.children} direct items there` : ' (identical, empty)'}`
+      : `Not synchronized — ${b.syncedChildren} of ${b.children} direct items on the backup`
+  switch (b.state) {
+    case 'synced':
+      return b.verified ? 'On the backup — same content hash' : 'On the backup'
+    case 'corrupt':
+      return b.parentSize !== undefined && b.parentSize !== size ? `Corrupted — the backup has ${bytes(b.parentSize)}` : 'Corrupted — the backup has other content (same size)'
+    case 'missing':
+      return 'Missing from the backup (its folder is synchronized)'
+    default:
+      return 'Not on the backup'
+  }
 }
 
 /** Side panel with details, category, integrations, actions and the preview/text/hex/metadata viewers. */
@@ -136,12 +146,8 @@ export function EntryDrawer({ id, onClose }: { id: number | null; onClose: () =>
                   </div>
                 )}
                 {d.backup && (
-                  <div className={d.backup.state === 'verified' || d.backup.state === 'matched' ? 'text-xs text-accent' : 'text-xs text-amber'}>
-                    🛟 {BACKUP_TEXT[d.backup.state] ?? d.backup.state}
-                    {d.backup.state === 'corrupt' && d.backup.side === 'source' && ' — the parent\'s copy changed; this one is the good copy'}
-                    {d.backup.state === 'corrupt' && d.backup.side === 'backup' && ' — this backup copy changed'}
-                    {d.backup.state === 'outdated' && ` (parent: ${bytes(d.backup.size)}, ${date(d.backup.mTime)})`}
-                    {d.backup.sourcePath && <span className="block break-all font-mono muted">{d.backup.sourcePath}</span>}
+                  <div className={clsx('text-xs', d.backup.state === 'synced' ? 'text-accent' : d.backup.state === 'corrupt' ? 'text-danger' : 'text-amber')}>
+                    🛟 {backupText(d.backup, e.size)}
                   </div>
                 )}
                 {!e.isDir && e.hashedAt && !e.corruptAt && <div className="text-xs muted">Content hash checked {date(e.hashedAt)}</div>}

@@ -15,20 +15,21 @@ public sealed record ExportInfo(string App, string? Version, string Host, string
 
 public sealed record ExportRoot(int Id, string Path, string Name, long Files, long Size, long Hashed, DateTimeOffset? LastScanAt);
 
-/// <summary>One file, with short property names because there can be millions.</summary>
+/// <summary>One file or folder, with short property names because there can be millions.</summary>
 /// <param name="P">Path relative to the root.</param>
 /// <param name="S">Size.</param>
 /// <param name="M">Modification time, unix seconds.</param>
 /// <param name="H">Full content hash, when computed.</param>
 /// <param name="C">When the parent found the content changed without a new size or mtime (unix seconds).</param>
-public sealed record ExportFile(string P, long S, long M, string? H = null, long? C = null);
+/// <param name="D">A folder (S is then its total size).</param>
+public sealed record ExportFile(string P, long S, long M, string? H = null, long? C = null, bool D = false);
 
 /// <param name="Next">Pass as <c>after</c> for the next page; null on the last page.</param>
 public sealed record ExportPage(IReadOnlyList<ExportFile> Items, string? Next);
 
 /// <summary>
 /// Read-only API another ANalyze uses to compare its backup with this instance (the parent): <c>GET /api/v1/backup/info</c> and
-/// <c>GET /api/v1/backup/files?rootId=&amp;after=&amp;limit=</c> (files of one root in path order, paged by path).
+/// <c>GET /api/v1/backup/files?rootId=&amp;after=&amp;limit=</c> (files and folders of one root in path order, paged by path).
 /// Protected like the rest of the API; a child authenticates with <c>ANalyze__ApiToken</c>.
 /// </summary>
 public static class BackupExport
@@ -65,10 +66,10 @@ public static class BackupExport
             using var c = sqlite.Open();
             // Keyset paging on the unique (RootId, RelPath) index.
             var items = Db.Query(c, $"""
-                SELECT RelPath, Size, MTime, FullHash, CorruptAt FROM Entries
-                WHERE RootId = $r AND RelPath > $after AND IsDir = 0 AND IsSymlink = 0
+                SELECT RelPath, CASE WHEN IsDir = 1 THEN TotalSize ELSE Size END, MTime, FullHash, CorruptAt, IsDir FROM Entries
+                WHERE RootId = $r AND RelPath > $after AND IsSymlink = 0
                 ORDER BY RelPath LIMIT {take}
-                """, r => new ExportFile(r.GetString(0), r.GetInt64(1), r.GetInt64(2), r.IsDBNull(3) ? null : r.GetString(3), r.IsDBNull(4) ? null : r.GetInt64(4)),
+                """, r => new ExportFile(r.GetString(0), r.GetInt64(1), r.GetInt64(2), r.IsDBNull(3) ? null : r.GetString(3), r.IsDBNull(4) ? null : r.GetInt64(4), r.GetBoolean(5)),
                 ("$r", rootId), ("$after", after ?? ""));
             return Results.Ok(new ExportPage(items, items.Count == take ? items[^1].P : null));
         });

@@ -10,7 +10,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace ANalyze.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(AnalyzeDbContext))]
-    [Migration("20261028165921_BackupLink")]
+    [Migration("20261028180631_BackupLink")]
     partial class BackupLink
     {
         /// <inheritdoc />
@@ -247,48 +247,43 @@ namespace ANalyze.Infrastructure.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
-                    b.Property<long?>("EntryId")
+                    b.Property<int>("Children")
                         .HasColumnType("INTEGER");
 
-                    b.Property<string>("Hash")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("EntryId")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<string>("LocalHash")
-                        .HasColumnType("TEXT");
-
-                    b.Property<long?>("LocalMTime")
+                    b.Property<bool>("IsDir")
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("LocalRelPath")
+                        .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<int?>("LocalRootId")
+                    b.Property<int>("LocalRootId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<long?>("LocalSize")
+                    b.Property<long?>("ParentSize")
                         .HasColumnType("INTEGER");
-
-                    b.Property<long>("MTime")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("Side")
-                        .HasColumnType("TEXT");
 
                     b.Property<long>("Size")
                         .HasColumnType("INTEGER");
-
-                    b.Property<string>("SourcePath")
-                        .HasColumnType("TEXT");
 
                     b.Property<string>("State")
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("SyncedChildren")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("Verified")
+                        .HasColumnType("INTEGER");
+
                     b.HasKey("Id");
 
                     b.HasIndex("EntryId");
 
-                    b.HasIndex("State");
+                    b.HasIndex("IsDir", "State");
 
                     b.HasIndex("LocalRootId", "LocalRelPath");
 

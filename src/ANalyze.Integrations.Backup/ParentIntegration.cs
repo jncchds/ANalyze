@@ -21,15 +21,16 @@ public sealed record BackupSnapshot(
     string Url,
     ExportInfo Info,
     IReadOnlyList<BackupTarget> Targets,
+    IReadOnlyList<PathMapping> Mappings,
     IReadOnlyList<PathMapping> Detected,
     long Unmapped,
     bool HashesCompared);
 
 /// <summary>
-/// Parent–child link between two ANalyze instances: this instance (the child) holds a backup of the parent's files. A sync reads the
-/// parent's file list with sizes, dates and content hashes (<see cref="BackupExport"/>), compares it with the files scanned here and
-/// shows which files are backed up (verified by content or by size and date), outdated, corrupt (same size and date, other content —
-/// and which copy changed, when known), missing, or only in the backup.
+/// Parent–child link between two ANalyze instances: the parent is the backup server of this instance (the child). A sync reads the
+/// parent's files and folders with sizes and content hashes (<see cref="BackupExport"/>), compares them with what is scanned here
+/// (<see cref="BackupSync"/> has the rules) and shows which files and folders are synchronized, and which files in synchronized
+/// folders are corrupt (other size or hash on the parent) or missing from the parent.
 /// </summary>
 public sealed class ParentIntegration(
     IHttpClientFactory httpFactory,
@@ -46,7 +47,7 @@ public sealed class ParentIntegration(
     public string Name => "ANalyze parent";
 
     public string Description =>
-        "This instance is a backup of another ANalyze (the parent): shows which of its files are backed up here, verified, outdated, corrupt or missing, and what is only in the backup.";
+        "The parent is the ANalyze on your backup server: shows which files and folders here are synchronized to it, and which files in synchronized folders are corrupt or missing there.";
 
     public string Icon => "shield-check";
 
@@ -57,11 +58,10 @@ public sealed class ParentIntegration(
 
     public IReadOnlyList<IntegrationField> Fields { get; } =
     [
-        new("url", "Parent URL", "url", "Address of the parent ANalyze as seen from this container.", Placeholder: "http://nas1:8080"),
+        new("url", "Parent URL", "url", "Address of the ANalyze on the backup server, as seen from this container.", Placeholder: "http://backup-nas:8080"),
         new("token", "Parent API token", "password", "The parent's ANalyze__ApiToken. Needed when the parent has a password."),
         new("mappings", "Path mappings", "mappings",
-            "Parent path → path here, e.g. /library → /library/nas1. Leave empty when the backup has the same paths; otherwise it is detected from sample files (\"Suggest\" fills it in)."),
-        new("mtimeTolerance", "Date tolerance (seconds)", "number", "Modification times this close count as equal (FAT and some copy tools round them).", JsonValue.Create(2)),
+            "Parent path → path here, e.g. /backup/nas1 → /library. Leave empty when the backup has the same paths; otherwise it is detected from sample files (\"Suggest\" fills it in)."),
         IntegrationHttp.AllowInvalidCertificate(),
     ];
 
@@ -92,12 +92,12 @@ public sealed class ParentIntegration(
 
             if (!info.HashAllFiles)
             {
-                lines.Add("The parent does not hash every file: turn on Settings → \"Hash every file\" there to verify content and find corruption.");
+                lines.Add("The parent does not hash every file: turn on Settings → \"Hash every file\" there, otherwise corrupt files are found by size only.");
             }
 
             if (!appSettings.Current.HashAllFiles)
             {
-                lines.Add("This instance does not hash every file: turn on Settings → \"Hash every file\" here too.");
+                lines.Add("This instance does not hash every file: turn on Settings → \"Hash every file\" here too, otherwise corrupt files are found by size only.");
             }
 
             return new IntegrationTestResult(true, string.Join("\n", lines));
@@ -116,22 +116,34 @@ public sealed class ParentIntegration(
         var compareHashes = info.HashAlgorithm == BackupExport.HashAlgorithm;
         var name = ParentName(settings);
 
+        // Hashes of another kind cannot be compared: sizes only.
+        BackupSync.FetchPage fetch = compareHashes
+            ? client.FilesAsync
+            : async (root, after, c) =>
+            {
+                var page = await client.FilesAsync(root, after, c);
+                return page with { Items = page.Items.Select(x => x with { H = null }).ToList() };
+            };
+
         using var conn = sqlite.Open();
-        var sync = new BackupSync(conn, roots, Math.Max(0, settings.GetInt("mtimeTolerance", 2)), compareHashes);
-        var result = await sync.RunAsync(info, settings.GetMappings("mappings"), client.FilesAsync, progress, ct);
-        progress.Report(new IntegrationProgress("labels", result.Files, result.Files));
+        var result = await new BackupSync(conn, roots).RunAsync(info, settings.GetMappings("mappings"), fetch, progress, ct);
+        progress.Report(new IntegrationProgress("labels", 0, 0));
         BackupAnnotations.Write(conn, Id, name, result.Targets);
 
-        await SaveSnapshotAsync(new BackupSnapshot(DateTimeOffset.UtcNow, name, settings.GetString("url") ?? "", info, result.Targets, result.Detected, result.Unmapped, compareHashes), ct);
+        await SaveSnapshotAsync(new BackupSnapshot(DateTimeOffset.UtcNow, name, settings.GetString("url") ?? "", info, result.Targets, result.Mappings, result.Detected, result.Unmapped, compareHashes), ct);
 
-        var c = result.Counts;
-        var backedUp = c[BackupStates.Verified] + c[BackupStates.Matched];
-        var parts = new List<string> { $"{backedUp:N0} of {result.Files:N0} backed up ({c[BackupStates.Verified]:N0} verified)" };
-        foreach (var (state, word) in new[] { (BackupStates.Corrupt, "corrupt"), (BackupStates.Outdated, "outdated"), (BackupStates.Missing, "missing"), (BackupStates.Extra, "only here") })
+        var f = result.Files;
+        var all = f.Values.Sum();
+        var parts = new List<string>
         {
-            if (c[state] > 0)
+            $"{f[BackupStates.Synced] + f[BackupStates.Corrupt]:N0} of {all:N0} files synchronized",
+            $"{result.SyncedFolders:N0} of {result.Folders:N0} folders",
+        };
+        foreach (var (state, word) in new[] { (BackupStates.Corrupt, "corrupt"), (BackupStates.Missing, "missing") })
+        {
+            if (f[state] > 0)
             {
-                parts.Add($"{c[state]:N0} {word}");
+                parts.Add($"{f[state]:N0} {word}");
             }
         }
 
@@ -140,13 +152,13 @@ public sealed class ParentIntegration(
             parts.Add("detected mappings: " + string.Join(", ", result.Detected.Select(m => $"{m.From} → {m.To}")));
         }
 
-        if (result.Unmapped > 0)
+        if (result.Targets.All(t => t.EntryId is null))
         {
-            parts.Add($"{result.Unmapped:N0} files map to no folder here");
+            parts.Add("none of the parent's folders was found here — add a path mapping");
         }
 
         log.LogInformation("Backup comparison with {Parent}: {Summary}", name, string.Join("; ", parts));
-        return new IntegrationSyncResult(true, string.Join(" · ", parts), result.Files, backedUp);
+        return new IntegrationSyncResult(true, string.Join(" · ", parts), all, f[BackupStates.Synced] + f[BackupStates.Corrupt]);
     }
 
     private async Task SaveSnapshotAsync(BackupSnapshot snap, CancellationToken ct)
@@ -187,7 +199,7 @@ public sealed class ParentIntegration(
         {
             var page = await client.FilesAsync(r.Id, null, ct);
             var prefix = r.Path.TrimEnd('/');
-            matcher.Detect(page.Items.Take(200).Select(f => (prefix + "/" + f.P, f.S)), 200);
+            matcher.Detect(page.Items.Where(f => !f.D).Take(200).Select(f => (prefix + "/" + f.P, f.S)), 200);
         }
 
         return matcher.Detected.DistinctBy(m => m.From).ToList();

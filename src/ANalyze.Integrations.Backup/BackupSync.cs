@@ -6,132 +6,98 @@ namespace ANalyze.Integrations.Backup;
 /// <summary>States of <c>BackupFiles</c> rows.</summary>
 public static class BackupStates
 {
-    /// <summary>Same content: both full hashes are equal (or both files are empty).</summary>
-    public const string Verified = "verified";
+    /// <summary>File: the parent has a file at that path. Folder: at least 80% of its direct content is synchronized, or it is identical to the parent's.</summary>
+    public const string Synced = "synced";
 
-    /// <summary>Same size and modification time; content not compared because a hash is missing on one side.</summary>
-    public const string Matched = "matched";
-
-    /// <summary>Another version: size or modification time differ.</summary>
-    public const string Outdated = "outdated";
-
-    /// <summary>Same size and modification time but different content: one copy is damaged.</summary>
+    /// <summary>File in a synchronized folder whose copy on the parent differs in size or content hash.</summary>
     public const string Corrupt = "corrupt";
 
-    /// <summary>On the parent, not here.</summary>
+    /// <summary>File in a synchronized folder that the parent does not have.</summary>
     public const string Missing = "missing";
 
-    /// <summary>Here, not on the parent (deleted there, or never part of it).</summary>
-    public const string Extra = "extra";
+    /// <summary>File not on the parent outside synchronized folders, or a folder that is not synchronized.</summary>
+    public const string Unsynced = "unsynced";
 
-    public static readonly string[] All = [Verified, Matched, Outdated, Corrupt, Missing, Extra];
+    public static readonly string[] Files = [Synced, Corrupt, Missing, Unsynced];
 
-    /// <summary>Corrupt side: the parent's copy changed.</summary>
-    public const string SideSource = "source";
-
-    /// <summary>Corrupt side: this instance's copy changed.</summary>
-    public const string SideBackup = "backup";
+    /// <summary>Share of a folder's direct content that must be synchronized for the folder to count as synchronized.</summary>
+    public const double FolderThreshold = 0.8;
 }
-
-/// <summary>The local copy of a parent file, as scanned here.</summary>
-public sealed record LocalFile(long Id, long Size, long MTime, string? Hash, long? CorruptAt);
-
-/// <summary>A file's row from the previous sync, used to tell which side of a corrupt pair changed.</summary>
-public sealed record PreviousRow(string State, string? Hash, string? LocalHash, string? Side);
 
 /// <summary>Where a parent root lands here.</summary>
 public sealed record BackupTarget(int ParentRootId, string ParentPath, string LocalPath, int? RootId, string? RelPath, long? EntryId);
 
-public sealed record BackupSyncResult(IReadOnlyList<BackupTarget> Targets, IReadOnlyList<PathMapping> Detected, IReadOnlyDictionary<string, long> Counts, long Files, long Unmapped);
+public sealed record BackupSyncResult(
+    IReadOnlyList<BackupTarget> Targets,
+    IReadOnlyList<PathMapping> Mappings,
+    IReadOnlyList<PathMapping> Detected,
+    IReadOnlyDictionary<string, long> Files,
+    long Folders,
+    long SyncedFolders,
+    long Unmapped);
 
 /// <summary>
-/// Compares the parent's file list with the local index and replaces the <c>BackupFiles</c> table: every parent file gets a state
-/// (verified, matched, outdated, corrupt, missing) and every local file inside a backup target that the parent does not have is "extra".
-/// Paths are translated with the configured mappings (parent path → local path); a parent root whose sample files are mostly not found
-/// at the mapped path gets a mapping detected from file names and sizes.
+/// Compares the local files and folders inside the backup folders with the parent ANalyze (the backup server) and replaces the
+/// <c>BackupFiles</c> table. Rules:
+/// <list type="bullet">
+/// <item>a file is synchronized when the parent has a file at the same (mapped) path;</item>
+/// <item>a folder is synchronized when at least 80% of its direct files and sub-folders (by count) are synchronized, or when it is
+/// identical to the parent's folder (same entries, every file the same size and hash — this also covers empty folders);</item>
+/// <item>inside a synchronized folder, a file whose parent copy differs in size or hash is corrupt, and a file the parent lacks is missing.</item>
+/// </list>
+/// Paths are translated with the mappings (parent path → local path); a parent root whose sample files are mostly not found at the mapped
+/// path gets a mapping detected from file names and sizes.
 /// </summary>
-public sealed class BackupSync(SqliteConnection conn, RootRegistry roots, int mtimeTolerance, bool compareHashes = true)
+public sealed class BackupSync(SqliteConnection conn, RootRegistry roots)
 {
     public delegate Task<ExportPage> FetchPage(int rootId, string? after, CancellationToken ct);
 
     private const int Sample = 200;
 
-    /// <summary>Decides the state of one parent file. <paramref name="previous"/> is only asked for corrupt files.</summary>
-    public static (string State, string? Side) Classify(ExportFile p, LocalFile? l, int tolerance, bool compareHashes, Func<PreviousRow?> previous)
+    public static bool FolderSynced(int children, int synced, bool identical) =>
+        identical || (children > 0 && synced >= children * BackupStates.FolderThreshold);
+
+    /// <summary>Different size, or both content hashes known and different.</summary>
+    public static bool Differs(long size, string? hash, long parentSize, string? parentHash) =>
+        size != parentSize || (hash is not null && parentHash is not null && hash != parentHash);
+
+    public static string FileState(bool onParent, bool differs, bool folderSynced) =>
+        onParent ? (folderSynced && differs ? BackupStates.Corrupt : BackupStates.Synced) : (folderSynced ? BackupStates.Missing : BackupStates.Unsynced);
+
+    private sealed class Node
     {
-        if (l is null)
-        {
-            return (BackupStates.Missing, null);
-        }
-
-        var sameSize = p.S == l.Size;
-        var sameTime = Math.Abs(p.M - l.MTime) <= tolerance;
-        if (sameSize && p.S == 0)
-        {
-            return (BackupStates.Verified, null);
-        }
-
-        if (compareHashes && p.H is not null && l.Hash is not null)
-        {
-            if (p.H == l.Hash)
-            {
-                return (BackupStates.Verified, null);
-            }
-
-            return sameSize && sameTime ? (BackupStates.Corrupt, SideOf(p, l, previous())) : (BackupStates.Outdated, null);
-        }
-
-        return sameSize && sameTime ? (BackupStates.Matched, null) : (BackupStates.Outdated, null);
-    }
-
-    /// <summary>Which copy changed: the one whose own verification flagged it, else the one that no longer has the content both shared before.</summary>
-    private static string? SideOf(ExportFile p, LocalFile l, PreviousRow? prev)
-    {
-        if (p.C is not null && l.CorruptAt is null)
-        {
-            return BackupStates.SideSource;
-        }
-
-        if (l.CorruptAt is not null && p.C is null)
-        {
-            return BackupStates.SideBackup;
-        }
-
-        if (prev is null)
-        {
-            return null;
-        }
-
-        if (prev.State == BackupStates.Verified && prev.Hash is { } agreed)
-        {
-            return p.H == agreed ? BackupStates.SideBackup : l.Hash == agreed ? BackupStates.SideSource : null;
-        }
-
-        return prev.State == BackupStates.Corrupt && prev.Hash == p.H && prev.LocalHash == l.Hash ? prev.Side : null;
+        public long Id;
+        public long? ParentId;
+        public bool IsDir;
+        public int Depth;
+        public bool OnParent;
+        public bool Differs;
+        public bool Verified;
+        public long? ParentSize;
+        public int ParentChildren;
+        public int Children;
+        public int SyncedChildren;
+        public bool AllIdentical = true;
+        public bool Identical;
+        public bool Synced;
+        public string State = BackupStates.Unsynced;
     }
 
     public async Task<BackupSyncResult> RunAsync(ExportInfo info, IReadOnlyList<PathMapping> configured, FetchPage fetch, IProgress<IntegrationProgress> progress, CancellationToken ct)
     {
         var mappings = configured.ToList();
         var detected = new List<PathMapping>();
-        var counts = BackupStates.All.ToDictionary(s => s, _ => 0L);
-        long files = 0, unmapped = 0;
+        long seen = 0, unmapped = 0;
         var total = info.Roots.Sum(r => r.Files);
 
-        Exec("DROP TABLE IF EXISTS temp.BackupStage");
-        Exec("""
-            CREATE TEMP TABLE BackupStage (State TEXT NOT NULL, EntryId INTEGER, LocalRootId INTEGER, LocalRelPath TEXT, SourcePath TEXT,
-                Size INTEGER NOT NULL, MTime INTEGER NOT NULL, Hash TEXT, LocalSize INTEGER, LocalMTime INTEGER, LocalHash TEXT, Side TEXT)
-            """);
-        Exec("CREATE INDEX temp.IX_BackupStage_EntryId ON BackupStage (EntryId)");
+        Exec("DROP TABLE IF EXISTS temp.ParentStage");
+        Exec("CREATE TEMP TABLE ParentStage (RootId INTEGER NOT NULL, RelPath TEXT NOT NULL, ParentRel TEXT, IsDir INTEGER NOT NULL, Size INTEGER NOT NULL, Hash TEXT)");
+        Exec("CREATE UNIQUE INDEX temp.IX_ParentStage_Path ON ParentStage (RootId, RelPath)");
+        Exec("CREATE INDEX temp.IX_ParentStage_Parent ON ParentStage (RootId, ParentRel)");
+        using var ins = Cmd("INSERT OR IGNORE INTO ParentStage (RootId, RelPath, ParentRel, IsDir, Size, Hash) VALUES ($r, $p, $parent, $d, $s, $h)",
+            "$r", "$p", "$parent", "$d", "$s", "$h");
 
-        using var find = Cmd("SELECT Id, Size, MTime, FullHash, CorruptAt, IsDir FROM Entries WHERE RootId = $r AND RelPath = $p", "$r", "$p");
-        using var prev = Cmd("SELECT State, Hash, LocalHash, Side FROM BackupFiles WHERE EntryId = $e LIMIT 1", "$e");
-        using var ins = Cmd("""
-            INSERT INTO BackupStage (State, EntryId, LocalRootId, LocalRelPath, SourcePath, Size, MTime, Hash, LocalSize, LocalMTime, LocalHash, Side)
-            VALUES ($state, $entry, $root, $rel, $src, $size, $mtime, $hash, $lsize, $lmtime, $lhash, $side)
-            """, "$state", "$entry", "$root", "$rel", "$src", "$size", "$mtime", "$hash", "$lsize", "$lmtime", "$lhash", "$side");
-
+        // 1. The parent's tree, at the local paths it maps to.
         var targets = new List<BackupTarget>();
         foreach (var root in info.Roots)
         {
@@ -139,67 +105,66 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots, int mt
             string Abs(string rel) => rel.Length == 0 ? parentRoot : parentRoot + "/" + rel;
 
             var page = await fetch(root.Id, null, ct);
-            if (page.Items.Count > 0 && Found(page.Items.Take(Sample), Abs, mappings) * 5 < Math.Min(Sample, page.Items.Count))
+            var sample = page.Items.Where(f => !f.D).Take(Sample).ToList();
+            if (sample.Count > 0 && Found(sample, Abs, mappings) * 5 < sample.Count)
             {
                 // Mostly not where the mappings say: learn the prefix from files found by name and size.
                 var matcher = new PathMatcher(conn, roots, mappings);
-                matcher.Detect(page.Items.Take(Sample).Select(f => (Abs(f.P), f.S)), Sample);
+                matcher.Detect(sample.Select(f => (Abs(f.P), f.S)), Sample);
                 var better = matcher.Detected.Where(d => configured.All(c => c.From.TrimEnd('/') != d.From.TrimEnd('/'))).ToList();
-                if (better.Count > 0 && Found(page.Items.Take(Sample), Abs, [.. better, .. mappings]) > Found(page.Items.Take(Sample), Abs, mappings))
+                if (better.Count > 0 && Found(sample, Abs, [.. better, .. mappings]) > Found(sample, Abs, mappings))
                 {
                     detected.AddRange(better);
                     mappings.InsertRange(0, better);
                 }
             }
 
-            var localRoot = IntegrationSettings.MapPath(parentRoot, mappings);
-            var (tRoot, tRel) = Resolve(localRoot);
-            targets.Add(new BackupTarget(root.Id, root.Path, localRoot, tRoot, tRel, tRoot is { } tr ? DirId(tr, tRel!) : null));
+            // Backed-up folders: the root itself when it maps to a folder here, else every mapping that starts inside it
+            // (the backup may live in a sub-folder of the server's root, e.g. /backup/nas1 → /library).
+            var starts = new List<string> { parentRoot };
+            if (Resolve(IntegrationSettings.MapPath(parentRoot, mappings)).Root is null)
+            {
+                starts = mappings.Select(m => m.From.TrimEnd('/'))
+                    .Where(f => f.StartsWith(parentRoot + "/", StringComparison.Ordinal) && Resolve(IntegrationSettings.MapPath(f, mappings)).Root is not null)
+                    .Distinct().DefaultIfEmpty(parentRoot).ToList();
+            }
+
+            foreach (var start in starts)
+            {
+                var localPath = IntegrationSettings.MapPath(start, mappings);
+                var (tRoot, tRel) = Resolve(localPath);
+                targets.Add(new BackupTarget(root.Id, start, localPath, tRoot, tRel, tRoot is { } tr ? DirId(tr, tRel!) : null));
+                if (tRoot is { } t)
+                {
+                    // The folder itself exists on the parent; it is nobody's child here.
+                    Insert(ins, t, tRel!, null, true, 0, null);
+                }
+            }
 
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
                 using (var tx = conn.BeginTransaction())
                 {
-                    find.Transaction = tx;
-                    prev.Transaction = tx;
                     ins.Transaction = tx;
                     foreach (var f in page.Items)
                     {
-                        var abs = Abs(f.P);
-                        var (lRoot, lRel) = Resolve(IntegrationSettings.MapPath(abs, mappings));
-                        LocalFile? local = null;
-                        if (lRoot is { } lr)
+                        seen += f.D ? 0 : 1;
+                        if (Resolve(IntegrationSettings.MapPath(Abs(f.P), mappings)) is ({ } r, { } rel))
                         {
-                            local = Find(find, lr, lRel!);
+                            Insert(ins, r, rel, Parent(rel), f.D, f.S, f.H);
                         }
                         else
                         {
                             unmapped++;
                         }
-
-                        var (state, side) = Classify(f, local, mtimeTolerance, compareHashes, () => Previous(prev, local!.Id));
-                        counts[state]++;
-                        files++;
-                        Set(ins, "$state", state);
-                        Set(ins, "$entry", local?.Id);
-                        Set(ins, "$root", lRoot);
-                        Set(ins, "$rel", lRel);
-                        Set(ins, "$src", abs);
-                        Set(ins, "$size", f.S);
-                        Set(ins, "$mtime", f.M);
-                        Set(ins, "$hash", f.H);
-                        Set(ins, "$lsize", local?.Size);
-                        Set(ins, "$lmtime", local?.MTime);
-                        Set(ins, "$lhash", local?.Hash);
-                        Set(ins, "$side", side);
-                        ins.ExecuteNonQuery();
                     }
 
                     tx.Commit();
+                    ins.Transaction = null;
                 }
 
-                progress.Report(new IntegrationProgress("comparing", files, total, root.Path));
+                progress.Report(new IntegrationProgress("reading the parent", seen, total, root.Path));
                 if (page.Next is null)
                 {
                     break;
@@ -209,50 +174,128 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots, int mt
             }
         }
 
-        // Files inside the backup folders the parent does not have. Nested targets are covered by the outer one.
-        progress.Report(new IntegrationProgress("files only here", files, total));
-        var scopes = targets.Where(t => t.RootId is not null && t.EntryId is not null).Select(t => (Root: t.RootId!.Value, Rel: t.RelPath!)).Distinct().ToList();
+        // 2. Local entries inside the backup folders (outermost targets only), deepest first so folders see their children's results.
+        progress.Report(new IntegrationProgress("comparing", 0, 0));
+        var scopes = targets.Where(t => t.EntryId is not null).Select(t => (Root: t.RootId!.Value, Rel: t.RelPath!)).Distinct().ToList();
         scopes = scopes.Where(s => !scopes.Any(o => o != s && o.Root == s.Root && (o.Rel.Length == 0 || s.Rel.StartsWith(o.Rel + "/", StringComparison.Ordinal)))).ToList();
+        var nodes = new Dictionary<long, Node>();
         foreach (var (root, rel) in scopes)
         {
-            using var extra = conn.CreateCommand();
-            var range = rel.Length == 0 ? "" : "AND e.RelPath >= $from AND e.RelPath < $to";
-            extra.CommandText = $"""
-                INSERT INTO BackupStage (State, EntryId, LocalRootId, LocalRelPath, Size, MTime, LocalSize, LocalMTime, LocalHash)
-                SELECT '{BackupStates.Extra}', e.Id, e.RootId, e.RelPath, e.Size, e.MTime, e.Size, e.MTime, e.FullHash FROM Entries e
-                WHERE e.RootId = $r {range} AND e.IsDir = 0 AND e.IsSymlink = 0
-                  AND NOT EXISTS (SELECT 1 FROM BackupStage s WHERE s.EntryId = e.Id)
+            using var q = conn.CreateCommand();
+            var range = rel.Length == 0 ? "" : "AND (e.RelPath = $rel OR (e.RelPath >= $from AND e.RelPath < $to))";
+            q.CommandText = $"""
+                SELECT e.Id, e.ParentId, e.IsDir, e.Depth, CASE WHEN e.IsDir = 1 THEN e.TotalSize ELSE e.Size END, e.FullHash,
+                       p.IsDir, p.Size, p.Hash,
+                       CASE WHEN e.IsDir = 1 THEN (SELECT COUNT(*) FROM ParentStage c WHERE c.RootId = e.RootId AND c.ParentRel = e.RelPath) ELSE 0 END
+                FROM Entries e LEFT JOIN ParentStage p ON p.RootId = e.RootId AND p.RelPath = e.RelPath
+                WHERE e.RootId = $r {range} AND e.IsSymlink = 0
                 """;
-            extra.Parameters.AddWithValue("$r", root);
-            extra.Parameters.AddWithValue("$from", rel + "/");
-            extra.Parameters.AddWithValue("$to", rel + "0");
-            counts[BackupStates.Extra] += extra.ExecuteNonQuery();
+            q.Parameters.AddWithValue("$r", root);
+            q.Parameters.AddWithValue("$rel", rel);
+            q.Parameters.AddWithValue("$from", rel + "/");
+            q.Parameters.AddWithValue("$to", rel + "0");
+            using var r = q.ExecuteReader();
+            while (r.Read())
+            {
+                var isDir = r.GetBoolean(2);
+                var onParent = !r.IsDBNull(6) && r.GetBoolean(6) == isDir;
+                var size = r.GetInt64(4);
+                var hash = r.IsDBNull(5) ? null : r.GetString(5);
+                var pSize = onParent ? r.GetInt64(7) : 0;
+                var pHash = onParent && !r.IsDBNull(8) ? r.GetString(8) : null;
+                nodes[r.GetInt64(0)] = new Node
+                {
+                    Id = r.GetInt64(0),
+                    ParentId = r.IsDBNull(1) ? null : r.GetInt64(1),
+                    IsDir = isDir,
+                    Depth = r.GetInt32(3),
+                    OnParent = onParent,
+                    ParentSize = onParent ? pSize : null,
+                    Differs = onParent && !isDir && Differs(size, hash, pSize, pHash),
+                    Verified = onParent && !isDir && hash is not null && hash == pHash,
+                    ParentChildren = r.GetInt32(9),
+                };
+            }
         }
 
+        foreach (var n in nodes.Values.OrderByDescending(n => n.Depth))
+        {
+            if (n.IsDir)
+            {
+                n.Identical = n.OnParent && n.AllIdentical && n.ParentChildren == n.Children;
+                n.Synced = FolderSynced(n.Children, n.SyncedChildren, n.Identical);
+                n.State = n.Synced ? BackupStates.Synced : BackupStates.Unsynced;
+            }
+            else
+            {
+                n.Identical = n.OnParent && !n.Differs;
+            }
+
+            if (n.ParentId is { } pid && nodes.TryGetValue(pid, out var parent))
+            {
+                parent.Children++;
+                if (n.IsDir ? n.Synced : n.OnParent)
+                {
+                    parent.SyncedChildren++;
+                }
+
+                parent.AllIdentical &= n.Identical;
+            }
+        }
+
+        var files = BackupStates.Files.ToDictionary(s => s, _ => 0L);
+        foreach (var n in nodes.Values.Where(n => !n.IsDir))
+        {
+            var folderSynced = n.ParentId is { } pid && nodes.TryGetValue(pid, out var p) && p.Synced;
+            n.State = FileState(n.OnParent, n.Differs, folderSynced);
+            files[n.State]++;
+        }
+
+        // 3. Replace the table.
+        Exec("DROP TABLE IF EXISTS temp.BackupResult");
+        Exec("CREATE TEMP TABLE BackupResult (Id INTEGER PRIMARY KEY, State TEXT NOT NULL, ParentSize INTEGER, Verified INTEGER NOT NULL, Children INTEGER NOT NULL, Synced INTEGER NOT NULL)");
         using (var tx = conn.BeginTransaction())
         {
+            using var res = Cmd("INSERT INTO BackupResult VALUES ($id, $state, $psize, $v, $c, $s)", "$id", "$state", "$psize", "$v", "$c", "$s");
+            res.Transaction = tx;
+            foreach (var n in nodes.Values)
+            {
+                res.Parameters["$id"].Value = n.Id;
+                res.Parameters["$state"].Value = n.State;
+                res.Parameters["$psize"].Value = (object?)n.ParentSize ?? DBNull.Value;
+                res.Parameters["$v"].Value = n.Verified;
+                res.Parameters["$c"].Value = n.Children;
+                res.Parameters["$s"].Value = n.SyncedChildren;
+                res.ExecuteNonQuery();
+            }
+
             Exec("DELETE FROM BackupFiles", tx);
             Exec("""
-                INSERT INTO BackupFiles (State, EntryId, LocalRootId, LocalRelPath, SourcePath, Size, MTime, Hash, LocalSize, LocalMTime, LocalHash, Side)
-                SELECT State, EntryId, LocalRootId, LocalRelPath, SourcePath, Size, MTime, Hash, LocalSize, LocalMTime, LocalHash, Side FROM BackupStage
+                INSERT INTO BackupFiles (State, IsDir, EntryId, LocalRootId, LocalRelPath, Size, ParentSize, Verified, Children, SyncedChildren)
+                SELECT b.State, e.IsDir, e.Id, e.RootId, e.RelPath, CASE WHEN e.IsDir = 1 THEN e.TotalSize ELSE e.Size END, b.ParentSize, b.Verified, b.Children, b.Synced
+                FROM BackupResult b JOIN Entries e ON e.Id = b.Id
                 """, tx);
             tx.Commit();
         }
 
-        Exec("DROP TABLE temp.BackupStage");
-        return new BackupSyncResult(targets, detected, counts, files, unmapped);
+        Exec("DROP TABLE temp.BackupResult");
+        Exec("DROP TABLE temp.ParentStage");
+        var folders = nodes.Values.Count(n => n.IsDir);
+        return new BackupSyncResult(targets, mappings, detected, files, folders, nodes.Values.Count(n => n.IsDir && n.Synced), unmapped);
     }
 
-    /// <summary>How many of the files exist at their mapped local path.</summary>
+    /// <summary>How many of the sample files exist as files at their mapped local path.</summary>
     private int Found(IEnumerable<ExportFile> sample, Func<string, string> abs, IReadOnlyList<PathMapping> mappings)
     {
-        using var find = Cmd("SELECT Id, Size, MTime, FullHash, CorruptAt, IsDir FROM Entries WHERE RootId = $r AND RelPath = $p", "$r", "$p");
+        using var find = Cmd("SELECT 1 FROM Entries WHERE RootId = $r AND RelPath = $p AND IsDir = 0", "$r", "$p");
         var n = 0;
         foreach (var f in sample)
         {
-            if (Resolve(IntegrationSettings.MapPath(abs(f.P), mappings)) is ({ } r, { } rel) && Find(find, r, rel) is not null)
+            if (Resolve(IntegrationSettings.MapPath(abs(f.P), mappings)) is ({ } r, { } rel))
             {
-                n++;
+                find.Parameters["$r"].Value = r;
+                find.Parameters["$p"].Value = rel;
+                n += find.ExecuteScalar() is null ? 0 : 1;
             }
         }
 
@@ -275,25 +318,29 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots, int mt
         return rel == RootRegistry.TrashFolder || rel.StartsWith(RootRegistry.TrashFolder + "/", StringComparison.Ordinal) ? (null, null) : (root.Id, rel);
     }
 
-    private static LocalFile? Find(SqliteCommand find, int root, string rel)
+    /// <summary>The parent path of a local path, through the mappings in reverse; null when no mapping leads there.</summary>
+    public static string? ToParentPath(string localPath, IReadOnlyList<PathMapping> mappings)
     {
-        find.Parameters["$r"].Value = root;
-        find.Parameters["$p"].Value = rel;
-        using var r = find.ExecuteReader();
-        if (!r.Read() || r.GetBoolean(5))
-        {
-            return null;
-        }
-
-        return new LocalFile(r.GetInt64(0), r.GetInt64(1), r.GetInt64(2), r.IsDBNull(3) ? null : r.GetString(3), r.IsDBNull(4) ? null : r.GetInt64(4));
+        var best = mappings
+            .Select(m => (From: m.From.TrimEnd('/'), To: m.To.TrimEnd('/')))
+            .Where(m => m.To.Length > 0 && (localPath == m.To || localPath.StartsWith(m.To + "/", StringComparison.Ordinal)))
+            .OrderByDescending(m => m.To.Length)
+            .FirstOrDefault();
+        return best.To is null ? null : best.From + localPath[best.To.Length..];
     }
 
-    private static PreviousRow? Previous(SqliteCommand prev, long entryId)
+    private static void Insert(SqliteCommand ins, int root, string rel, string? parent, bool dir, long size, string? hash)
     {
-        prev.Parameters["$e"].Value = entryId;
-        using var r = prev.ExecuteReader();
-        return r.Read() ? new PreviousRow(r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.IsDBNull(3) ? null : r.GetString(3)) : null;
+        ins.Parameters["$r"].Value = root;
+        ins.Parameters["$p"].Value = rel;
+        ins.Parameters["$parent"].Value = (object?)parent ?? DBNull.Value;
+        ins.Parameters["$d"].Value = dir;
+        ins.Parameters["$s"].Value = size;
+        ins.Parameters["$h"].Value = (object?)hash ?? DBNull.Value;
+        ins.ExecuteNonQuery();
     }
+
+    internal static string Parent(string rel) => rel.LastIndexOf('/') is var i and > 0 ? rel[..i] : "";
 
     private long? DirId(int root, string rel)
     {
@@ -323,6 +370,4 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots, int mt
         c.CommandText = sql;
         c.ExecuteNonQuery();
     }
-
-    private static void Set(SqliteCommand c, string name, object? value) => c.Parameters[name].Value = value ?? DBNull.Value;
 }

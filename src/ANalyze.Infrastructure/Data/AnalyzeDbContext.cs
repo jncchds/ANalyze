@@ -115,7 +115,7 @@ public sealed class AnalyzeDbContext(DbContextOptions<AnalyzeDbContext> options)
         {
             e.HasIndex(x => new { x.LocalRootId, x.LocalRelPath });
             e.HasIndex(x => x.EntryId);
-            e.HasIndex(x => x.State);
+            e.HasIndex(x => new { x.IsDir, x.State });
         });
     }
 
