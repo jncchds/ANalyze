@@ -1,0 +1,61 @@
+{
+  "name": "analyze-desktop",
+  "productName": "ANalyze",
+  "version": "0.1.5",
+  "description": "ANalyze by CHDS — storage analysis and cleanup, as a desktop app",
+  "author": "CHDS",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "private": true,
+  "main": "main.js",
+  "desktopName": "analyze-desktop.desktop",
+  "scripts": {
+    "server": "node scripts/publish-server.mjs",
+    "start": "electron .",
+    "dist": "node scripts/dist.mjs"
+  },
+  "devDependencies": {
+    "electron": "44.9.3",
+    "electron-builder": "26.17.0"
+  },
+  "build": {
+    "appId": "com.chds.analyze",
+    "productName": "ANalyze",
+    "artifactName": "ANalyze-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "loading.html",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "server/${arch}",
+        "to": "server"
+      }
+    ],
+    "linux": {
+      "target": ["AppImage", "tar.gz"],
+      "category": "Utility",
+      "icon": "build/icon.png",
+      "syncDesktopName": true
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.utilities",
+      "icon": "build/icon.png",
+      "identity": "-"
+    },
+    "win": {
+      "target": ["nsis", "zip"],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

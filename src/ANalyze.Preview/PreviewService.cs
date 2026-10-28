@@ -453,9 +453,10 @@ public sealed class PreviewService(string thumbsDir, ILogger<PreviewService> log
     private static string? FindTool(string name)
     {
         var path = Environment.GetEnvironmentVariable("PATH") ?? "";
+        var file = OperatingSystem.IsWindows() ? name + ".exe" : name;
         foreach (var dir in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
         {
-            var candidate = Path.Combine(dir, name);
+            var candidate = Path.Combine(dir, file);
             if (File.Exists(candidate))
             {
                 return candidate;

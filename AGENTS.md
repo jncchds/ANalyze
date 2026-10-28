@@ -29,6 +29,7 @@ SQLite (WAL) in /data/analyze.db
 | `ANalyze.Integrations.Backup` | Parent–child link between two ANalyze instances: `BackupExport` (parent API), `ParentClient`, `BackupSync` (comparison), `BackupAnnotations`, `ParentIntegration`, `BackupEndpoints`. |
 | `ANalyze.Integrations.Docker` | Docker: `DockerClient` (unix socket or TCP), `DockerState`, `DockerPaths` (`IPathMappingSource`), `MountMath`. |
 | `ANalyze.Web` | `Program.cs`, `Endpoints/*`, `JobHub`, auth, SPA in `ClientApp/`. |
+| `desktop/` (Node, not .NET) | Electron app that bundles the published server; see "Desktop app". |
 
 ## Data model
 
@@ -208,3 +209,23 @@ Release notes: `RELEASE_NOTES.md` is embedded into `ANalyze.Web` (`EmbeddedResou
 `Infrastructure/ReleaseNotes.cs` (`## vX.Y.Z — date` headings, `- kind: text` bullets) and served at `GET /api/v1/release-notes`. The
 `/release-notes` page renders it with credits (CHDS, Claude); the sidebar version pill links there and shows a dot until this browser has
 opened the notes for the running version (`hooks/useWhatsNew.ts`, localStorage). Branding is "ANalyze by CHDS" (page title, sidebar, login).
+
+## Desktop app (`desktop/`)
+
+Electron shell around the unchanged server. `scripts/publish-server.mjs` builds the SPA into `wwwroot` (before publishing, like the Dockerfile —
+`MapStaticAssets` only serves files known when the static-asset manifest is computed) and publishes `ANalyze.Web` self-contained into
+`desktop/server/<arch>`; electron-builder copies that to `resources/server` (`scripts/dist.mjs` does both for one OS and several archs).
+
+`main.js` starts the server on `127.0.0.1` with a port kept in `<userData>/desktop.json` (a stable origin keeps the UI's localStorage), sets
+`ANalyze__DataDir=<userData>/data`, `ANalyze__Roots__N` from `desktop.json`, and a random `ANalyze__Password` + `ANalyze__ApiToken` per launch;
+`session.webRequest` adds `Authorization: Bearer <token>` to the window's requests to that origin (including the SignalR WebSocket), so nothing else
+on the machine can use the API. `preload.js` exposes `window.analyzeDesktop` (`addRoot`, `removeRoot`, `openDataFolder`; front end:
+`src/lib/desktop.ts`): the Settings page shows Add/Remove for roots and hides Sign out. Changing roots rewrites `desktop.json` and restarts the
+server (asks first when a job is running). Links to other origins open in the default browser.
+
+Platform notes: paths stay `/`-separated in `Entries.RelPath` on every OS; `RootRegistry.IsUnder` uses the platform separator (case-insensitive on
+Windows). Hard links remain Linux-only; elsewhere `Native` falls back to managed APIs (no inode/device, so duplicate identity uses row ids).
+
+CI (`.github/workflows/docker.yml`, job `desktop`): Linux x64+arm64 (AppImage, tar.gz), macOS x64+arm64 (dmg, zip, ad-hoc signed), Windows x64
+(NSIS installer, zip) on every non-PR build, uploaded as artifacts. Builds of `main` publish them as the GitHub release `v<VERSION>` (job `release`):
+created with its tag when a new version first reaches main (notes = that version's `RELEASE_NOTES.md` section), files replaced by later builds of the same version.

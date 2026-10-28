@@ -123,8 +123,19 @@ public sealed class RootRegistry(IServiceScopeFactory scopes, IOptions<AnalyzeOp
         return real;
     }
 
-    public static bool IsUnder(string rootPath, string fullPath) =>
-        fullPath == rootPath || fullPath.StartsWith(rootPath.EndsWith('/') ? rootPath : rootPath + "/", StringComparison.Ordinal);
+    /// <summary>True when fullPath is rootPath or below it. Uses the platform separator (Windows: '\', case-insensitive).</summary>
+    public static bool IsUnder(string rootPath, string fullPath)
+    {
+        var cmp = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (string.Equals(fullPath, rootPath, cmp))
+        {
+            return true;
+        }
+
+        var sep = Path.DirectorySeparatorChar;
+        var prefix = rootPath.EndsWith(sep) || rootPath.EndsWith('/') ? rootPath : rootPath + sep;
+        return fullPath.StartsWith(prefix, cmp);
+    }
 
     public static string TrashPath(string rootPath, int planId, string relPath) =>
         Path.Combine(rootPath, TrashFolder, planId.ToString(System.Globalization.CultureInfo.InvariantCulture), relPath);
