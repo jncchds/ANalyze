@@ -1,0 +1,38 @@
+# ANalyze by CHDS — what is taking space on your drives.
+#   1. Point the volumes below at the folders to analyze.
+#   2. docker compose up -d --build
+#   3. Open http://localhost:8080 and press "Scan now".
+services:
+  analyze:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: jncchds/analyze:latest
+    restart: unless-stopped
+    environment:
+      # Every mounted folder you want analyzed is one root.
+      ANalyze__Roots__0: /library
+      # ANalyze__Roots__1: /media
+      # Analysis only: never move or delete anything (also automatic for :ro mounts).
+      # ANalyze__ReadOnly: "true"
+      # Protect the UI (strongly recommended when actions are enabled or the port is reachable by others).
+      # ANalyze__Password: "change-me"
+      # Token for scripts: Authorization: Bearer <token>
+      # ANalyze__ApiToken: ""
+      # Optional: seed the Plex integration (can also be configured in the UI → Integrations).
+      # ANalyze__Integrations__plex__Enabled: "true"
+      # ANalyze__Integrations__plex__url: "http://192.168.1.10:32400"
+      # ANalyze__Integrations__plex__token: ""
+      # Plex in its own container sees the same files under other paths: "plex path=ANalyze path;…" (auto-detected when empty).
+      # ANalyze__Integrations__plex__mappings: "/data/movies=/library/Movies;/data/tv=/library/TV"
+      TZ: "${TZ:-UTC}"
+    ports:
+      - "8080:8080"
+    volumes:
+      - analyze-data:/data
+      # Read-write enables actions (trash, move, dedupe). Use :ro to only analyze.
+      - ${ANALYZE_LIBRARY:-./library}:/library
+      # - /mnt/media:/media:ro
+
+volumes:
+  analyze-data:

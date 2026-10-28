@@ -1,0 +1,17 @@
+# Local development stack: builds the image from source with a sample folder mounted read-write.
+#   docker compose -f docker-compose.dev.yml up --build
+# Front-end hot reload: run `npm run dev` in src/ANalyze.Web/ClientApp (proxies /api and /hubs to :5199)
+# and start the API with ASPNETCORE_URLS=http://127.0.0.1:5199.
+services:
+  analyze:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      ANalyze__Roots__0: /library
+      ASPNETCORE_ENVIRONMENT: Development
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+      - ./library:/library

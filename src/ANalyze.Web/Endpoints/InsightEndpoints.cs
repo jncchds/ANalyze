@@ -77,7 +77,7 @@ public static class InsightEndpoints
 
         await Add("node_modules", "Dependency folders", "node_modules, virtualenvs, package caches — restorable with an install command.", "high",
             new SearchFilter { Dirs = true, Segment = "node_modules,.venv,venv,__pycache__,.gradle,.m2,.nuget,.pnpm-store,bower_components" }, ActionOp.Trash);
-        await AddCategory("devjunk", "Dev junk", "Build output", "Compiler and bundler output (obj, .next, *.pyc…).", "medium", ActionOp.Trash);
+        await AddCategory("devjunk", "Dev junk", "Dev junk", "All files in dependency and build-output folders (obj, .next, node_modules, *.pyc…).", "medium", ActionOp.Trash);
         await AddCategory("caches", "Caches & temp", "Caches & temporary files", "Application caches, thumbnails, swap and temp files.", "high", ActionOp.Trash);
         await AddCategory("incomplete", "Incomplete downloads", "Incomplete downloads", "Partial downloads and torrent leftovers.", "high", ActionOp.Trash);
         await AddCategory("system", "System files", "OS & NAS metadata", "Thumbs.db, .DS_Store, @eaDir and recycle bins.", "low", ActionOp.Trash);

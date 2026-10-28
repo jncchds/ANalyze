@@ -33,7 +33,7 @@ public static class BrowseEndpoints
             var crumbs = new List<object>();
             var root = roots.Get(e.RootId);
             var parts = e.RelPath.Length == 0 ? [] : e.RelPath.Split('/');
-            var paths = Enumerable.Range(0, parts.Length).Select(i => string.Join('/', parts.Take(i))).ToList();
+            var paths = Enumerable.Range(0, parts.Length + 1).Select(i => string.Join('/', parts.Take(i))).ToList();
             var ancestors = await db.Entries.AsNoTracking().Where(x => x.RootId == e.RootId && paths.Contains(x.RelPath))
                 .Select(x => new { x.Id, x.Name, x.RelPath }).ToListAsync(ct);
             foreach (var a in ancestors.OrderBy(a => a.RelPath.Length))
@@ -161,7 +161,7 @@ public static class BrowseEndpoints
         public string? Path { get; init; }
         public int? CategoryId { get; init; }
         public bool? Uncategorized { get; init; }
-        public FileKind? Kind { get; init; }
+        public string? Kind { get; init; }
         public string? Ext { get; init; }
         public string? Tag { get; init; }
         public long? MinSize { get; init; }
@@ -183,7 +183,7 @@ public static class BrowseEndpoints
 
         public SearchFilter Filter => new()
         {
-            Q = Q, RootId = RootId, Path = Path, CategoryId = CategoryId, Uncategorized = Uncategorized, Kind = Kind, Ext = Ext, Tag = Tag,
+            Q = Q, RootId = RootId, Path = Path, CategoryId = CategoryId, Uncategorized = Uncategorized, Kind = Enum.TryParse<FileKind>(Kind, ignoreCase: true, out var k) ? k : null, Ext = Ext, Tag = Tag,
             MinSize = MinSize, MaxSize = MaxSize, OlderThanDays = OlderThanDays, NewerThanDays = NewerThanDays, NotAccessedDays = NotAccessedDays,
             Duplicates = Duplicates, Dirs = Dirs, EmptyDirs = EmptyDirs, BrokenLinks = BrokenLinks, Sparse = Sparse, Hardlinked = Hardlinked,
             Segment = Segment, Sort = Sort, Asc = Asc,

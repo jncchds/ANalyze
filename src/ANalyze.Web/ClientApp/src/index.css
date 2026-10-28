@@ -1,0 +1,144 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Layout and components follow nopds/ABook (sidebar app shell, flat cards, pills);
+ * ANalyze's own palette is a cool "survey instrument": slate-teal paper with a deep teal accent by day,
+ * near-black blue-green with cyan at night, and amber for reclaimable space.
+ */
+:root {
+  --bg: #f2f6f6;
+  --surface: #ffffff;
+  --surface-2: #e7efef;
+  --border: #d3dfdf;
+  --text: #0f1f22;
+  --text-muted: #566e72;
+  --input-bg: #f8fbfb;
+  --accent: #0f766e;
+  --accent-hover: #0d8f85;
+  --accent-contrast: #f0fdfa;
+  --accent-faint: #0f766e1a;
+  --amber: #b45309;
+  --amber-faint: #b453091a;
+  --danger: #b42318;
+  --success: #2f7a45;
+  --warning: #b7791f;
+  font-family: 'Inter Variable', Inter, system-ui, sans-serif;
+}
+
+.dark {
+  --bg: #0b1416;
+  --surface: #111e21;
+  --surface-2: #17282c;
+  --border: #23383d;
+  --text: #e2eeee;
+  --text-muted: #8fa9ad;
+  --input-bg: #0b1416;
+  --accent: #2dd4bf;
+  --accent-hover: #5eead4;
+  --accent-contrast: #042f2e;
+  --accent-faint: #2dd4bf1f;
+  --amber: #f5a524;
+  --amber-faint: #f5a5241f;
+  --danger: #f07167;
+  --success: #6fcf8a;
+  --warning: #f2b64f;
+}
+
+@theme inline {
+  --font-sans: 'Inter Variable', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--border);
+  --color-fg: var(--text);
+  --color-muted: var(--text-muted);
+  --color-input: var(--input-bg);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-contrast: var(--accent-contrast);
+  --color-accent-faint: var(--accent-faint);
+  --color-amber: var(--amber);
+  --color-amber-faint: var(--amber-faint);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+}
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-bg text-fg antialiased;
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-accent;
+  }
+}
+
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-1.5 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+@utility btn-primary {
+  @apply btn bg-accent text-accent-contrast hover:bg-accent-hover;
+}
+
+@utility btn-secondary {
+  @apply btn border border-line bg-transparent font-medium text-muted hover:border-accent hover:text-fg;
+}
+
+@utility btn-ghost {
+  @apply btn font-medium text-muted hover:bg-accent-faint hover:text-fg;
+}
+
+@utility btn-danger {
+  @apply btn border border-danger/30 bg-danger/10 text-danger hover:bg-danger/20;
+}
+
+@utility input {
+  @apply w-full rounded-md border border-line bg-input px-2.5 py-1.5 text-sm text-fg placeholder:text-muted focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25;
+}
+
+@utility card {
+  @apply rounded-[10px] border border-line bg-surface;
+}
+
+@utility chip {
+  @apply inline-flex items-center rounded px-2 py-0.5 text-xs text-accent bg-accent-faint hover:bg-accent/20;
+}
+
+@utility pill-muted {
+  @apply inline-flex items-center rounded px-2 py-0.5 text-xs text-muted bg-muted/10;
+}
+
+@utility pill-amber {
+  @apply inline-flex items-center rounded px-2 py-0.5 text-xs text-amber bg-amber-faint;
+}
+
+@utility link {
+  @apply text-accent hover:underline;
+}
+
+@utility label {
+  @apply mb-1 block text-sm font-medium text-muted;
+}
+
+@utility muted {
+  @apply text-muted;
+}
+
+@utility sidebar-btn {
+  @apply flex w-full items-center gap-2 overflow-hidden rounded-md px-2 py-[0.42rem] text-left text-sm leading-snug whitespace-nowrap text-fg transition-colors hover:bg-accent-faint;
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}

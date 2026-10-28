@@ -10,28 +10,29 @@ public static class Builtins
 
     public sealed record RuleSeed(string Name, string? Category, RuleCondition Condition, string[] Tags, string Description, bool Stop = true);
 
-    // Colors: a categorical palette that stays distinguishable in light and dark themes.
+    // The eight most common categories use the validated categorical hues (dataviz reference order);
+    // the rest use muted tones. Charts always label categories, so identity never depends on color alone.
     public static readonly CategorySeed[] Categories =
     [
-        new("Video", "#2563eb", "film", "Movies, series, clips and their subtitles"),
-        new("Audio", "#7c3aed", "music", "Music, podcasts, audiobooks, playlists"),
-        new("Images", "#0891b2", "image", "Photos, pictures, screenshots"),
-        new("RAW photos", "#0e7490", "camera", "Camera RAW files (CR2, NEF, ARW, DNG…)"),
-        new("Documents", "#16a34a", "file-text", "Office documents, PDFs, plain text"),
-        new("Ebooks", "#65a30d", "book-open", "EPUB, FB2, MOBI, comics"),
-        new("Archives", "#ca8a04", "archive", "ZIP, RAR, 7z, tarballs"),
-        new("Disk images", "#ea580c", "disc", "ISO images, VM disks"),
-        new("Installers & executables", "#dc2626", "package", "Setup files, packages, binaries"),
-        new("Code", "#4f46e5", "code", "Source code and version control data"),
-        new("Dev junk", "#db2777", "trash-2", "Reproducible build output and dependency folders (node_modules, obj, __pycache__…)"),
-        new("Caches & temp", "#9333ea", "timer-reset", "Caches, thumbnails, temporary and swap files"),
-        new("Incomplete downloads", "#e11d48", "download", "Partial downloads and torrent leftovers"),
-        new("Backups", "#0d9488", "history", "Backup copies and old versions"),
-        new("Logs", "#78716c", "scroll-text", "Log files and rotated logs"),
-        new("Fonts", "#a16207", "type", "Font files"),
-        new("Databases", "#475569", "database", "Database files"),
-        new("3D & design", "#be185d", "shapes", "3D models, CAD, layered design sources"),
-        new("System files", "#64748b", "settings", "OS and NAS metadata (Thumbs.db, .DS_Store, @eaDir…)"),
+        new("Video", "#2a78d6", "film", "Movies, series, clips and their subtitles"),
+        new("Audio", "#6250d6", "music", "Music, podcasts, audiobooks, playlists"),
+        new("Images", "#1baf7a", "image", "Photos, pictures, screenshots"),
+        new("RAW photos", "#138a60", "camera", "Camera RAW files (CR2, NEF, ARW, DNG…)"),
+        new("Documents", "#008300", "file-text", "Office documents, PDFs, plain text"),
+        new("Ebooks", "#5f8f2a", "book-open", "EPUB, FB2, MOBI, comics"),
+        new("Archives", "#eda100", "archive", "ZIP, RAR, 7z, tarballs"),
+        new("Disk images", "#eb6834", "disc", "ISO images, VM disks"),
+        new("Installers & executables", "#e34948", "package", "Setup files, packages, binaries"),
+        new("Code", "#3f5fa8", "code", "Source code and version control data"),
+        new("Dev junk", "#e87ba4", "trash-2", "Reproducible build output and dependency folders (node_modules, obj, __pycache__…)"),
+        new("Caches & temp", "#a45cc0", "timer-reset", "Caches, thumbnails, temporary and swap files"),
+        new("Incomplete downloads", "#c4501f", "download", "Partial downloads and torrent leftovers"),
+        new("Backups", "#0f8a8a", "history", "Backup copies and old versions"),
+        new("Logs", "#8a8780", "scroll-text", "Log files and rotated logs"),
+        new("Fonts", "#a07a3c", "type", "Font files"),
+        new("Databases", "#5c6b7a", "database", "Database files"),
+        new("3D & design", "#c4559a", "shapes", "3D models, CAD, layered design sources"),
+        new("System files", "#9b9a94", "settings", "OS and NAS metadata (Thumbs.db, .DS_Store, @eaDir…)"),
     ];
 
     private static RuleClause C(RuleField field, RuleOp op, string value, bool negate = false) =>
