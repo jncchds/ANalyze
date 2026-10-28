@@ -41,6 +41,8 @@ public static class SystemEndpoints
             pathTokens = PathTemplate.Tokens,
         });
 
+        api.MapGet("/release-notes", () => ReleaseNotes.All);
+
         api.MapGet("/roots", (RootRegistry roots, SqliteSetup sqlite) =>
         {
             using var c = sqlite.Open();

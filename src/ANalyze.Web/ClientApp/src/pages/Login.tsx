@@ -26,7 +26,9 @@ export function Login({ onSuccess }: { onSuccess: () => void }) {
         <div className="flex items-center gap-3">
           <img src="/favicon.svg" alt="" className="h-9 w-9" />
           <div>
-            <h1 className="text-lg font-bold">ANalyze</h1>
+            <h1 className="text-lg font-bold">
+              ANalyze <span className="text-sm font-normal muted">by CHDS</span>
+            </h1>
             <p className="text-sm muted">Enter the password to continue.</p>
           </div>
         </div>

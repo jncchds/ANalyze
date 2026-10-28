@@ -1,5 +1,10 @@
 # Release Notes
 
+## v0.1.1 — 2026-10-28
+
+- feat: release notes page in the UI (linked from the version pill, which marks versions you haven't read yet)
+- feat: "ANalyze by CHDS" title and credits to CHDS and Claude
+
 ## v0.1.0 — 2026-10-28
 
 - feat: incremental scanner (statx metadata, inode-aware, cross-filesystem guard, ignore globs, scheduled and per-folder rescans) storing everything in SQLite

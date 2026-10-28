@@ -84,6 +84,17 @@ export interface Config {
   pathTokens: string[]
 }
 
+export interface ReleaseItem {
+  kind: string
+  text: string
+}
+
+export interface Release {
+  version: string
+  date?: string
+  items: ReleaseItem[]
+}
+
 export interface JobProgress {
   kind: string
   state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'

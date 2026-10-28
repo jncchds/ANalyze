@@ -218,3 +218,34 @@ public class IntegrationPathTests
     public void Common_suffix_split_finds_prefixes() =>
         Assert.Equal(("/data/movies", "/library/Media/Movies"), PathMatcher.CommonSuffixSplit("/data/movies/Heat (1995)/Heat.mkv", "/library/Media/Movies/Heat (1995)/Heat.mkv"));
 }
+
+public class ReleaseNotesTests
+{
+    [Fact]
+    public void Parses_versions_dates_kinds_and_continuations()
+    {
+        var notes = ANalyze.Web.Infrastructure.ReleaseNotes.Parse("""
+            # Release Notes
+
+            ## v0.2.0 — 2026-11-01
+
+            - feat: release notes page
+              with a second line
+            - fix: something
+            - plain bullet
+
+            ## v0.1.0
+            - refactor: old
+            """);
+        Assert.Equal(2, notes.Count);
+        Assert.Equal("0.2.0", notes[0].Version);
+        Assert.Equal("2026-11-01", notes[0].Date);
+        Assert.Equal(["feat", "fix", "other"], notes[0].Items.Select(i => i.Kind));
+        Assert.Equal("release notes page with a second line", notes[0].Items[0].Text);
+        Assert.Null(notes[1].Date);
+        Assert.Equal("old", notes[1].Items[0].Text);
+    }
+
+    [Fact]
+    public void Embedded_file_is_present() => Assert.NotEmpty(ANalyze.Web.Infrastructure.ReleaseNotes.All);
+}

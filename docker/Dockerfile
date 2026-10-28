@@ -15,7 +15,7 @@ RUN APP_VERSION="$(cat /VERSION)" npm run build && test -f /wwwroot/index.html
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG TARGETARCH
 WORKDIR /src
-COPY VERSION Directory.Build.props Directory.Packages.props ANalyze.slnx ./
+COPY VERSION RELEASE_NOTES.md Directory.Build.props Directory.Packages.props ANalyze.slnx ./
 COPY src/ANalyze.Domain/ANalyze.Domain.csproj src/ANalyze.Domain/
 COPY src/ANalyze.Infrastructure/ANalyze.Infrastructure.csproj src/ANalyze.Infrastructure/
 COPY src/ANalyze.Scanner/ANalyze.Scanner.csproj src/ANalyze.Scanner/

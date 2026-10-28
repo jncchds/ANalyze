@@ -20,6 +20,7 @@ const Actions = lazy(() => import('./pages/Actions'))
 const PlanPage = lazy(() => import('./pages/PlanPage'))
 const Integrations = lazy(() => import('./pages/Integrations'))
 const Settings = lazy(() => import('./pages/Settings'))
+const ReleaseNotes = lazy(() => import('./pages/ReleaseNotes'))
 
 function IntegrationPage() {
   const { id } = useParams()
@@ -74,6 +75,7 @@ export default function App() {
               <Route path="integrations" element={<Integrations />} />
               <Route path="integrations/:id" element={<IntegrationPage />} />
               <Route path="settings" element={<Settings />} />
+              <Route path="release-notes" element={<ReleaseNotes />} />
               <Route path="*" element={<Empty>Page not found.</Empty>} />
             </Route>
           </Routes>

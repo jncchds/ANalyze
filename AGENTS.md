@@ -111,3 +111,8 @@ React 19 + Vite + Tailwind 4 + TanStack Query, same shell and tokens as nopds (s
 for reclaimable space (`src/index.css`). `useJobs` holds the single SignalR connection and invalidates queries when a job finishes; `useScope`
 holds the selected root. Search filters live in the URL so insights, sidebar entries and bookmarks link to result sets. Charts: labeled bar lists
 (identity never by color alone) and an ECharts treemap. Category colors: the first eight built-ins use the validated categorical palette.
+
+Release notes: `RELEASE_NOTES.md` is embedded into `ANalyze.Web` (`EmbeddedResource`, also copied in `docker/Dockerfile`), parsed by
+`Infrastructure/ReleaseNotes.cs` (`## vX.Y.Z — date` headings, `- kind: text` bullets) and served at `GET /api/v1/release-notes`. The
+`/release-notes` page renders it with credits (CHDS, Claude); the sidebar version pill links there and shows a dot until this browser has
+opened the notes for the running version (`hooks/useWhatsNew.ts`, localStorage). Branding is "ANalyze by CHDS" (page title, sidebar, login).

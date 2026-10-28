@@ -5,6 +5,7 @@ import clsx from 'clsx'
 import { api } from '../api/client'
 import { useConfig, useIntegrations, useRoots, useSummary } from '../api/hooks'
 import { useTheme, type Theme } from '../hooks/useTheme'
+import { useHasUnseenRelease } from '../hooks/useWhatsNew'
 import { isActive, useJob, useJobs } from '../hooks/useJobs'
 import { useScope } from '../hooks/useScope'
 import { integrationUis } from '../integrations/registry'
@@ -48,6 +49,7 @@ export function Layout({ onLogout }: { onLogout?: () => void }) {
     if (window.matchMedia('(max-width: 768px)').matches) setCollapsed(true)
   }, [location.pathname])
 
+  const unseenRelease = useHasUnseenRelease(config.data?.version)
   const s = summary.data
   const enabledIntegrations = integrationUis.filter((u) => integrations.data?.some((i) => i.id === u.id && i.settings.enabled))
   const nav: { to: string; icon: string; label: string; end?: boolean; badge?: number }[] = [
@@ -89,18 +91,18 @@ export function Layout({ onLogout }: { onLogout?: () => void }) {
           <button className="sidebar-btn" onClick={() => setCollapsed((v) => !v)} title="Menu" aria-expanded={!collapsed}>
             <span className="w-[22px] shrink-0 text-center">☰</span>
             <Label collapsed={collapsed}>
-              <span className="font-semibold">ANalyze</span>
+              <span className="font-semibold">ANalyze</span> <span className="text-[0.72rem] text-muted">by CHDS</span>
             </Label>
             {!collapsed && config.data?.version && (
-              <a
-                href="https://github.com/jncchds/ANalyze"
-                target="_blank"
-                rel="noopener noreferrer"
+              <Link
+                to="/release-notes"
                 onClick={(e) => e.stopPropagation()}
-                className="shrink-0 rounded-full border border-accent/25 bg-accent-faint px-1.5 text-[0.65rem] leading-relaxed text-muted no-underline hover:text-accent"
+                title={unseenRelease ? "What's new in this version" : 'Release notes'}
+                className="relative shrink-0 rounded-full border border-accent/25 bg-accent-faint px-1.5 text-[0.65rem] leading-relaxed text-muted no-underline hover:text-accent"
               >
                 v{config.data.version}
-              </a>
+                {unseenRelease && <span className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-amber" aria-label="New" />}
+              </Link>
             )}
           </button>
           {collapsed ? (
@@ -216,6 +218,15 @@ export function Layout({ onLogout }: { onLogout?: () => void }) {
         </nav>
 
         <div className="shrink-0 border-t border-line px-1 pt-1 pb-2">
+          <NavLink
+            to="/release-notes"
+            title="Release notes"
+            className={({ isActive }) => clsx('sidebar-btn', isActive && 'bg-accent-faint text-accent')}
+          >
+            <span className="w-[22px] shrink-0 text-center">📝</span>
+            <Label collapsed={collapsed}>Release notes</Label>
+            {!collapsed && unseenRelease && <span className="rounded-full bg-amber-faint px-1.5 text-[0.7rem] font-semibold text-amber">new</span>}
+          </NavLink>
           {onLogout && (
             <button className="sidebar-btn" onClick={onLogout} title="Sign out">
               <span className="w-[22px] shrink-0 text-center">🚪</span>
@@ -226,6 +237,11 @@ export function Layout({ onLogout }: { onLogout?: () => void }) {
             <span className="w-[22px] shrink-0 text-center">{theme === 'dark' ? '🌙' : theme === 'light' ? '☀️' : '◐'}</span>
             <Label collapsed={collapsed}>Theme: {theme}</Label>
           </button>
+          {!collapsed && (
+            <div className="truncate px-2 pt-1.5 text-[0.68rem] text-muted">
+              by CHDS · built with Claude
+            </div>
+          )}
         </div>
       </aside>
 

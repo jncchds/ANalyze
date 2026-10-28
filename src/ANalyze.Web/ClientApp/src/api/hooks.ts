@@ -1,8 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from './client'
-import type { Category, Config, Integration, Root, Rule, Summary, ActionTemplate } from './types'
+import type { Category, Config, Integration, Release, Root, Rule, Summary, ActionTemplate } from './types'
 
 export const useConfig = () => useQuery({ queryKey: ['config'], queryFn: () => api<Config>('/config'), staleTime: 60_000 })
+
+export const useReleaseNotes = () => useQuery({ queryKey: ['release-notes'], queryFn: () => api<Release[]>('/release-notes'), staleTime: Infinity })
 
 export const useRoots = () => useQuery({ queryKey: ['roots'], queryFn: () => api<Root[]>('/roots') })
 

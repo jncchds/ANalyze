@@ -20,6 +20,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Served by /api/v1/release-notes. -->
+    <EmbeddedResource Include="..\..\RELEASE_NOTES.md" LogicalName="RELEASE_NOTES.md" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\ANalyze.Actions\ANalyze.Actions.csproj" />
     <ProjectReference Include="..\ANalyze.Ai\ANalyze.Ai.csproj" />
     <ProjectReference Include="..\ANalyze.Integrations.Plex\ANalyze.Integrations.Plex.csproj" />

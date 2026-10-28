@@ -22,6 +22,7 @@ the folders to analyze, open the web UI, press **Scan now**.
   duplicates with hard links. Every change is a **plan** you review first; trash and moves can be undone.
 - **Integrations** — plugins that cross-reference other apps. **Plex** marks movies, shows and music in the browser and
   ranks titles by size and watch state.
+- **Release notes** — what changed in each version, right in the UI (click the version next to the logo).
 
 ## Quick start
 
@@ -138,5 +139,10 @@ docker compose -f docker-compose.dev.yml up --build
 ```
 
 Front-end hot reload: `npm run dev` in `ClientApp` proxies `/api` and `/hubs` to `http://127.0.0.1:5199`.
+
+## Credits
+
+ANalyze by CHDS — created and maintained by [CHDS](https://github.com/jncchds), built together with
+[Claude](https://claude.com/claude-code) by Anthropic.
 
 Licensed under the GNU GPL v3.
