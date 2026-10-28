@@ -54,6 +54,30 @@ The container runs as **root** so it can read — and, when allowed, move or del
 Folders it creates (move targets, trash) take the owner of their parent folder. To guarantee nothing is ever changed,
 mount roots with `:ro` or set `ANalyze__ReadOnly=true`.
 
+## Desktop app
+
+ANalyze also runs as a desktop app for Windows, macOS and Linux: the same server and UI in a window, for analyzing the
+disks of the computer it runs on. Download it from the [GitHub releases](https://github.com/jncchds/ANalyze/releases)
+(every build of `main` also leaves the apps as workflow artifacts):
+
+| OS | Files |
+|---|---|
+| Windows (x64) | `ANalyze-<version>-win-x64.exe` (installer) or `.zip` |
+| macOS (Apple Silicon / Intel) | `ANalyze-<version>-mac-arm64.dmg` / `-mac-x64.dmg`, or `.zip` |
+| Linux (x64 / arm64) | `ANalyze-<version>-linux-x86_64.AppImage` / `-arm64.AppImage`, or `.tar.gz` |
+
+On first start, pick the folders or drives to analyze; add or remove them later in **Settings → Roots** or with
+**File → Add folder…**. The app's data (index, thumbnails, logs) is in its user-data folder (**File → Open data folder**).
+Video thumbnails need `ffmpeg` on the `PATH` (on macOS, Homebrew's is found too).
+
+The apps are not code-signed: Windows SmartScreen asks to confirm ("More info → Run anyway"); on macOS, if the app is
+reported as damaged, run `xattr -cr /Applications/ANalyze.app`. Hard-link dedupe is only available on Linux.
+
+The bundled server listens on `127.0.0.1` only and accepts only requests from the app's window (a random token per launch).
+
+Build it yourself (needs .NET 10 and Node 22): `cd desktop && npm ci && npm run dist` → `desktop/dist/`.
+For development: `npm run server` once (publishes the server into `desktop/server/<arch>`), then `npm start`.
+
 ## Configuration
 
 | Variable | Default | Meaning |

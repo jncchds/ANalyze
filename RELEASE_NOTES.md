@@ -1,5 +1,10 @@
 # Release Notes
 
+## v0.1.5 — 2026-10-28
+
+- feat: desktop app for Windows, macOS and Linux (Electron, server bundled): pick folders to analyze with the system folder picker, add or remove them in Settings; built by the same CI pipeline as the Docker image and attached to version releases
+- fix: root and path checks work with Windows paths, and ffmpeg is found on Windows
+
 ## v0.1.4 — 2026-10-28
 
 - feat: "ANalyze parent" integration links two ANalyze instances when one NAS is backed up to another: shows which files and folders are synchronized to the backup server (a folder counts at 80% of its direct content, or when identical) and which files in synchronized folders are corrupted (other size or hash there) or missing there — per folder in Browse and on a Backup page

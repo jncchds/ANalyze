@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useConfig, useRoots } from '../api/hooks'
 import { ErrorBox, Field, Loading, PageTitle, Section, Toggle } from '../components/ui'
+import { desktop } from '../lib/desktop'
 import { ago, bytes, dateTime, duration } from '../lib/format'
 
 interface AiSettings {
@@ -109,12 +110,24 @@ export default function Settings() {
         <Section
           title="Roots"
           actions={
-            <button className="btn-ghost px-2 py-1 text-xs" onClick={() => refreshRoots.mutate()}>
-              Re-check access
-            </button>
+            <>
+              {desktop && (
+                <button className="btn-primary px-2 py-1 text-xs" onClick={() => void desktop?.addRoot()}>
+                  Add folder…
+                </button>
+              )}
+              <button className="btn-ghost px-2 py-1 text-xs" onClick={() => refreshRoots.mutate()}>
+                Re-check access
+              </button>
+            </>
           }
         >
-          <p className="mb-2 text-sm muted">Mounted folders, configured with ANalyze__Roots__0, __1… A root mounted read-only (or ANalyze__ReadOnly=true) can be analyzed but never changed.</p>
+          <p className="mb-2 text-sm muted">
+            {desktop
+              ? 'Folders or drives this app analyzes. Folders you cannot write to can be analyzed but never changed.'
+              : 'Mounted folders, configured with ANalyze__Roots__0, __1… A root mounted read-only (or ANalyze__ReadOnly=true) can be analyzed but never changed.'}
+          </p>
+          {desktop && roots.data?.length === 0 && <p className="mb-2 text-sm">No folders yet — use “Add folder…” to pick one.</p>}
           <ul className="space-y-2 text-sm">
             {roots.data?.map((r) => (
               <li key={r.id} className="flex items-center gap-2">
@@ -122,6 +135,11 @@ export default function Settings() {
                 <span className="min-w-0 flex-1 truncate font-mono text-xs">{r.path}</span>
                 <span className="text-xs muted">{r.missing ? 'not mounted' : r.readOnly ? 'read-only' : 'read-write'}</span>
                 <span className="text-xs muted">{r.lastScanAt ? `scanned ${ago(r.lastScanAt)}` : 'never scanned'}</span>
+                {desktop && (
+                  <button className="btn-ghost px-2 py-0.5 text-xs" title="Stop analyzing this folder" onClick={() => void desktop?.removeRoot(r.path)}>
+                    Remove
+                  </button>
+                )}
               </li>
             ))}
           </ul>

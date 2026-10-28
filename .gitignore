@@ -496,3 +496,8 @@ src/ANalyze.Web/ClientApp/dev-dist/
 /.claude/
 appsettings.Local.json
 /library/
+
+# Desktop app
+desktop/node_modules/
+desktop/server/
+desktop/dist/

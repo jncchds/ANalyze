@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:" />
+    <title>ANalyze</title>
+    <style>
+      :root { --bg: #f2f6f6; --text: #0f1f22; --muted: #566e72; --accent: #0f766e; }
+      @media (prefers-color-scheme: dark) { :root { --bg: #0b1416; --text: #e2eeee; --muted: #8fa9ad; --accent: #2dd4bf; } }
+      html, body { height: 100%; margin: 0; }
+      body { display: grid; place-items: center; background: var(--bg); color: var(--text); font: 14px system-ui, -apple-system, 'Segoe UI', sans-serif; }
+      .box { text-align: center; }
+      .bar { width: 160px; height: 3px; margin: 16px auto 0; border-radius: 2px; overflow: hidden; background: color-mix(in srgb, var(--accent) 20%, transparent); }
+      .bar::after { content: ''; display: block; width: 40%; height: 100%; background: var(--accent); animation: slide 1.1s ease-in-out infinite; }
+      @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+      p { color: var(--muted); margin: 6px 0 0; }
+    </style>
+  </head>
+  <body>
+    <div class="box">
+      <svg width="56" height="56" viewBox="0 0 64 64" aria-hidden="true">
+        <rect width="64" height="64" rx="14" fill="#0f766e" />
+        <rect x="10" y="10" width="26" height="44" rx="3" fill="#5eead4" />
+        <rect x="39" y="10" width="15" height="20" rx="3" fill="#f5a524" />
+        <rect x="39" y="33" width="15" height="9" rx="2" fill="#99f6e4" />
+        <rect x="39" y="45" width="15" height="9" rx="2" fill="#ccfbf1" />
+      </svg>
+      <div><strong>ANalyze</strong></div>
+      <p>Starting…</p>
+      <div class="bar"></div>
+    </div>
+  </body>
+</html>

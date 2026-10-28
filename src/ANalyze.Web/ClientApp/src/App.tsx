@@ -7,6 +7,7 @@ import { Empty, Loading } from './components/ui'
 import { JobsProvider } from './hooks/useJobs'
 import { ScopeProvider } from './hooks/useScope'
 import { integrationUi } from './integrations/registry'
+import { desktop } from './lib/desktop'
 import { Login } from './pages/Login'
 
 const Overview = lazy(() => import('./pages/Overview'))
@@ -48,7 +49,8 @@ export default function App() {
     )
   }
 
-  const logout = me.data?.required
+  // The desktop app signs in with a per-launch token, so there is nothing to sign out of.
+  const logout = me.data?.required && !desktop
     ? async () => {
         await api('/auth/logout', { method: 'POST' })
         qc.clear()
