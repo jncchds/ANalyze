@@ -238,6 +238,60 @@ namespace ANalyze.Infrastructure.Data.Migrations
                     b.ToTable("AiRuleSuggestions");
                 });
 
+            modelBuilder.Entity("ANalyze.Domain.BackupFile", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("EntryId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Hash")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("LocalHash")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("LocalMTime")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("LocalRelPath")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("LocalRootId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("LocalSize")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("MTime")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Side")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Size")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("SourcePath")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EntryId");
+
+                    b.HasIndex("State");
+
+                    b.HasIndex("LocalRootId", "LocalRelPath");
+
+                    b.ToTable("BackupFiles");
+                });
+
             modelBuilder.Entity("ANalyze.Domain.Category", b =>
                 {
                     b.Property<int>("Id")
@@ -327,6 +381,9 @@ namespace ANalyze.Infrastructure.Data.Migrations
                     b.Property<int>("CategorySource")
                         .HasColumnType("INTEGER");
 
+                    b.Property<long?>("CorruptAt")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int>("Depth")
                         .HasColumnType("INTEGER");
 
@@ -350,6 +407,9 @@ namespace ANalyze.Infrastructure.Data.Migrations
 
                     b.Property<string>("FullHash")
                         .HasColumnType("TEXT");
+
+                    b.Property<long?>("HashedAt")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long>("Inode")
                         .HasColumnType("INTEGER");

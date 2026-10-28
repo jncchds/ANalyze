@@ -22,7 +22,9 @@ the folders to analyze, open the web UI, press **Scan now**.
   duplicates with hard links. Every change is a **plan** you review first; trash and moves can be undone.
 - **Integrations** — plugins that cross-reference other apps: **Plex**, **Jellyfin**, **Emby**, **Sonarr**, **Radarr**,
   **Lidarr**, **qBittorrent**, **Transmission**, **SABnzbd**, **Immich**, **PhotoPrism**, plus **Docker**, which works out the path
-  mappings between containers for all of them.
+  mappings between containers for all of them. **ANalyze parent** links two ANalyze instances when one NAS backs up another.
+- **Integrity** (optional) — hash every file and re-verify old hashes to catch bit rot: files whose content changed while size
+  and date stayed the same are flagged as *possibly corrupted*.
 - **Release notes** — what changed in each version, right in the UI (click the version next to the logo).
 
 ## Quick start
@@ -64,7 +66,7 @@ mount roots with `:ro` or set `ANalyze__ReadOnly=true`.
 | `ANalyze__Integrations__<id>__<field>` | — | Seeds an integration's settings until they are saved in the UI (see below). |
 | `TZ` | `UTC` | Time zone for schedules and dates. |
 
-Everything else (scan schedule, ignore patterns, duplicate search, hashing threads, trash retention, AI) is set in **Settings**.
+Everything else (scan schedule, ignore patterns, duplicate search, hashing threads, hashing every file and re-verifying hashes, trash retention, AI) is set in **Settings**.
 
 Build without ffmpeg (no video thumbnails, smaller image): `docker build -f docker/Dockerfile --build-arg FFMPEG=false .`
 
@@ -115,6 +117,7 @@ adds its page to the sidebar, and disabling it hides it again.
 | **Sonarr**, **Radarr**, **Lidarr** | Managed files labelled with quality; **files the app does not track** in its root folders (old upgrades, extras, failed imports); **orphan folders**; **Unmonitor** a title before cleaning it up so it is not downloaded again. |
 | **qBittorrent**, **Transmission**, **SABnzbd** | Seeding and downloading items are **protected** — cleanup plans skip them; finished downloads ranked by size and age; files in the download folders the client **no longer knows**; library files **copied instead of hard-linked** (fix them in Duplicates → Dedupe with *hard link*). |
 | **Immich**, **PhotoPrism** | Library photos and videos labelled; **copies outside the library** (exports, old backups, phone dumps); files in the library folders that were never indexed. |
+| **ANalyze parent** | On a backup NAS: which of the main NAS's files are **backed up** (verified by content, or by size and date), **outdated**, **corrupt** (and which copy changed), **missing**, or **only in the backup** — per folder in Browse and on the Backup page. |
 | **Docker** | Finds each app's container and turns the volume mounts into path mappings for the integrations above, so `/movies` in Radarr is matched to `/library/movies` here without typing anything. Labels folders that other containers mount. |
 
 ### Path mappings
@@ -132,6 +135,22 @@ ANalyze only reads the container list (`/containers/json`). For tighter control,
 [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) with `CONTAINERS=1` (`tcp://docker-proxy:2375`).
 The app's container is found from the integration's URL (container name, compose service or IP), a published port, or
 its image name; name it explicitly under *Container per app* (`radarr=radarr-4k`) when several match.
+
+### Backups between two ANalyze instances
+
+When one NAS is backed up to another and both run ANalyze, the backup (the *child*) can compare itself with the main one (the *parent*):
+
+1. On the **parent**, set `ANalyze__ApiToken` (and `ANalyze__Password` if the port is reachable by others).
+2. On **both**, turn on **Settings → Integrity & backups → Hash every file** (and, to catch bit rot later, *Re-verify hashes after N days*).
+   Without hashes, files are compared by size and date only.
+3. On the **child**, open **Integrations → ANalyze parent**: the parent's URL (`http://nas1:8080`), its token, and path mappings when the
+   backup lives under another path (`/library` → `/library/nas1`; leave empty to detect it from sample files, or press **Suggest**). **Test**, enable, **Sync now**.
+
+The **Backup** page shows how much of the parent is backed up, files that need attention, and a folder view; Browse labels every
+backed-up folder (*Backed up · verified*, *Backup: 3 missing · 1 corrupt*) and each problem file. *Corrupt* means same size and date
+but different content; when one side's own verification noticed the change (or the copies matched in an earlier comparison) the page says
+which copy is damaged — if it is the parent's, the backup holds the good one. Files *only in the backup* (deleted on the parent) can be
+cleaned up from there. The comparison runs after each scan of the child; the parent only answers read-only requests.
 
 ### Plex
 

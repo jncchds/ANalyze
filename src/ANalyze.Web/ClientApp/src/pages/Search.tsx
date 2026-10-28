@@ -14,7 +14,7 @@ import { bytes, count, kindLabel, parseSize } from '../lib/format'
 const KINDS: FileKind[] = ['video', 'audio', 'image', 'document', 'pdf', 'ebook', 'text', 'code', 'archive', 'diskImage', 'executable', 'font', 'database', 'model3D', 'other', 'unknown']
 const PAGE = 300
 
-const BOOL_KEYS = ['uncategorized', 'duplicates', 'dirs', 'emptyDirs', 'brokenLinks', 'sparse', 'hardlinked', 'asc'] as const
+const BOOL_KEYS = ['uncategorized', 'duplicates', 'dirs', 'emptyDirs', 'brokenLinks', 'sparse', 'hardlinked', 'corrupt', 'asc'] as const
 const NUM_KEYS = ['rootId', 'categoryId', 'minSize', 'maxSize', 'olderThanDays', 'newerThanDays', 'notAccessedDays'] as const
 const STR_KEYS = ['q', 'path', 'kind', 'ext', 'tag', 'segment', 'sort'] as const
 
@@ -135,6 +135,7 @@ export default function Search() {
               ['dirs', 'Folders instead of files'],
               ['duplicates', 'Has duplicates'],
               ['hardlinked', 'Hard-linked'],
+              ['corrupt', 'Possibly corrupted'],
               ['sparse', 'Sparse'],
               ['brokenLinks', 'Broken links'],
               ['emptyDirs', 'Empty folders'],

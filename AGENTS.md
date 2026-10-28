@@ -26,6 +26,7 @@ SQLite (WAL) in /data/analyze.db
 | `ANalyze.Integrations.Downloads` | qBittorrent, Transmission, SABnzbd (`DownloadIntegration` base). |
 | `ANalyze.Integrations.Jellyfin` | Jellyfin and Emby (`MediaServerIntegration` base). |
 | `ANalyze.Integrations.Photos` | Immich and PhotoPrism. |
+| `ANalyze.Integrations.Backup` | Parent–child link between two ANalyze instances: `BackupExport` (parent API), `ParentClient`, `BackupSync` (comparison), `BackupAnnotations`, `ParentIntegration`, `BackupEndpoints`. |
 | `ANalyze.Integrations.Docker` | Docker: `DockerClient` (unix socket or TCP), `DockerState`, `DockerPaths` (`IPathMappingSource`), `MountMath`. |
 | `ANalyze.Web` | `Program.cs`, `Endpoints/*`, `JobHub`, auth, SPA in `ClientApp/`. |
 
@@ -33,7 +34,8 @@ SQLite (WAL) in /data/analyze.db
 
 - **Entries** — one row per file or directory: `RootId`, `ParentId`, `RelPath` (relative to the root, `/`-separated, `""` = root dir), stat data
   (size, allocated size, mtime/atime/ctime, inode, device, link count), detection (`Ext`, `Mime`, `Kind`, `Detected`), category (`CategoryId`,
-  `CategorySource` none/rule/ai/manual), rule tags (`|a|b|`), hashes (`QuickHash`, `FullHash`). Directories carry subtree aggregates
+  `CategorySource` none/rule/ai/manual), rule tags (`|a|b|`), hashes (`QuickHash`, `FullHash`, `HashedAt` = when hashed or last verified, `CorruptAt` = when a re-read found other content with
+  unchanged size and mtime; the walker clears all four when a file changes). Directories carry subtree aggregates
   (`TotalSize`, `TotalAlloc`, `FileCount`, `DirCount`); files have `TotalSize = Size`, `FileCount = 1`.
   - Subtree queries use the unique index `(RootId, RelPath)` with the range `RelPath >= 'p/' AND RelPath < 'p0'` (`'0'` follows `'/'`).
     Never use `LIKE 'p/%'` for this — it cannot use the index.
@@ -46,6 +48,10 @@ SQLite (WAL) in /data/analyze.db
 - **IntegrationItems** — files/folders known to every `ItemIntegration` plugin (`Source`, `Kind`, `ExternalId`, `Title`, `GroupKey`/`GroupTitle`,
   `ExternalPath`, `Size`, `IsDir`, `State`, `Detail`, `AddedAt`/`LastUsedAt`, `PlayCount`, `Url`, matched `EntryId` + `MatchedBy`). A plugin replaces
   its own rows on each sync.
+- **BackupFiles** — written by the `parent` integration (this instance backs up another ANalyze): one row per parent file (`State` verified/matched/
+  outdated/corrupt/missing, `SourcePath`, the parent's `Size`/`MTime`/`Hash`, the local `EntryId`/`LocalRootId`/`LocalRelPath` where the copy is or
+  should be, `LocalSize`/`LocalMTime`/`LocalHash`, `Side` source/backup for corrupt files) plus `extra` rows for local files in the backup folders that
+  the parent does not have. Replaced on each sync; `Settings["backup:parent"]` keeps the last `BackupSnapshot` (parent info, targets, detected mappings).
 - **Settings** — key/value JSON: `app` (`AppSettings`), `integration:<id>` (`IntegrationSettings`, secrets encrypted with data protection).
 
 Times are unix seconds in Entries; `DateTimeOffset` columns are stored as binary longs (`DateTimeOffsetToBinaryConverter`, set globally) so
@@ -68,10 +74,16 @@ One scan at a time (`ScanQueue` → `ScanWorker`, guarded by `JobLock` with plan
 2. **Detect**: `FileTypes.FromExtension`, or magic bytes of the first 4 KB when the extension is unknown. Until a file is detected, the API reports its type
    from the extension (`EntryDto.From`).
 3. **Categorize** (`Categorizer`): rules for every file in scope; precedence manual > rule > AI; tags always from rules.
-4. **Duplicates** (`DuplicateFinder`, all roots): sizes with ≥ 2 distinct identities (`dev:inode`, or the row id where inodes are unavailable)
+4. **Hash all** (`ContentHasher.HashMissingAsync`, only with `AppSettings.HashAllFiles`): full + quick hash for every non-empty file without one
+   (hard links read once). Needed for backup verification. Every file may therefore have a `FullHash`: code that looks for duplicates must require
+   another file with the same hash and a different identity (`SearchFilter.Duplicates`, `PlanBuilder.CreateDedupeAsync`), never just `FullHash != null`.
+5. **Duplicates** (`DuplicateFinder`, all roots): sizes with ≥ 2 distinct identities (`dev:inode`, or the row id where inodes are unavailable)
    → quick hash (XxHash3 of 3×64 KB + size) → full hash (XxHash128) only on quick-hash collisions; files ≤ 192 KB get the full hash directly.
    Hard-link siblings share one hash computation.
-5. **History** snapshot (full scans), `PRAGMA optimize`.
+6. **Verify** (full scans with `VerifyAfterDays > 0`, `ContentHasher.VerifyAsync`): re-reads files with `HashedAt` older than that, oldest first, up to
+   `VerifyMaxGb`; a different hash with unchanged size and mtime sets `CorruptAt` (insight "Possibly corrupted files", search `corrupt=true`;
+   `DELETE /files/{id}/corrupt` accepts the new content). Files whose size/mtime differ from the index are skipped (the next walk resets them).
+7. **History** snapshot (full scans), `PRAGMA optimize`.
 
 Progress is reported to `JobBoard` (kind `scan`), throttled, and pushed through SignalR (`progress` events). On completion `ScanService.Completed`
 fires: AI auto-classification and integration auto-sync subscribe to it.
@@ -137,6 +149,23 @@ such an entry (hard links are allowed — the content stays).
   locations are roots. Emby uses the `/emby` prefix.
 - **Immich** (`x-api-key`, `POST /api/search/metadata`, external library import paths as roots when the key is an admin's) and **PhotoPrism**
   (Bearer token, `/api/v1/photos?merged=true`, files relative to the configured originals folder).
+
+### ANalyze parent (backups between instances)
+
+A parent–child link: the **child** holds a backup of the **parent**'s files and enables the `parent` integration (URL, the parent's
+`ANalyze__ApiToken`, mappings parent path → local path, date tolerance). The parent needs nothing but a token; it always serves
+`GET /api/v1/backup/info` (version, hash algorithm, `HashAllFiles`, roots with file/hash counts) and `GET /api/v1/backup/files?rootId=&after=&limit=`
+(files of one root in `RelPath` order, keyset-paged on the unique index; short JSON names `p s m h c`). Both are behind the normal auth policy.
+
+`BackupSync` (child): per parent root, if fewer than a fifth of the first 200 files exist at the mapped path, a mapping is detected with
+`PathMatcher.Detect` (name + size) and used for this sync. Each parent file is looked up by `(RootId, RelPath)` and classified (`Classify`):
+missing; empty on both sides or equal hashes → verified; different hashes → corrupt when size and mtime (± tolerance) are equal, else outdated;
+no hash on one side → matched (same size and date) or outdated. For corrupt files the `Side` comes from either side's own `CorruptAt`, else from
+the previous row (the hash both agreed on when verified). Rows go to a temp table; local files inside the target folders that no parent file
+claimed become `extra`; then `BackupFiles` is replaced in one transaction. `BackupAnnotations` labels every local folder with a summary
+(`backup` kind, states ok/missing/corrupt/extra), the target folders (`backup-root`), and problem files (corrupt/outdated/extra, at most 50k);
+fine files are not labelled one by one. `GET /entries/{id}` returns the file's `backup` row. Plugin routes: `summary`, `folders?rootId&path`
+(sub-folder counts per state), `files?state&side&rootId&path&q&sort`, `suggest-mappings`. UI: `integrations/parent/BackupPage.tsx`.
 
 ### Docker
 

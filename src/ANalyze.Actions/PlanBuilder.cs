@@ -156,7 +156,10 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
         }
 
         await using var db = await dbf.CreateDbContextAsync(ct);
-        var q = db.Entries.AsNoTracking().Where(e => !e.IsDir && !e.IsSymlink && e.FullHash != null && e.Size >= req.MinSize && e.Size > 0);
+        var all = db.Entries.AsNoTracking();
+        // Only hashes shared with another file: with "hash all files" on, every file has one.
+        var q = all.Where(e => !e.IsDir && !e.IsSymlink && e.FullHash != null && e.Size >= req.MinSize && e.Size > 0
+            && all.Any(o => o.FullHash == e.FullHash && o.Id != e.Id && !o.IsDir));
         if (req.Hashes is { Count: > 0 } hashes)
         {
             q = q.Where(e => hashes.Contains(e.FullHash!));

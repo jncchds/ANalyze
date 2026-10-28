@@ -24,6 +24,7 @@ public sealed class AnalyzeDbContext(DbContextOptions<AnalyzeDbContext> options)
     public DbSet<PlexItem> PlexItems => Set<PlexItem>();
     public DbSet<EntryAnnotation> Annotations => Set<EntryAnnotation>();
     public DbSet<IntegrationItem> IntegrationItems => Set<IntegrationItem>();
+    public DbSet<BackupFile> BackupFiles => Set<BackupFile>();
 
     protected override void ConfigureConventions(ModelConfigurationBuilder b)
     {
@@ -108,6 +109,13 @@ public sealed class AnalyzeDbContext(DbContextOptions<AnalyzeDbContext> options)
             e.HasIndex(x => x.EntryId);
             e.HasIndex(x => new { x.Source, x.Kind });
             e.HasIndex(x => new { x.Source, x.GroupKey });
+        });
+
+        m.Entity<BackupFile>(e =>
+        {
+            e.HasIndex(x => new { x.LocalRootId, x.LocalRelPath });
+            e.HasIndex(x => x.EntryId);
+            e.HasIndex(x => x.State);
         });
     }
 

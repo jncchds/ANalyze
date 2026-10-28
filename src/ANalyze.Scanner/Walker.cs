@@ -67,7 +67,7 @@ internal sealed class Walker : IDisposable
             "$inode", "$dev", "$nlink", "$ext", "$mime", "$kind", "$detected", "$files");
         _updateFile = Cmd("""
             UPDATE Entries SET IsSymlink=$isLink, LinkTarget=$target, BrokenLink=$broken, Size=$size, AllocSize=$alloc, MTime=$mtime, ATime=$atime, CTime=$ctime,
-                Inode=$inode, Dev=$dev, NLink=$nlink, Detected=$detected, QuickHash=NULL, FullHash=NULL, Error=0, TotalSize=$size, TotalAlloc=$alloc
+                Inode=$inode, Dev=$dev, NLink=$nlink, Detected=$detected, QuickHash=NULL, FullHash=NULL, HashedAt=NULL, CorruptAt=NULL, Error=0, TotalSize=$size, TotalAlloc=$alloc
             WHERE Id=$id
             """, "$isLink", "$target", "$broken", "$size", "$alloc", "$mtime", "$atime", "$ctime", "$inode", "$dev", "$nlink", "$detected", "$id");
         _updateATime = Cmd("UPDATE Entries SET ATime=$atime, NLink=$nlink WHERE Id=$id", "$atime", "$nlink", "$id");

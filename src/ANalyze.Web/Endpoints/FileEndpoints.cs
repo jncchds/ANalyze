@@ -36,7 +36,11 @@ public static class FileEndpoints
                 lastModified: DateTimeOffset.FromUnixTimeSeconds(e.MTime));
         });
 
-        g.MapGet("/thumb", async (long id, int? size, AnalyzeDbContext db, RootRegistry roots, PreviewService preview, HttpContext http, CancellationToken ct) =>
+        // "The new content is fine": clears the possible-corruption flag (the current hash becomes the reference).
+        g.MapDelete("/corrupt", async (long id, AnalyzeDbContext db, CancellationToken ct) =>
+            await db.Entries.Where(e => e.Id == id).ExecuteUpdateAsync(u => u.SetProperty(e => e.CorruptAt, (long?)null), ct) > 0 ? Results.NoContent() : Results.NotFound());
+
+        g.MapGet("/thumb",async (long id, int? size, AnalyzeDbContext db, RootRegistry roots, PreviewService preview, HttpContext http, CancellationToken ct) =>
         {
             var (e, path) = await ResolveAsync(id, db, roots, ct);
             if (e is null || path is null)

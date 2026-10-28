@@ -13,7 +13,7 @@ namespace ANalyze.Scanner;
 /// <summary>What to scan: everything, one root, or a folder inside a root.</summary>
 public sealed record ScanRequest(int? RootId = null, string? SubPath = null, bool SkipHashing = false, string? Reason = null);
 
-/// <summary>Runs a scan: walk → detect → categorize → hash duplicates → history snapshot.</summary>
+/// <summary>Runs a scan: walk → detect → categorize → hash (all files, if enabled) → hash duplicates → verify old hashes → history snapshot.</summary>
 public sealed class ScanService(
     SqliteSetup sqlite,
     IDbContextFactory<AnalyzeDbContext> dbf,
@@ -67,10 +67,30 @@ public sealed class ScanService(
                 ctx.Report();
             }, ct);
 
-            if (s.FindDuplicates && !req.SkipHashing)
+            if (!req.SkipHashing && (s.HashAllFiles || s.FindDuplicates || s.VerifyAfterDays > 0))
             {
                 using var write = sqlite.Open();
-                await new DuplicateFinder(conn, write, ctx, rootPaths, Math.Max(1, s.MinDuplicateSize), s.HashThreads).RunAsync();
+                var hasher = new ContentHasher(conn, write, ctx, rootPaths, s.HashThreads);
+                if (s.HashAllFiles)
+                {
+                    await hasher.HashMissingAsync();
+                }
+
+                if (s.FindDuplicates)
+                {
+                    await new DuplicateFinder(conn, write, ctx, rootPaths, Math.Max(1, s.MinDuplicateSize), s.HashThreads).RunAsync();
+                }
+
+                // Verification re-reads a lot of data: only during full scans.
+                if (s.VerifyAfterDays > 0 && full)
+                {
+                    var cutoff = DateTimeOffset.UtcNow.AddDays(-s.VerifyAfterDays).ToUnixTimeSeconds();
+                    var changed = await hasher.VerifyAsync(cutoff, Math.Max(0, s.VerifyMaxGb) * (1L << 30));
+                    if (changed > 0)
+                    {
+                        log.LogWarning("Scan {Id}: {Count} files changed content without a new size or modification time (possible corruption)", run.Id, changed);
+                    }
+                }
             }
 
             ctx.Phase = "finishing";

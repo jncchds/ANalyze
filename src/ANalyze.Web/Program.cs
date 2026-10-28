@@ -7,6 +7,7 @@ using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Jobs;
 using ANalyze.Integrations;
 using ANalyze.Integrations.Arr;
+using ANalyze.Integrations.Backup;
 using ANalyze.Integrations.Docker;
 using ANalyze.Integrations.Downloads;
 using ANalyze.Integrations.Jellyfin;
@@ -74,6 +75,7 @@ builder.Services.AddArrIntegrations();
 builder.Services.AddDownloadIntegrations();
 builder.Services.AddPhotoIntegrations();
 builder.Services.AddDockerIntegration();
+builder.Services.AddBackupIntegration();
 builder.Services.AddSingleton(sp => new PreviewService(analyze.ThumbsDir, sp.GetRequiredService<ILogger<PreviewService>>()));
 builder.Services.AddSingleton<IJobObserver, JobHubObserver>();
 builder.Services.AddMemoryCache();
@@ -146,6 +148,8 @@ secured.MapPlanEndpoints();
 secured.MapInsightEndpoints();
 secured.MapAiEndpoints();
 secured.MapIntegrationEndpoints();
+// Read by another ANalyze that backs up this one (its "ANalyze parent" integration).
+secured.MapBackupExport();
 app.MapHub<JobHub>("/hubs/jobs").RequireAuthorization(AuthSetup.Policy);
 
 // Unknown API paths must not fall through to the SPA.

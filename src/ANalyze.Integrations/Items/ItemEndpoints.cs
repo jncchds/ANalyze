@@ -258,7 +258,8 @@ internal static class Untracked
         rel == ANalyze.Infrastructure.Roots.RootRegistry.TrashFolder || rel.StartsWith(ANalyze.Infrastructure.Roots.RootRegistry.TrashFolder + "/", StringComparison.Ordinal);
 }
 
-internal static class Db
+/// <summary>Small raw-SQL helper shared by integration plugins.</summary>
+public static class Db
 {
     public static List<T> Query<T>(SqliteConnection c, string sql, Func<SqliteDataReader, T> map, params (string Name, object? Value)[] args)
     {

@@ -164,7 +164,14 @@ export function CategoryPill({ category, source }: { category?: Category; source
 }
 
 const KIND_ICON: Record<string, string> = {
-  movie: '🎬', episode: '📺', show: '📺', season: '📺', track: '🎵', album: '💿', artist: '🎤', library: '📚',
+  movie: '🎬', episode: '📺', show: '📺', season: '📺', track: '🎵', album: '💿', artist: '🎤', library: '📚', backup: '🛟', 'backup-root': '🛟',
+}
+
+/** Badge tone by annotation state: needs attention (amber), damaged (red), otherwise the accent. */
+function annotationTone(state?: string) {
+  if (state === 'corrupt') return 'bg-danger/10 text-danger'
+  if (state === 'unwatched' || state === 'missing' || state === 'outdated' || state === 'extra') return 'bg-amber-faint text-amber'
+  return 'bg-accent-faint text-accent'
 }
 
 /** Integration labels (e.g. Plex) shown next to files and folders. */
@@ -185,7 +192,7 @@ export function AnnotationBadges({ items, compact }: { items?: Annotation[]; com
           title={`${a.source}: ${a.label}${a.detail ? ` · ${a.detail}` : ''}${a.state ? ` · ${a.state}` : ''}`}
           className={clsx(
             'inline-flex max-w-[22rem] items-center gap-1 truncate rounded px-1.5 py-0.5 text-[0.7rem] no-underline',
-            a.state === 'unwatched' ? 'bg-amber-faint text-amber' : 'bg-accent-faint text-accent',
+            annotationTone(a.state),
           )}
         >
           <span>{KIND_ICON[a.kind] ?? '🔗'}</span>

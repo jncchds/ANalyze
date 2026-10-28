@@ -31,6 +31,10 @@ export interface Entry {
   categorySource: CategorySource
   tags: string[]
   hash?: string
+  /** Unix seconds: hash computed or last verified. */
+  hashedAt?: number
+  /** Unix seconds: content changed without a new size or mtime (possible corruption). */
+  corruptAt?: number
   nLink: number
   error: boolean
 }
@@ -232,6 +236,7 @@ export interface SearchFilter {
   brokenLinks?: boolean
   sparse?: boolean
   hardlinked?: boolean
+  corrupt?: boolean
   segment?: string
   sort?: string
   asc?: boolean

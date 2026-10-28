@@ -29,6 +29,7 @@ COPY src/ANalyze.Integrations.Downloads/ANalyze.Integrations.Downloads.csproj sr
 COPY src/ANalyze.Integrations.Jellyfin/ANalyze.Integrations.Jellyfin.csproj src/ANalyze.Integrations.Jellyfin/
 COPY src/ANalyze.Integrations.Photos/ANalyze.Integrations.Photos.csproj src/ANalyze.Integrations.Photos/
 COPY src/ANalyze.Integrations.Docker/ANalyze.Integrations.Docker.csproj src/ANalyze.Integrations.Docker/
+COPY src/ANalyze.Integrations.Backup/ANalyze.Integrations.Backup.csproj src/ANalyze.Integrations.Backup/
 COPY src/ANalyze.Web/ANalyze.Web.csproj src/ANalyze.Web/
 RUN dotnet restore src/ANalyze.Web/ANalyze.Web.csproj -a $TARGETARCH
 COPY src/ src/

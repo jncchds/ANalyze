@@ -30,6 +30,9 @@ interface AppSettings {
   findDuplicates: boolean
   minDuplicateSize: number
   hashThreads: number
+  hashAllFiles: boolean
+  verifyAfterDays: number
+  verifyMaxGb: number
   trashRetentionDays: number
   verifyHashBeforeDelete: boolean
   historyDepth: number
@@ -173,6 +176,25 @@ export default function Settings() {
             <Field label="Empty trash after (days, 0 = never)">
               <input className="input w-24" type="number" min={0} value={s.trashRetentionDays} onChange={(e) => set({ trashRetentionDays: Number(e.target.value) })} />
             </Field>
+          </div>
+        </Section>
+
+        <Section title="Integrity & backups">
+          <div className="space-y-3">
+            <Toggle
+              checked={s.hashAllFiles}
+              onChange={(v) => set({ hashAllFiles: v })}
+              label="Hash every file"
+              hint="Reads every file once (later only changed ones). Needed to verify backups between ANalyze instances and to notice corruption."
+            />
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Re-verify hashes after (days, 0 = never)" hint="Full scans re-read old files and flag content that changed without a new date">
+                <input className="input w-24" type="number" min={0} value={s.verifyAfterDays} onChange={(e) => set({ verifyAfterDays: Number(e.target.value) })} />
+              </Field>
+              <Field label="Re-read at most per scan (GB, 0 = all)">
+                <input className="input w-24" type="number" min={0} value={s.verifyMaxGb} onChange={(e) => set({ verifyMaxGb: Number(e.target.value) })} />
+              </Field>
+            </div>
           </div>
         </Section>
 

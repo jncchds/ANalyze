@@ -28,6 +28,7 @@ export const integrationUis: IntegrationUi[] = [
   { id: 'immich', label: 'Immich', icon: '🖼️', page: items('immich') },
   { id: 'photoprism', label: 'PhotoPrism', icon: '🌈', page: items('photoprism') },
   { id: 'docker', label: 'Docker', icon: '🐳', page: lazy(() => import('./docker/DockerPage')) },
+  { id: 'parent', label: 'Backup', icon: '🛟', page: lazy(() => import('./parent/BackupPage')) },
 ]
 
 export const integrationUi = (id: string) => integrationUis.find((i) => i.id === id)

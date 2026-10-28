@@ -128,7 +128,12 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
         using var tx = write.BeginTransaction();
         using var upd = write.CreateCommand();
         upd.Transaction = tx;
-        upd.CommandText = "UPDATE Entries SET QuickHash = $q, FullHash = $f WHERE Id = $id";
+        upd.CommandText = """
+            UPDATE Entries SET QuickHash = $q, FullHash = $f,
+                HashedAt = CASE WHEN $f IS NOT NULL AND (FullHash IS NULL OR HashedAt IS NULL) THEN $now ELSE HashedAt END
+            WHERE Id = $id
+            """;
+        upd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
         upd.Parameters.Add(new SqliteParameter("$q", null));
         upd.Parameters.Add(new SqliteParameter("$f", null));
         upd.Parameters.Add(new SqliteParameter("$id", null));

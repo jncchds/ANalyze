@@ -31,6 +31,8 @@ public sealed record SearchFilter
     public bool? BrokenLinks { get; init; }
     public bool? Sparse { get; init; }
     public bool? Hardlinked { get; init; }
+    /// <summary>Files whose content changed without a new size or mtime when re-read (possible corruption).</summary>
+    public bool? Corrupt { get; init; }
     /// <summary>Folder name anywhere in the path (e.g. node_modules); with Dirs=true matches those folders themselves (outermost only).</summary>
     public string? Segment { get; init; }
     public string? Sort { get; init; }
@@ -38,6 +40,7 @@ public sealed record SearchFilter
 
     public IQueryable<Entry> Apply(IQueryable<Entry> q)
     {
+        var all = q;
         var dirs = Dirs == true || EmptyDirs == true;
         q = q.Where(e => e.IsDir == dirs && e.RelPath != "");
         if (RootId is { } root)
@@ -122,7 +125,13 @@ public sealed record SearchFilter
 
         if (Duplicates == true)
         {
-            q = q.Where(e => e.FullHash != null);
+            // Every file may have a hash (backup verification): a duplicate needs another file with the same one that is not a hard link.
+            q = q.Where(e => e.FullHash != null && all.Any(o => o.FullHash == e.FullHash && o.Id != e.Id && (o.Inode == 0 || o.Inode != e.Inode || o.Dev != e.Dev)));
+        }
+
+        if (Corrupt == true)
+        {
+            q = q.Where(e => e.CorruptAt != null);
         }
 
         if (EmptyDirs == true)

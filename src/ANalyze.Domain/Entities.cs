@@ -47,6 +47,10 @@ public sealed class Entry
     public string? Tags { get; set; }
     public long? QuickHash { get; set; }
     public string? FullHash { get; set; }
+    /// <summary>Unix seconds when <see cref="FullHash"/> was computed or last verified by re-reading the file.</summary>
+    public long? HashedAt { get; set; }
+    /// <summary>Unix seconds when a re-read found other content although size and mtime were unchanged (bit rot, or a program that restores timestamps).</summary>
+    public long? CorruptAt { get; set; }
     public bool Error { get; set; }
 
     public long TotalSize { get; set; }
@@ -278,6 +282,34 @@ public sealed class IntegrationItem
     public long? EntryId { get; set; }
     /// <summary>How the item was matched: mapping, detected, name.</summary>
     public string? MatchedBy { get; set; }
+}
+
+/// <summary>
+/// How one file of the parent ANalyze (the instance this one backs up) compares with its copy here, or a file that is only here.
+/// Written by the "parent" integration; replaced on each sync.
+/// </summary>
+public sealed class BackupFile
+{
+    public long Id { get; set; }
+    /// <summary>verified, matched, outdated, corrupt, missing or extra (see <c>BackupStates</c>).</summary>
+    public required string State { get; set; }
+    /// <summary>Local copy; null when missing here.</summary>
+    public long? EntryId { get; set; }
+    /// <summary>Where the copy is (or should be) here; null when the parent's folder maps to no local root.</summary>
+    public int? LocalRootId { get; set; }
+    public string? LocalRelPath { get; set; }
+    /// <summary>Path on the parent; null for files that exist only here.</summary>
+    public string? SourcePath { get; set; }
+    /// <summary>The parent's size and mtime (for files only here: the local ones).</summary>
+    public long Size { get; set; }
+    public long MTime { get; set; }
+    /// <summary>The parent's content hash, when it has one.</summary>
+    public string? Hash { get; set; }
+    public long? LocalSize { get; set; }
+    public long? LocalMTime { get; set; }
+    public string? LocalHash { get; set; }
+    /// <summary>For corrupt files: which copy changed — source (the parent's), backup (this one) or null when unknown.</summary>
+    public string? Side { get; set; }
 }
 
 public sealed class Setting

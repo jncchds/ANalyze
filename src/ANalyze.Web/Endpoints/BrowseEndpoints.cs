@@ -43,6 +43,8 @@ public static class BrowseEndpoints
 
             var copies = e.FullHash is null ? 0 : await db.Entries.CountAsync(x => x.FullHash == e.FullHash && x.Id != e.Id, ct);
             var ai = await db.AiResults.AsNoTracking().Where(r => r.EntryId == id).OrderByDescending(r => r.Id).FirstOrDefaultAsync(ct);
+            // How this file compares with the parent ANalyze, when this instance is its backup.
+            var backup = await db.BackupFiles.AsNoTracking().Where(b => b.EntryId == id).FirstOrDefaultAsync(ct);
             return Results.Ok(new
             {
                 entry = EntryDto.From(e),
@@ -52,6 +54,7 @@ public static class BrowseEndpoints
                 copies,
                 linkTarget = e.LinkTarget,
                 ai = ai is null ? null : new { ai.Id, ai.Category, ai.Tags, ai.Confidence, ai.Reason, ai.Applied, ai.Model },
+                backup = backup is null ? null : new { backup.State, backup.Side, backup.SourcePath, backup.Size, backup.MTime, parentHashed = backup.Hash != null },
                 annotations = (await AnnotationsFor(db, [id], ct)).GetValueOrDefault(id) ?? [],
             });
         });
@@ -175,6 +178,7 @@ public static class BrowseEndpoints
         public bool? BrokenLinks { get; init; }
         public bool? Sparse { get; init; }
         public bool? Hardlinked { get; init; }
+        public bool? Corrupt { get; init; }
         public string? Segment { get; init; }
         public string? Sort { get; init; }
         public bool? Asc { get; init; }
@@ -185,7 +189,7 @@ public static class BrowseEndpoints
         {
             Q = Q, RootId = RootId, Path = Path, CategoryId = CategoryId, Uncategorized = Uncategorized, Kind = Enum.TryParse<FileKind>(Kind, ignoreCase: true, out var k) ? k : null, Ext = Ext, Tag = Tag,
             MinSize = MinSize, MaxSize = MaxSize, OlderThanDays = OlderThanDays, NewerThanDays = NewerThanDays, NotAccessedDays = NotAccessedDays,
-            Duplicates = Duplicates, Dirs = Dirs, EmptyDirs = EmptyDirs, BrokenLinks = BrokenLinks, Sparse = Sparse, Hardlinked = Hardlinked,
+            Duplicates = Duplicates, Dirs = Dirs, EmptyDirs = EmptyDirs, BrokenLinks = BrokenLinks, Sparse = Sparse, Hardlinked = Hardlinked, Corrupt = Corrupt,
             Segment = Segment, Sort = Sort, Asc = Asc,
         };
     }

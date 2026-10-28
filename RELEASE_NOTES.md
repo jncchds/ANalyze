@@ -1,5 +1,11 @@
 # Release Notes
 
+## v0.1.4 — 2026-10-28
+
+- feat: "ANalyze parent" integration links two ANalyze instances when one NAS backs up another: the backup shows which of the main NAS's files are backed up (verified by content or by size and date), outdated, corrupt — and which copy changed — missing, or only in the backup, per folder in Browse and on a Backup page
+- feat: optional hashing of every file and periodic re-verification that flags files whose content changed while size and date stayed the same (possible corruption) — new insight, search filter and a notice in the file details
+- fix: with every file hashed, "Has duplicates" search and dedupe plans still only consider files that have another copy
+
 ## v0.1.3 — 2026-10-28
 
 - fix: folders no longer show 0 bytes during a first scan (running totals) or after a scan that stopped or failed (sizes are recomputed)

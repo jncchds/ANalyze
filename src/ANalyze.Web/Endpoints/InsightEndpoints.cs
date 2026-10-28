@@ -81,6 +81,8 @@ public static class InsightEndpoints
         await AddCategory("caches", "Caches & temp", "Caches & temporary files", "Application caches, thumbnails, swap and temp files.", "high", ActionOp.Trash);
         await AddCategory("incomplete", "Incomplete downloads", "Incomplete downloads", "Partial downloads and torrent leftovers.", "high", ActionOp.Trash);
         await AddCategory("system", "System files", "OS & NAS metadata", "Thumbs.db, .DS_Store, @eaDir and recycle bins.", "low", ActionOp.Trash);
+        await Add("corrupt", "Possibly corrupted files", "Content changed although size and modification time did not (found when hashes were verified) — bit rot, or a program that restores timestamps. Compare with a backup.", "high",
+            new SearchFilter { Corrupt = true }, null);
         await Add("copynames", "Files named like copies", "'file (1).jpg', 'report - Copy.docx' — often accidental duplicates.", "medium", new SearchFilter { Tag = "copy-name" }, ActionOp.Trash);
         await Add("huge", "Huge files", "Single files over 4 GB.", "info", new SearchFilter { MinSize = 4L << 30 }, null);
         await Add("stale", "Untouched for 5+ years", "Files not modified in five years — archive candidates.", "info", new SearchFilter { OlderThanDays = 1825, MinSize = 1 << 20 }, ActionOp.Move);

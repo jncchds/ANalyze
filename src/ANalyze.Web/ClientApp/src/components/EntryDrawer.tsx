@@ -18,6 +18,16 @@ interface EntryDetail {
   linkTarget?: string
   ai?: { id: number; category: string; tags: string[]; confidence: number; reason?: string; applied: boolean; model: string }
   annotations: Annotation[]
+  /** How this file compares with the parent ANalyze, when this instance is its backup. */
+  backup?: { state: string; side?: string; sourcePath?: string; size: number; mTime: number; parentHashed: boolean }
+}
+
+const BACKUP_TEXT: Record<string, string> = {
+  verified: 'Backed up — same content as on the parent (hash verified)',
+  matched: 'Backed up — same size and date as on the parent (content not compared)',
+  outdated: 'Another version than on the parent',
+  corrupt: 'Same size and date as on the parent, but different content',
+  extra: 'Only in the backup — not on the parent',
 }
 
 /** Side panel with details, category, integrations, actions and the preview/text/hex/metadata viewers. */
@@ -49,6 +59,10 @@ export function EntryDrawer({ id, onClose }: { id: number | null; onClose: () =>
     onSuccess: () => qc.invalidateQueries({ queryKey: ['summary'] }),
   })
   const rescan = useMutation({ mutationFn: () => api(`/entries/${id}/rescan`, { method: 'POST' }) })
+  const clearCorrupt = useMutation({
+    mutationFn: () => api(`/files/${id}/corrupt`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['entry', id] }),
+  })
 
   if (id === null) return null
   const d = q.data
@@ -112,6 +126,25 @@ export function EntryDrawer({ id, onClose }: { id: number | null; onClose: () =>
                   )}
                 </div>
                 <AnnotationBadges items={d.annotations} />
+                {e.corruptAt && (
+                  <div className="rounded-md bg-danger/10 px-3 py-2 text-xs text-danger">
+                    Possibly corrupted: on {date(e.corruptAt)} the content no longer matched its hash although size and date were unchanged (bit rot, or a program that
+                    restores timestamps). Compare it with a backup.{' '}
+                    <button className="link" onClick={() => clearCorrupt.mutate()} disabled={clearCorrupt.isPending}>
+                      The new content is fine
+                    </button>
+                  </div>
+                )}
+                {d.backup && (
+                  <div className={d.backup.state === 'verified' || d.backup.state === 'matched' ? 'text-xs text-accent' : 'text-xs text-amber'}>
+                    🛟 {BACKUP_TEXT[d.backup.state] ?? d.backup.state}
+                    {d.backup.state === 'corrupt' && d.backup.side === 'source' && ' — the parent\'s copy changed; this one is the good copy'}
+                    {d.backup.state === 'corrupt' && d.backup.side === 'backup' && ' — this backup copy changed'}
+                    {d.backup.state === 'outdated' && ` (parent: ${bytes(d.backup.size)}, ${date(d.backup.mTime)})`}
+                    {d.backup.sourcePath && <span className="block break-all font-mono muted">{d.backup.sourcePath}</span>}
+                  </div>
+                )}
+                {!e.isDir && e.hashedAt && !e.corruptAt && <div className="text-xs muted">Content hash checked {date(e.hashedAt)}</div>}
                 {d.ai && !d.ai.applied && (
                   <p className="text-xs muted">
                     ✨ AI suggests <b>{d.ai.category}</b> ({Math.round(d.ai.confidence * 100)}%): {d.ai.reason}

@@ -26,6 +26,15 @@ public sealed record AppSettings
 
     public int HashThreads { get; init; } = 2;
 
+    /// <summary>Hash every file, not only duplicate candidates: needed to verify backups and to notice corruption.</summary>
+    public bool HashAllFiles { get; init; }
+
+    /// <summary>Re-read hashed files after this many days and flag content that changed without a new size or mtime; 0 = never.</summary>
+    public int VerifyAfterDays { get; init; }
+
+    /// <summary>Most data re-read for verification per scan, in GB; 0 = no limit.</summary>
+    public int VerifyMaxGb { get; init; } = 200;
+
     public int TrashRetentionDays { get; init; } = 30;
 
     /// <summary>Re-hash both copies before deleting or linking a duplicate.</summary>
