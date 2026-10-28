@@ -6,6 +6,7 @@ import { api } from '../../api/client'
 import { BarList } from '../../components/charts'
 import { EntryDrawer } from '../../components/EntryDrawer'
 import { Empty, ErrorBox, Loading, PageTitle, Section, ShareBar, Stat, Tabs } from '../../components/ui'
+import { useLocate } from '../../hooks/useLocate'
 import { ago, bytes, count, pct } from '../../lib/format'
 
 type FileState = 'synced' | 'corrupt' | 'missing' | 'unsynced'
@@ -76,7 +77,10 @@ type Tab = 'folders' | FileState
 
 /** Backup page of the "ANalyze parent" integration: what of this instance is synchronized to the backup server (the parent). */
 export default function BackupPage() {
-  const [tab, setTab] = useState<Tab>('folders')
+  const [chosenTab, setTab] = useState<Tab>('folders')
+  // Opened from a label in the browser: the folder view at that folder (or the file's folder).
+  const located = useLocate<{ rootId: number; path: string }>('parent')
+  const tab = located.target ? 'folders' : chosenTab
   const q = useQuery({ queryKey: ['parent', 'summary'], queryFn: () => api<Summary>('/integrations/parent/summary') })
   const sync = useMutation({ mutationFn: () => api('/integrations/parent/sync', { method: 'POST' }) })
   if (q.isLoading) return <Loading />
@@ -187,13 +191,20 @@ export default function BackupPage() {
 
       <Tabs<Tab>
         value={tab}
-        onChange={setTab}
+        onChange={(t) => {
+          located.clear()
+          setTab(t)
+        }}
         tabs={[
           { id: 'folders', label: 'Folders' },
           ...FILE_STATES.filter((x) => by(x.id).files > 0).map((x) => ({ id: x.id as Tab, label: `${x.label} (${count(by(x.id).files)})` })),
         ]}
       />
-      {tab === 'folders' ? <Folders targets={(s.targets ?? []).filter((t) => t.entryId)} threshold={threshold} /> : <Files key={tab} state={tab} />}
+      {tab === 'folders' ? (
+        <Folders key={`${located.entry ?? ''}:${located.target ? 1 : 0}`} targets={(s.targets ?? []).filter((t) => t.entryId)} threshold={threshold} focus={located.target} />
+      ) : (
+        <Files key={tab} state={tab} />
+      )}
     </>
   )
 }
@@ -207,9 +218,12 @@ function FolderPill({ state, children, synced }: { state: string; children: numb
   return state === 'synced' ? <span className="chip">Synchronized{share}</span> : <span className="pill-amber">Not synchronized{share}</span>
 }
 
-function Folders({ targets, threshold }: { targets: Target[]; threshold: number }) {
-  const [target, setTarget] = useState(0)
-  const [path, setPath] = useState<string | null>(null)
+function Folders({ targets, threshold, focus }: { targets: Target[]; threshold: number; focus?: { rootId: number; path: string } }) {
+  // Start at the located folder, inside the backed-up folder that contains it.
+  const inTarget = (t: Target, f: { rootId: number; path: string }) =>
+    t.rootId === f.rootId && (!t.relPath || f.path === t.relPath || f.path.startsWith(t.relPath + '/'))
+  const [target, setTarget] = useState(() => Math.max(0, focus ? targets.findIndex((t) => inTarget(t, focus)) : 0))
+  const [path, setPath] = useState<string | null>(() => (focus && targets.some((t) => inTarget(t, focus)) ? focus.path : null))
   const [preview, setPreview] = useState<number | null>(null)
   const t = targets[target]
   const current = path ?? t?.relPath ?? ''

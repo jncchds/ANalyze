@@ -60,6 +60,16 @@ internal static class BackupEndpoints
             return new { path = p, self, folders, files };
         });
 
+        // Where a labelled file or folder is in the folder view (from a label in the browser): the folder itself, or a file's folder.
+        g.MapGet("/locate", (long entryId, SqliteSetup sqlite) =>
+        {
+            using var c = sqlite.Open();
+            var row = Db.Query(c, "SELECT LocalRootId, LocalRelPath, IsDir FROM BackupFiles WHERE EntryId = $e", r => (Root: r.GetInt32(0), Rel: r.GetString(1), Dir: r.GetBoolean(2)), ("$e", entryId));
+            return row.Count == 0
+                ? Results.NotFound()
+                : Results.Ok(new { rootId = row[0].Root, path = row[0].Dir ? row[0].Rel : BackupSync.Parent(row[0].Rel), file = row[0].Dir ? null : row[0].Rel });
+        });
+
         // Files by state, inside a folder (direct=true: only files directly in it); largest first.
         g.MapGet("/files", async (string? state, int? rootId, string? path, bool? direct, string? q, string? sort, int? offset, int? limit, SqliteSetup sqlite, RootRegistry roots, CancellationToken ct) =>
         {

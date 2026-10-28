@@ -8,6 +8,7 @@ import { EntryDrawer } from '../../components/EntryDrawer'
 import { PlanDialog } from '../../components/PlanDialog'
 import { Empty, ErrorBox, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../../components/ui'
 import { ago, bytes, count, date, pct } from '../../lib/format'
+import { useLocate } from '../../hooks/useLocate'
 
 type TitleType = 'movie' | 'show' | 'artist'
 
@@ -79,6 +80,15 @@ export default function PlexPage() {
     queryFn: () => api<{ total: number; totalSize: number; items: TitleRow[] }>('/integrations/plex/top', { query: { type, filter, section, sort, q, limit: 300 } }),
     enabled: tab === 'titles',
   })
+  // Opened from a label in the browser: show that movie, show or artist.
+  const located = useLocate<{ type?: TitleType; key?: string }>('plex')
+  const loc = located.target?.key ? located.target : undefined
+  const locatedRow = useQuery({
+    queryKey: ['plex-top', 'key', loc?.type, loc?.key],
+    queryFn: () => api<{ items: TitleRow[] }>('/integrations/plex/top', { query: { type: loc!.type, key: loc!.key } }),
+    enabled: !!loc,
+  })
+  const locatedTitle = loc ? locatedRow.data?.items[0] : undefined
   const s = summary.data
   const total = s?.sections.reduce((a, x) => a + x.size, 0) ?? 0
   const watched = s?.sections.reduce((a, x) => a + x.watchedSize, 0) ?? 0
@@ -224,6 +234,7 @@ export default function PlexPage() {
       {tab === 'notInPlex' && <NotInPlex />}
       {tab === 'unmatched' && <Unmatched />}
       {open && <TitleDialog type={type} row={open} onClose={() => setOpen(null)} />}
+      {locatedTitle && loc?.type && <TitleDialog type={loc.type} row={locatedTitle} onClose={located.clear} />}
     </>
   )
 }

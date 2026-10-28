@@ -7,6 +7,7 @@ import { BarList } from '../../components/charts'
 import { EntryDrawer } from '../../components/EntryDrawer'
 import { PlanDialog } from '../../components/PlanDialog'
 import { Empty, ErrorBox, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../../components/ui'
+import { useLocate } from '../../hooks/useLocate'
 import { ago, bytes, count, date, pct } from '../../lib/format'
 
 /** Views a plugin page offers; every plugin built on ItemIntegration serves all of them. */
@@ -106,6 +107,15 @@ export function ItemsPage({ config }: { config: ItemsConfig }) {
   const [tab, setTab] = useState<ItemsTab>(config.tabs[0].id)
   const summary = useQuery({ queryKey: [config.id, 'summary'], queryFn: () => api<Summary>(`${base}/summary`) })
   const s = summary.data
+  // Opened from a label in the browser: show that title.
+  const located = useLocate<{ key?: string }>(config.id)
+  const locatedKey = located.target?.key
+  const locatedRow = useQuery({
+    queryKey: [config.id, 'groups', 'key', locatedKey],
+    queryFn: () => api<{ items: GroupRow[] }>(`${base}/groups`, { query: { key: locatedKey } }),
+    enabled: !!locatedKey,
+  })
+  const locatedGroup = locatedKey ? locatedRow.data?.items[0] : undefined
 
   if (summary.isLoading) return <Loading />
   if (summary.error) return <ErrorBox error={summary.error} />
@@ -158,6 +168,7 @@ export function ItemsPage({ config }: { config: ItemsConfig }) {
       {tab === 'orphans' && <Entries config={config} path="untracked?mode=top" empty="Nothing in these folders is unknown." />}
       {tab === 'copies' && <Entries config={config} path="copies" empty="No copies found (only files with identical content are compared)." showItem />}
       {tab === 'unmatched' && <Unmatched config={config} />}
+      {locatedGroup && <GroupDialog config={config} row={locatedGroup} onClose={located.clear} />}
     </>
   )
 }

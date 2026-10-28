@@ -34,7 +34,7 @@ internal static class ItemEndpoints
         });
 
         // Titles (movies, shows, artists, torrents…) ranked by size.
-        g.MapGet("/groups", async (string? kind, string? state, string? filter, string? q, string? sort, int? offset, int? limit, SqliteSetup sqlite, IntegrationHost host, CancellationToken ct) =>
+        g.MapGet("/groups", async (string? kind, string? state, string? filter, string? q, string? key, string? sort, int? offset, int? limit, SqliteSetup sqlite, IntegrationHost host, CancellationToken ct) =>
         {
             var settings = await host.LoadAsync(src, ct);
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -55,7 +55,8 @@ internal static class ItemEndpoints
                 _ => "size DESC",
             };
             var where = "i.Source = $s" + (string.IsNullOrEmpty(kind) ? "" : " AND i.Kind = $kind") + (string.IsNullOrEmpty(state) ? "" : " AND i.State = $state")
-                + (string.IsNullOrWhiteSpace(q) ? "" : " AND (i.Title LIKE $q OR i.GroupTitle LIKE $q)");
+                + (string.IsNullOrWhiteSpace(q) ? "" : " AND (i.Title LIKE $q OR i.GroupTitle LIKE $q)")
+                + (string.IsNullOrEmpty(key) ? "" : " AND COALESCE(i.GroupKey, i.ExternalId) = $key");
             var sql = $"""
                 SELECT COALESCE(i.GroupKey, i.ExternalId) AS k, MIN(COALESCE(i.GroupTitle, i.Title)) AS title, MIN(i.Year), COUNT(*) AS files, SUM({SizeExpr}) AS size,
                        SUM(CASE WHEN i.PlayCount > 0 THEN 1 ELSE 0 END), MAX(i.LastUsedAt) AS lastUsed, MIN(i.AddedAt) AS added,
@@ -66,7 +67,7 @@ internal static class ItemEndpoints
                 GROUP BY k {having}
                 """;
             using var c = sqlite.Open();
-            var args = new (string, object?)[] { ("$s", src), ("$kind", kind), ("$state", state), ("$q", "%" + q + "%") };
+            var args = new (string, object?)[] { ("$s", src), ("$kind", kind), ("$state", state), ("$q", "%" + q + "%"), ("$key", key) };
             var totals = Db.Query(c, $"SELECT COUNT(*), COALESCE(SUM(size), 0) FROM ({sql})", r => (r.GetInt64(0), r.GetInt64(1)), args).First();
             var items = Db.Query(c, $"{sql} ORDER BY {order} LIMIT {Math.Clamp(limit ?? 100, 1, 1000)} OFFSET {Math.Max(0, offset ?? 0)}", r => new
             {
@@ -86,6 +87,23 @@ internal static class ItemEndpoints
                 kind = r.GetString(13),
             }, args);
             return new { total = totals.Item1, totalSize = totals.Item2, items };
+        });
+
+        // Where a labelled file or folder belongs on this page (from a label in the browser): the title it is part of, when there is
+        // exactly one; a folder holding several titles (a library) opens the list.
+        g.MapGet("/locate", (long entryId, SqliteSetup sqlite) =>
+        {
+            using var c = sqlite.Open();
+            if (Db.EntryScope(c, entryId) is not { } args)
+            {
+                return Results.NotFound();
+            }
+
+            var keys = Db.Query(c, $"""
+                SELECT DISTINCT COALESCE(i.GroupKey, i.ExternalId) FROM IntegrationItems i JOIN Entries e ON e.Id = i.EntryId
+                WHERE i.Source = $s AND {Db.InScope("e")} LIMIT 2
+                """, r => r.GetString(0), [.. args, ("$s", src)]);
+            return Results.Ok(new { key = keys.Count == 1 ? keys[0] : null });
         });
 
         // Files of one title.
@@ -261,6 +279,23 @@ internal static class Untracked
 /// <summary>Small raw-SQL helper shared by integration plugins.</summary>
 public static class Db
 {
+    /// <summary>Parameters for <see cref="InScope"/>: the entry and, for a folder, its subtree range. Null when the entry does not exist.</summary>
+    public static (string Name, object? Value)[]? EntryScope(SqliteConnection c, long entryId)
+    {
+        var e = Query(c, "SELECT RootId, RelPath, IsDir FROM Entries WHERE Id = $id", r => (Root: r.GetInt32(0), Rel: r.GetString(1), Dir: r.GetBoolean(2)), ("$id", entryId));
+        if (e.Count == 0)
+        {
+            return null;
+        }
+
+        var (root, rel, dir) = e[0];
+        return [("$entry", entryId), ("$edir", dir), ("$eroot", root), ("$eall", rel.Length == 0), ("$efrom", rel + "/"), ("$eto", rel + "0")];
+    }
+
+    /// <summary>SQL condition: the entry alias is the entry from <see cref="EntryScope"/> or lies inside it (index-friendly range).</summary>
+    public static string InScope(string e) =>
+        $"({e}.Id = $entry OR ($edir = 1 AND {e}.RootId = $eroot AND ($eall = 1 OR ({e}.RelPath >= $efrom AND {e}.RelPath < $eto))))";
+
     public static List<T> Query<T>(SqliteConnection c, string sql, Func<SqliteDataReader, T> map, params (string Name, object? Value)[] args)
     {
         using var cmd = c.CreateCommand();

@@ -108,7 +108,7 @@ By default only paths, names, sizes, types and dates are sent; optionally the fi
 ## Integrations
 
 Integrations are plugins (`IIntegration`) with their own settings form, sync job, API and page. They label
-files and folders, and the labels appear in Browse and Search. Turn one on under **Integrations**: enabling it also
+files and folders, and the labels appear in Browse and Search. Click a label to open that integration's page at the title or folder it belongs to. Turn one on under **Integrations**: enabling it also
 adds its page to the sidebar, and disabling it hides it again.
 
 | Integration | What it adds |

@@ -4,6 +4,7 @@
 
 - feat: "ANalyze parent" integration links two ANalyze instances when one NAS is backed up to another: shows which files and folders are synchronized to the backup server (a folder counts at 80% of its direct content, or when identical) and which files in synchronized folders are corrupted (other size or hash there) or missing there — per folder in Browse and on a Backup page
 - feat: optional hashing of every file and periodic re-verification that flags files whose content changed while size and date stayed the same (possible corruption) — new insight, search filter and a notice in the file details
+- feat: integration labels in Browse, Search and the file details are clickable: they open the integration's page at that title (Plex, Jellyfin, *arr, download clients, photos) or folder (backup)
 - fix: with every file hashed, "Has duplicates" search and dedupe plans still only consider files that have another copy
 
 ## v0.1.3 — 2026-10-28

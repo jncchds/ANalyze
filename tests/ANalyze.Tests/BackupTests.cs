@@ -169,6 +169,10 @@ public class BackupSyncTests
         var entryId = corrupt.GetProperty("items")[0].GetProperty("entryId").GetInt64();
         var details = await http.GetFromJsonAsync<JsonElement>($"/api/v1/entries/{entryId}");
         Assert.Equal("corrupt", details.GetProperty("backup").GetProperty("state").GetString());
+
+        // A label in the browser opens the folder view at the file's folder.
+        var located = await http.GetFromJsonAsync<JsonElement>($"/api/v1/integrations/parent/locate?entryId={entryId}");
+        Assert.Equal("home/docs", located.GetProperty("path").GetString());
     }
 
     [Fact]

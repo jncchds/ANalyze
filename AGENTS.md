@@ -120,6 +120,12 @@ integrations after each scan. Plugins write labels with `Annotations.Replace(con
 
 Front end: `ClientApp/src/integrations/registry.tsx` maps an id to a lazy page; the settings form is generic (`pages/Integrations.tsx`).
 
+Labels are clickable: a badge links to `/integrations/{source}?entry={entryId}` (never to the external app; those links stay inside the pages).
+A page reads the entry with `hooks/useLocate.ts`, which calls the plugin's `GET /integrations/{id}/locate?entryId=` and opens what it returns:
+`ItemIntegration` and Plex return the title the entry belongs to (`key`, Plex also `type`) when the entry or folder holds exactly one, and the page
+opens it through `groups?key=` / `top?key=`; the backup page gets `{rootId, path}` and opens its folder view there. `Db.EntryScope` + `Db.InScope`
+give the "this entry or anything inside it" condition. A plugin without `locate` just opens its page.
+
 To add one: new project `src/ANalyze.Integrations.<Name>` referencing `ANalyze.Integrations`, implement `IIntegration`, register with
 `services.AddIntegration<T>()` in `Program.cs`, add the project to the Dockerfile restore list and the solution, optionally add a UI page to the registry.
 

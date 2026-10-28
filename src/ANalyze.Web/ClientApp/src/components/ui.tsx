@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Loader2 } from 'lucide-react'
+import { Link } from 'react-router'
 import clsx from 'clsx'
 import type { Annotation, Category } from '../api/types'
 
@@ -174,31 +175,26 @@ function annotationTone(state?: string) {
   return 'bg-accent-faint text-accent'
 }
 
-/** Integration labels (e.g. Plex) shown next to files and folders. */
+/** Integration labels (e.g. Plex) shown next to files and folders; each opens its integration's page at that file or folder. */
 export function AnnotationBadges({ items, compact }: { items?: Annotation[]; compact?: boolean }) {
   if (!items?.length) return null
   return (
     <span className="inline-flex flex-wrap items-center gap-1">
       {items.map((a) => (
-        <a
+        <Link
           key={a.source + a.kind}
-          href={a.url}
-          target="_blank"
-          rel="noreferrer"
-          onClick={(e) => {
-            e.stopPropagation()
-            if (!a.url) e.preventDefault()
-          }}
+          to={`/integrations/${a.source}?entry=${a.entryId}`}
+          onClick={(e) => e.stopPropagation()}
           title={`${a.source}: ${a.label}${a.detail ? ` · ${a.detail}` : ''}${a.state ? ` · ${a.state}` : ''}`}
           className={clsx(
-            'inline-flex max-w-[22rem] items-center gap-1 truncate rounded px-1.5 py-0.5 text-[0.7rem] no-underline',
+            'inline-flex max-w-[22rem] items-center gap-1 truncate rounded px-1.5 py-0.5 text-[0.7rem] no-underline hover:underline',
             annotationTone(a.state),
           )}
         >
           <span>{KIND_ICON[a.kind] ?? '🔗'}</span>
           {!compact && <span className="truncate">{a.label}</span>}
           {a.state === 'watched' && <span title="Watched">✓</span>}
-        </a>
+        </Link>
       ))}
     </span>
   )

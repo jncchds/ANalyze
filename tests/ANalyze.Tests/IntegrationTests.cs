@@ -165,6 +165,15 @@ public class ItemIntegrationTests
         // A cleanup plan leaves the seeding file alone.
         var group = await http.GetFromJsonAsync<JsonElement>("/api/v1/integrations/fake/group?key=a");
         var seeding = group[0].GetProperty("entryId").GetInt64();
+
+        // A label in the browser opens the title it belongs to; a folder with several titles opens the list.
+        var located = await http.GetFromJsonAsync<JsonElement>($"/api/v1/integrations/fake/locate?entryId={seeding}");
+        Assert.Equal("a", located.GetProperty("key").GetString());
+        var photos = summary.GetProperty("roots")[0].GetProperty("entryId").GetInt64();
+        located = await http.GetFromJsonAsync<JsonElement>($"/api/v1/integrations/fake/locate?entryId={photos}");
+        Assert.Equal(JsonValueKind.Null, located.TryGetProperty("key", out var k) ? k.ValueKind : JsonValueKind.Null);
+        var byKey = await http.GetFromJsonAsync<JsonElement>("/api/v1/integrations/fake/groups?key=a");
+        Assert.Equal("IMG_0001", Assert.Single(byKey.GetProperty("items").EnumerateArray()).GetProperty("title").GetString());
         var res = await http.PostAsJsonAsync("/api/v1/plans", new { entryIds = new[] { seeding }, op = "trash" }, TestApp.Json);
         res.EnsureSuccessStatusCode();
         var id = (await res.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();

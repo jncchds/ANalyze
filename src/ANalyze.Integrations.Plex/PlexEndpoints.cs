@@ -1,5 +1,6 @@
 using ANalyze.Domain;
 using ANalyze.Infrastructure.Data;
+using ANalyze.Integrations.Items;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -32,11 +33,11 @@ internal static class PlexEndpoints
         });
 
         // Titles ranked by size: movies, shows (all episodes) or artists (all tracks).
-        g.MapGet("/top", async (string? type, string? section, string? q, string? filter, string? sort, int? offset, int? limit, SqliteSetup sqlite, IntegrationHost host, CancellationToken ct) =>
+        g.MapGet("/top", async (string? type, string? section, string? q, string? key, string? filter, string? sort, int? offset, int? limit, SqliteSetup sqlite, IntegrationHost host, CancellationToken ct) =>
         {
             var t = type is "show" or "artist" ? type : "movie";
             var itemType = t switch { "show" => "episode", "artist" => "track", _ => "movie" };
-            var key = t == "movie" ? "p.RatingKey" : "p.SectionKey || ':' || p.ShowTitle";
+            var groupKey = t == "movie" ? "p.RatingKey" : "p.SectionKey || ':' || p.ShowTitle";
             var title = t == "movie" ? "MIN(p.Title)" : "MIN(p.ShowTitle)";
             // Folder to open in the browser: the movie folder, or the show/artist folder above season/album folders.
             var folder = t == "movie" ? "MIN(e.ParentId)" : "MIN(pa.ParentId)";
@@ -59,9 +60,10 @@ internal static class PlexEndpoints
                 _ => "size DESC",
             };
             var where = "p.Type = $type" + (string.IsNullOrEmpty(section) ? "" : " AND p.SectionKey = $section")
-                + (string.IsNullOrWhiteSpace(q) ? "" : " AND (p.Title LIKE $q OR p.ShowTitle LIKE $q)");
+                + (string.IsNullOrWhiteSpace(q) ? "" : " AND (p.Title LIKE $q OR p.ShowTitle LIKE $q)")
+                + (string.IsNullOrEmpty(key) ? "" : $" AND {groupKey} = $key");
             var sql = $"""
-                SELECT {key} AS k, {title} AS title, MIN(p.Year), MIN(p.SectionTitle), COUNT(*) AS files, SUM(COALESCE(e.Size, p.Size)) AS size,
+                SELECT {groupKey} AS k, {title} AS title, MIN(p.Year), MIN(p.SectionTitle), COUNT(*) AS files, SUM(COALESCE(e.Size, p.Size)) AS size,
                        SUM(CASE WHEN p.ViewCount > 0 THEN 1 ELSE 0 END), MAX(p.LastViewedAt) AS lastViewed, MIN(p.AddedAt) AS added,
                        MAX(p.Versions), SUM(CASE WHEN p.EntryId IS NULL THEN 1 ELSE 0 END), {folder}, MIN(p.Url), GROUP_CONCAT(DISTINCT p.Resolution)
                 FROM PlexItems p LEFT JOIN Entries e ON e.Id = p.EntryId LEFT JOIN Entries pa ON pa.Id = e.ParentId
@@ -69,7 +71,7 @@ internal static class PlexEndpoints
                 GROUP BY k {having}
                 """;
             using var c = sqlite.Open();
-            var args = new (string, object?)[] { ("$type", itemType), ("$section", section), ("$q", "%" + q + "%") };
+            var args = new (string, object?)[] { ("$type", itemType), ("$section", section), ("$q", "%" + q + "%"), ("$key", key) };
             var totals = Query(c, $"SELECT COUNT(*), COALESCE(SUM(size), 0) FROM ({sql})", r => (r.GetInt64(0), r.GetInt64(1)), args).First();
             var items = Query(c, $"{sql} ORDER BY {order} LIMIT {Math.Clamp(limit ?? 100, 1, 1000)} OFFSET {Math.Max(0, offset ?? 0)}", r => new
             {
@@ -89,6 +91,23 @@ internal static class PlexEndpoints
                 resolutions = r.IsDBNull(13) ? null : r.GetString(13),
             }, args);
             return new { type = t, total = totals.Item1, totalSize = totals.Item2, items };
+        });
+
+        // Where a labelled file or folder belongs (from a label in the browser): the movie, show or artist it is part of, when there is exactly one.
+        g.MapGet("/locate", (long entryId, SqliteSetup sqlite) =>
+        {
+            using var c = sqlite.Open();
+            if (Db.EntryScope(c, entryId) is not { } args)
+            {
+                return Results.NotFound();
+            }
+
+            var hits = Query(c, $"""
+                SELECT DISTINCT CASE p.Type WHEN 'episode' THEN 'show' WHEN 'track' THEN 'artist' ELSE 'movie' END,
+                       CASE p.Type WHEN 'movie' THEN p.RatingKey ELSE p.SectionKey || ':' || p.ShowTitle END
+                FROM PlexItems p JOIN Entries e ON e.Id = p.EntryId WHERE {Db.InScope("e")} LIMIT 2
+                """, r => (Type: r.GetString(0), Key: r.GetString(1)), args);
+            return Results.Ok(new { type = hits.Count > 0 ? hits[0].Type : null, key = hits.Count == 1 ? hits[0].Key : null });
         });
 
         // Files of one title: versions of a movie, episodes of a show, tracks of an artist.
