@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <AssemblyName>ANalyze.Web</AssemblyName>
+    <RootNamespace>ANalyze.Web</RootNamespace>
+    <UserSecretsId>analyze-web</UserSecretsId>
+    <SpaRoot>ClientApp/</SpaRoot>
+    <!-- The Docker build compiles the SPA in its own stage and passes SkipSpaBuild=true. -->
+    <SkipSpaBuild Condition="'$(SkipSpaBuild)' == ''">false</SkipSpaBuild>
+    <DefaultItemExcludes>$(DefaultItemExcludes);$(SpaRoot)node_modules/**;$(SpaRoot)**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Serilog.AspNetCore" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ANalyze.Actions\ANalyze.Actions.csproj" />
+    <ProjectReference Include="..\ANalyze.Ai\ANalyze.Ai.csproj" />
+    <ProjectReference Include="..\ANalyze.Integrations.Plex\ANalyze.Integrations.Plex.csproj" />
+    <ProjectReference Include="..\ANalyze.Preview\ANalyze.Preview.csproj" />
+  </ItemGroup>
+
+  <!-- Builds the React SPA into wwwroot on publish (dev: run `npm run dev` in ClientApp). -->
+  <Target Name="BuildSpa" BeforeTargets="ComputeFilesToPublish" Condition="'$(SkipSpaBuild)' != 'true'">
+    <Exec Command="node --version" ContinueOnError="true">
+      <Output TaskParameter="ExitCode" PropertyName="NodeExitCode" />
+    </Exec>
+    <Error Condition="'$(NodeExitCode)' != '0'" Text="Node.js is required to build the SPA (or publish with -p:SkipSpaBuild=true)." />
+    <Exec WorkingDirectory="$(SpaRoot)" Command="npm ci" />
+    <Exec WorkingDirectory="$(SpaRoot)" Command="npm run build" />
+    <ItemGroup>
+      <SpaDist Include="wwwroot/**" />
+      <ResolvedFileToPublish Include="@(SpaDist->'%(FullPath)')" Exclude="@(ResolvedFileToPublish)">
+        <RelativePath>%(SpaDist.Identity)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+
+</Project>

@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ANalyze.Domain/ANalyze.Domain.csproj" />
+    <Project Path="src/ANalyze.Infrastructure/ANalyze.Infrastructure.csproj" />
+    <Project Path="src/ANalyze.Scanner/ANalyze.Scanner.csproj" />
+    <Project Path="src/ANalyze.Preview/ANalyze.Preview.csproj" />
+    <Project Path="src/ANalyze.Ai/ANalyze.Ai.csproj" />
+    <Project Path="src/ANalyze.Actions/ANalyze.Actions.csproj" />
+    <Project Path="src/ANalyze.Integrations/ANalyze.Integrations.csproj" />
+    <Project Path="src/ANalyze.Integrations.Plex/ANalyze.Integrations.Plex.csproj" />
+    <Project Path="src/ANalyze.Web/ANalyze.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ANalyze.Tests/ANalyze.Tests.csproj" />
+  </Folder>
+</Solution>

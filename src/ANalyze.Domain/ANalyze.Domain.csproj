@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>ANalyze.Domain</RootNamespace>
+  </PropertyGroup>
+
+</Project>
