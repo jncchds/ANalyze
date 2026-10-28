@@ -1,5 +1,9 @@
 # Release Notes
 
+## v0.1.2 — 2026-10-28
+
+- fix: the Docker image build includes RELEASE_NOTES.md (the 0.1.1 image failed to build)
+
 ## v0.1.1 — 2026-10-28
 
 - feat: release notes page in the UI (linked from the version pill, which marks versions you haven't read yet)
