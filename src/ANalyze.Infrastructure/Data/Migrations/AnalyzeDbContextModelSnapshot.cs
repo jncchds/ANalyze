@@ -435,6 +435,9 @@ namespace ANalyze.Infrastructure.Data.Migrations
                         .HasColumnType("TEXT")
                         .UseCollation("NOCASE");
 
+                    b.Property<bool>("OtherFilesystem")
+                        .HasColumnType("INTEGER");
+
                     b.Property<long?>("ParentId")
                         .HasColumnType("INTEGER");
 
@@ -530,6 +533,9 @@ namespace ANalyze.Infrastructure.Data.Migrations
                     b.Property<long?>("AddedAt")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("CheckedPath")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Detail")
                         .HasColumnType("TEXT");
 
@@ -608,6 +614,9 @@ namespace ANalyze.Infrastructure.Data.Migrations
 
                     b.Property<long?>("AddedAt")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("CheckedPath")
+                        .HasColumnType("TEXT");
 
                     b.Property<long?>("EntryId")
                         .HasColumnType("INTEGER");

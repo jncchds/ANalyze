@@ -1,5 +1,14 @@
 # Release Notes
 
+## v0.1.6 — 2026-10-29
+
+- feat: Activity log page — what ANalyze is doing step by step: each scan phase with counts and times, folders it skipped and why, unreadable files, integration syncs (mappings used, items not found and why), plans and AI runs; follows live, filters by level, area and text. Kept in memory (last 20,000 lines); the log files keep the full history
+- feat: hovering a scan or sync step (walking, detecting, hashing…) explains what it does
+- feat: integration pages show the app's path, where ANalyze looked for it and the file it found; with host paths (Settings, or ANalyze's own Docker mounts) the host path is shown too, also in file details and roots
+- fix: folders on another filesystem (separate disk, share, dataset, subvolume) below a root are scanned by default; when that setting is off they are marked "not scanned" in Browse and logged, instead of silently looking empty and hiding files from integrations
+- fix: scans store their results at least every 2 seconds and hashes of big files as they come, and open pages refresh while a scan runs, so folders no longer look empty until the scan ends
+- fix: the GitHub release step no longer fails on Docker's build record artifact
+
 ## v0.1.5 — 2026-10-28
 
 - feat: desktop app for Windows, macOS and Linux (Electron, server bundled): pick folders to analyze with the system folder picker, add or remove them in Settings; built by the same CI pipeline as the Docker image and published as the GitHub release for each version (from VERSION, no tag needed)

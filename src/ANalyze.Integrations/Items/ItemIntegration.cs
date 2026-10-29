@@ -101,16 +101,26 @@ public abstract class ItemIntegration(ItemServices services) : IIntegration
         var mappings = await Services.Paths.ForAsync(this, settings, ct);
         progress.Report(new IntegrationProgress("matching", 0, snap.Items.Count));
         using var conn = Services.Sqlite.Open();
+        var log = Services.Logs.CreateLogger(GetType());
+        log.LogInformation("{Integration}: {Items} items and {Folders} folders read; path mappings: {Mappings}", Name, snap.Items.Count, snap.Folders.Count,
+            mappings.Count == 0 ? "none (paths are used as they are)" : string.Join(", ", mappings.Select(m => $"{m.From} → {m.To}")));
         var matcher = new PathMatcher(conn, Services.Roots, mappings);
         matcher.Detect(snap.Items.Select(i => (i.Path, i.Size, i.IsDir ?? false)));
-        var matched = Store(conn, snap, matcher, progress);
+        if (matcher.Detected.Count > 0)
+        {
+            log.LogInformation("{Integration}: mappings detected from sample files: {Mappings}", Name, string.Join(", ", matcher.Detected.Select(m => $"{m.From} → {m.To}")));
+        }
+
+        var matched = Store(conn, snap, matcher, progress, log);
         var detected = matcher.Detected.Count > 0 ? $"; detected mappings: {string.Join(", ", matcher.Detected.Select(m => $"{m.From} → {m.To}"))}" : "";
-        Services.Logs.CreateLogger(GetType()).LogInformation("{Integration} sync: {Items} items, {Matched} matched{Detected}", Name, snap.Items.Count, matched, detected);
+        log.LogInformation("{Integration} sync: {Items} items, {Matched} found on disk", Name, snap.Items.Count, matched);
         return new IntegrationSyncResult(true, $"{snap.Items.Count} items, {matched} found on disk{(snap.Summary is null ? "" : " · " + snap.Summary)}{detected}", snap.Items.Count, matched);
     }
 
-    private int Store(SqliteConnection conn, Snapshot snap, PathMatcher matcher, IProgress<IntegrationProgress> progress)
+    private int Store(SqliteConnection conn, Snapshot snap, PathMatcher matcher, IProgress<IntegrationProgress> progress, ILogger log)
     {
+        var why = new Dictionary<string, int>();
+        var examples = new List<string>();
         var notes = new Dictionary<(long, string), Annotations.Item>();
         void Note(long entryId, string kind, string label, string? detail = null, string? state = null, string? url = null) =>
             notes.TryAdd((entryId, kind), new Annotations.Item(entryId, kind, label, detail, state, url));
@@ -118,7 +128,11 @@ public abstract class ItemIntegration(ItemServices services) : IIntegration
         var folderIds = new HashSet<long>();
         foreach (var f in snap.Folders.OrderByDescending(f => f.IsRoot))
         {
-            if (matcher.FindDir(f.Path) is { } dirId)
+            if (matcher.FindDir(f.Path) is not { } dirId)
+            {
+                log.LogInformation("{Integration}: folder {Path} (checked at {Local}) is not in the index", Name, f.Path, matcher.LocalPath(f.Path));
+            }
+            else
             {
                 if (f.IsRoot)
                 {
@@ -143,10 +157,10 @@ public abstract class ItemIntegration(ItemServices services) : IIntegration
         ins.Transaction = tx;
         ins.CommandText = """
             INSERT INTO IntegrationItems (Source, Kind, ExternalId, Title, GroupKey, GroupTitle, SubTitle, Year, ExternalPath, Size, IsDir, State, Detail,
-                AddedAt, LastUsedAt, PlayCount, Url, EntryId, MatchedBy)
-            VALUES ($src, $kind, $ext, $title, $gk, $gt, $sub, $year, $path, $size, $dir, $state, $detail, $added, $used, $plays, $url, $entry, $by)
+                AddedAt, LastUsedAt, PlayCount, Url, EntryId, MatchedBy, CheckedPath)
+            VALUES ($src, $kind, $ext, $title, $gk, $gt, $sub, $year, $path, $size, $dir, $state, $detail, $added, $used, $plays, $url, $entry, $by, $checked)
             """;
-        foreach (var p in new[] { "$src", "$kind", "$ext", "$title", "$gk", "$gt", "$sub", "$year", "$path", "$size", "$dir", "$state", "$detail", "$added", "$used", "$plays", "$url", "$entry", "$by" })
+        foreach (var p in new[] { "$src", "$kind", "$ext", "$title", "$gk", "$gt", "$sub", "$year", "$path", "$size", "$dir", "$state", "$detail", "$added", "$used", "$plays", "$url", "$entry", "$by", "$checked" })
         {
             ins.Parameters.Add(new SqliteParameter(p, null));
         }
@@ -180,7 +194,18 @@ public abstract class ItemIntegration(ItemServices services) : IIntegration
             ins.Parameters["$url"].Value = V(item.Url);
             ins.Parameters["$entry"].Value = V(entryId);
             ins.Parameters["$by"].Value = V(by);
+            var local = matcher.LocalPath(item.Path);
+            ins.Parameters["$checked"].Value = local;
             ins.ExecuteNonQuery();
+            if (entryId is null)
+            {
+                var reason = matcher.WhyNotFound(local) ?? "no such file in the index";
+                why[reason] = why.GetValueOrDefault(reason) + 1;
+                if (examples.Count < 10)
+                {
+                    examples.Add($"{item.Path} → {local}");
+                }
+            }
 
             if (entryId is { } id)
             {
@@ -208,6 +233,12 @@ public abstract class ItemIntegration(ItemServices services) : IIntegration
 
         tx.Commit();
         Annotations.Replace(conn, Id, notes.Values);
+        if (why.Count > 0)
+        {
+            log.LogWarning("{Integration}: {Count} items not found on disk ({Reasons}). For example: {Examples}", Name, why.Values.Sum(),
+                string.Join("; ", why.OrderByDescending(w => w.Value).Take(8).Select(w => $"{w.Value} {w.Key}")), string.Join(", ", examples));
+        }
+
         return matched;
 
         static (long?, string?, bool) Tuple((long? Id, string? By) m, bool dir) => (m.Id, m.By, dir);

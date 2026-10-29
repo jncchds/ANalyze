@@ -8,6 +8,7 @@ import { EntryDrawer } from '../../components/EntryDrawer'
 import { PlanDialog } from '../../components/PlanDialog'
 import { Empty, ErrorBox, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../../components/ui'
 import { useLocate } from '../../hooks/useLocate'
+import { PathText } from '../../components/PathText'
 import { ago, bytes, count, date, pct } from '../../lib/format'
 
 /** Views a plugin page offers; every plugin built on ItemIntegration serves all of them. */
@@ -70,6 +71,10 @@ interface GroupFile {
   relPath?: string
   url?: string
   isDir: boolean
+  /** Where ANalyze looked: the app's path after the path mappings. */
+  checkedPath?: string
+  /** Full path of the file ANalyze found. */
+  localPath?: string
 }
 
 interface EntryRow {
@@ -327,9 +332,12 @@ function GroupDialog({ config, row, onClose }: { config: ItemsConfig; row: Group
                   <StatePill state={f.state} />
                   {f.detail && <span className="pill-muted">{f.detail}</span>}
                 </div>
-                <div className="truncate text-xs muted" title={f.externalPath}>
-                  {f.relPath ?? <span className="text-danger">not found: {f.externalPath}</span>}
-                </div>
+                <PathText path={f.externalPath} label={`${config.name}:`} className="muted" />
+                {f.localPath ? (
+                  <PathText path={f.localPath} label="ANalyze:" className="muted" />
+                ) : (
+                  <PathText path={f.checkedPath ?? f.externalPath} label="Not found at" className="text-danger" />
+                )}
               </div>
               {config.watch && f.kind !== 'track' && <span className="text-xs muted">{f.playCount > 0 ? `✓ ${f.lastUsedAt ? ago(f.lastUsedAt) : 'watched'}` : 'unwatched'}</span>}
               <span className="w-20 text-right tabular">{bytes(f.size)}</span>
@@ -390,7 +398,7 @@ function Entries({ config, path, empty, showItem }: { config: ItemsConfig; path:
 function Unmatched({ config }: { config: ItemsConfig }) {
   const q = useQuery({
     queryKey: [config.id, 'unmatched'],
-    queryFn: () => api<{ kind: string; title: string; group?: string; externalPath: string; size: number; state?: string }[]>(`/integrations/${config.id}/unmatched`),
+    queryFn: () => api<{ kind: string; title: string; group?: string; externalPath: string; size: number; state?: string; checkedPath?: string }[]>(`/integrations/${config.id}/unmatched`),
   })
   if (q.isLoading) return <Loading />
   if (!q.data?.length) return <Empty>Every file was found on disk.</Empty>
@@ -400,7 +408,8 @@ function Unmatched({ config }: { config: ItemsConfig }) {
         <div key={f.externalPath} className="flex items-center gap-3 px-3 py-1.5 text-sm">
           <div className="min-w-0 flex-1">
             <div className="truncate">{f.group && f.group !== f.title ? `${f.group} · ${f.title}` : f.title}</div>
-            <div className="truncate font-mono text-xs muted">{f.externalPath}</div>
+            <PathText path={f.externalPath} label={`${config.name}:`} className="muted" />
+            <PathText path={f.checkedPath ?? f.externalPath} label="Looked for at" className="muted" />
           </div>
           <StatePill state={f.state} />
           <span className="w-20 text-right tabular">{bytes(f.size)}</span>

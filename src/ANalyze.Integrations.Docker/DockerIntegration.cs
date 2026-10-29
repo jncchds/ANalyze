@@ -1,3 +1,4 @@
+using ANalyze.Infrastructure.Settings;
 using System.Text.Json.Nodes;
 using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Roots;
@@ -250,6 +251,25 @@ public sealed class DockerPaths(IServiceProvider sp, DockerState state, RootRegi
     }
 }
 
+/// <summary>Host paths of the folders ANalyze sees: its own container's bind mounts (destination → source).</summary>
+public sealed class DockerHostPaths(IServiceProvider sp, DockerState state) : IHostPathSource
+{
+    public async Task<IReadOnlyList<HostPath>> GetAsync(CancellationToken ct)
+    {
+        var docker = await sp.GetRequiredService<IntegrationHost>().LoadAsync("docker", ct);
+        if (!docker.Enabled)
+        {
+            return [];
+        }
+
+        var snap = await state.GetAsync(docker, ct);
+        return snap.Self is null
+            ? []
+            : snap.Self.Mounts.Where(m => m.Type is null or "bind" && m.Destination != m.Source)
+                .Select(m => new HostPath(m.Destination, m.Source)).ToList();
+    }
+}
+
 /// <summary>Path arithmetic between two containers that share host folders.</summary>
 public static class MountMath
 {
@@ -311,6 +331,7 @@ public static class DependencyInjection
         services.AddSingleton<DockerState>();
         services.AddSingleton<DockerPaths>();
         services.AddSingleton<IPathMappingSource>(sp => sp.GetRequiredService<DockerPaths>());
+        services.AddSingleton<IHostPathSource, DockerHostPaths>();
         return services.AddIntegration<DockerIntegration>();
     }
 }

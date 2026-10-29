@@ -1,6 +1,7 @@
 using ANalyze.Domain;
 using ANalyze.Infrastructure.Roots;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Scanner;
 
@@ -12,10 +13,11 @@ internal static class Detector
 
     public static void Run(SqliteConnection db, ScanContext ctx, IReadOnlyDictionary<int, string> rootPaths, Scope scope, bool sniff)
     {
-        ctx.Phase = "detecting";
-        ctx.Done = 0;
-        ctx.Total = Count(db, scope);
-        ctx.Report(force: true);
+        ctx.StartPhase("detecting", Count(db, scope));
+        ctx.Log.LogInformation(
+            "Detecting file types: {Count} new or changed files get their type (video, image, document…) from the extension{Sniff}. Folder sizes are already final",
+            ctx.Total, sniff ? ", or from their first 4 KB when the extension is unknown" : "");
+        long byExtension = 0, sniffed = 0, unknown = 0;
 
         using var update = db.CreateCommand();
         update.CommandText = "UPDATE Entries SET Kind=$kind, Mime=$mime, Detected=1 WHERE Id=$id";
@@ -54,17 +56,28 @@ internal static class Detector
                 if (byExt is { } t)
                 {
                     results[i] = (t.Kind, t.Mime);
+                    Interlocked.Increment(ref byExtension);
                     return;
                 }
 
                 if (sniff && size > 0 && rootPaths.TryGetValue(rootId, out var rootPath))
                 {
-                    var sniffed = SniffFile(RootRegistry.Combine(rootPath, rel));
-                    results[i] = sniffed is { } s ? (s.Kind, s.Mime) : (FileKind.Other, "application/octet-stream");
+                    var found = SniffFile(RootRegistry.Combine(rootPath, rel));
+                    results[i] = found is { } s ? (s.Kind, s.Mime) : (FileKind.Other, "application/octet-stream");
+                    if (found is null)
+                    {
+                        Interlocked.Increment(ref unknown);
+                    }
+                    else
+                    {
+                        Interlocked.Increment(ref sniffed);
+                    }
+
                     return;
                 }
 
                 results[i] = (size == 0 ? FileKind.Other : FileKind.Unknown, null);
+                Interlocked.Increment(ref unknown);
             });
 
             using var tx = db.BeginTransaction();
@@ -82,6 +95,15 @@ internal static class Detector
             ctx.Detected += page.Count;
             ctx.Current = page[^1].RelPath;
             ctx.Report();
+            if (ctx.ProgressLineDue())
+            {
+                ctx.Log.LogInformation("Detecting file types: {Done} of {Total} done", ctx.Done, ctx.Total);
+            }
+        }
+
+        if (ctx.Done > 0)
+        {
+            ctx.Log.LogInformation("Detected {Count} files: {Ext} by extension, {Sniffed} by content, {Unknown} unknown", ctx.Done, byExtension, sniffed, unknown);
         }
     }
 

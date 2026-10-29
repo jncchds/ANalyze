@@ -10,6 +10,7 @@ import { isActive, useJob, useJobs } from '../hooks/useJobs'
 import { useScope } from '../hooks/useScope'
 import { integrationUis } from '../integrations/registry'
 import { ago, bytes, pct, signedBytes } from '../lib/format'
+import { phaseHint } from '../lib/phases'
 import { Loading, Progress } from './ui'
 
 const COLLAPSE_KEY = 'analyze.sidebar'
@@ -63,6 +64,7 @@ export function Layout({ onLogout }: { onLogout?: () => void }) {
     { to: '/actions', icon: '🧹', label: 'Actions', badge: s?.draftPlans || undefined },
     ...enabledIntegrations.map((i) => ({ to: `/integrations/${i.id}`, icon: i.icon, label: i.label })),
     { to: '/integrations', icon: '🔌', label: 'Integrations', end: true },
+    { to: '/logs', icon: '📜', label: 'Activity log' },
     { to: '/settings', icon: '⚙️', label: 'Settings' },
   ]
 
@@ -288,7 +290,11 @@ function ScanWidget() {
           <div key={j.kind}>
             <div className="flex items-center gap-2">
               <span className="min-w-0 flex-1 truncate font-semibold">{j.title ?? j.kind}</span>
-              <span className="muted">{j.phase}</span>
+              {j.phase && (
+                <span className="cursor-help muted underline decoration-dotted underline-offset-2" title={phaseHint(j.kind, j.phase) ?? j.phase}>
+                  {j.phase}
+                </span>
+              )}
             </div>
             <Progress value={j.done} max={j.total} className="mt-1" />
             <div className="mt-0.5 truncate muted" title={j.current}>
@@ -310,6 +316,9 @@ function ScanWidget() {
               Scan now
             </button>
           )}
+          <Link to="/logs" className="btn-ghost px-2 py-1 text-xs no-underline" title="What ANalyze is doing, step by step">
+            Log
+          </Link>
         </div>
       </div>
     </>

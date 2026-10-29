@@ -4,6 +4,7 @@ using ANalyze.Domain;
 using ANalyze.Infrastructure;
 using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Jobs;
+using ANalyze.Infrastructure.Logging;
 using ANalyze.Infrastructure.Roots;
 using ANalyze.Infrastructure.Settings;
 using ANalyze.Preview;
@@ -64,6 +65,37 @@ public static class SystemEndpoints
         });
 
         api.MapGet("/jobs", (JobBoard board) => board.All);
+
+        // Activity log (in memory, newest first): ?before=<id>&level=info|warning|error|debug&source=scan&q=text&limit=
+        api.MapGet("/logs", (long? before, string? level, string? source, string? q, int? limit, ActivityLog activity) =>
+        {
+            var min = Enum.TryParse<LogSeverity>(level, ignoreCase: true, out var l) ? l
+                : string.Equals(level, "info", StringComparison.OrdinalIgnoreCase) ? LogSeverity.Information
+                : LogSeverity.Debug;
+            return activity.Query(before, min, source, q, Math.Clamp(limit ?? 300, 1, 2000));
+        });
+
+        api.MapGet("/logs/sources", (ActivityLog activity) => activity.Sources());
+
+        // Where folders ANalyze sees are on the host: configured ones, then Docker mounts (none in the desktop app).
+        api.MapGet("/host-paths", async (SettingsStore settings, IEnumerable<IHostPathSource> sources, ILoggerFactory lf, CancellationToken ct) =>
+        {
+            var configured = settings.Current.HostPaths.Where(h => !string.IsNullOrWhiteSpace(h.Path) && !string.IsNullOrWhiteSpace(h.Host)).ToList();
+            var auto = new List<HostPath>();
+            foreach (var s in sources)
+            {
+                try
+                {
+                    auto.AddRange((await s.GetAsync(ct)).Where(a => configured.All(c => c.Path.TrimEnd('/') != a.Path.TrimEnd('/'))));
+                }
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    lf.CreateLogger("ANalyze.Web.HostPaths").LogDebug(e, "Host paths from {Source} failed", s.GetType().Name);
+                }
+            }
+
+            return new { configured, auto };
+        });
 
         api.MapPost("/scan", (ScanBody? body, ScanQueue queue) =>
         {

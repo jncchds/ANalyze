@@ -123,6 +123,53 @@ public sealed class PathMatcher(SqliteConnection conn, RootRegistry roots, IRead
         return null;
     }
 
+    /// <summary>The path ANalyze looks at for an external path: with a configured mapping, else a detected one, else unchanged.</summary>
+    public string LocalPath(string path)
+    {
+        var norm = Normalize(path);
+        foreach (var mappings in new[] { configured, (IReadOnlyList<PathMapping>)_detected })
+        {
+            var mapped = Normalize(IntegrationSettings.MapPath(path, mappings));
+            if (mapped != norm)
+            {
+                return mapped;
+            }
+        }
+
+        return norm;
+    }
+
+    /// <summary>
+    /// Why nothing was found at <paramref name="localPath"/>: outside every root, or inside a folder the scan did not enter
+    /// (another filesystem). Null when the folders above it were scanned normally.
+    /// </summary>
+    public string? WhyNotFound(string localPath)
+    {
+        var root = roots.All.Where(r => RootRegistry.IsUnder(r.Path, localPath)).OrderByDescending(r => r.Path.Length).FirstOrDefault();
+        if (root is null)
+        {
+            return "outside every root";
+        }
+
+        var rel = localPath.Length <= root.Path.Length ? "" : localPath[(root.Path.TrimEnd('/').Length + 1)..];
+        while (rel.Length > 0)
+        {
+            var slash = rel.LastIndexOf('/');
+            rel = slash < 0 ? "" : rel[..slash];
+            using var q = conn.CreateCommand();
+            // Only the nearest folder that exists matters (Error is not used: it also marks folders with an unreadable folder somewhere below).
+            q.CommandText = "SELECT OtherFilesystem FROM Entries WHERE RootId = $r AND RelPath = $p AND IsDir = 1";
+            q.Parameters.AddWithValue("$r", root.Id);
+            q.Parameters.AddWithValue("$p", rel);
+            if (q.ExecuteScalar() is { } other)
+            {
+                return Convert.ToBoolean(other) ? $"inside {RootRegistry.Combine(root.Path, rel)}, another filesystem the scan did not enter" : null;
+            }
+        }
+
+        return null;
+    }
+
     public (long? Parent, long? Grand) Parents(long entryId)
     {
         using var q = conn.CreateCommand();

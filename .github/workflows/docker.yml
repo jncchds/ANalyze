@@ -147,8 +147,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Only the desktop apps: the run also holds docker/build-push-action's build record (*.dockerbuild), which is not
+      # a zip and made the download fail.
       - uses: actions/download-artifact@v4
         with:
+          pattern: ANalyze-*
           path: apps
           merge-multiple: true
 

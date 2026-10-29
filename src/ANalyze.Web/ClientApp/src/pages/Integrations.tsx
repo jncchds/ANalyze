@@ -8,6 +8,7 @@ import { Empty, ErrorBox, Field, Loading, PageTitle, Section, Toggle } from '../
 import { isActive, useJob } from '../hooks/useJobs'
 import { integrationUi } from '../integrations/registry'
 import { ago } from '../lib/format'
+import { phaseHint } from '../lib/phases'
 
 interface Mapping {
   from: string
@@ -119,7 +120,7 @@ function IntegrationCard({ integration }: { integration: Integration }) {
       )}
       {(save.error || test.error || sync.error) && <div className="mt-2"><ErrorBox error={save.error ?? test.error ?? sync.error} /></div>}
       <div className="mt-4 flex flex-wrap items-center gap-2">
-        <span className="flex-1 text-xs muted">
+        <span className="flex-1 text-xs muted" title={syncing ? phaseHint(`integration:${integration.id}`, job?.phase) : undefined}>
           {syncing ? `Syncing… ${job?.phase ?? ''} ${job?.done ? job.done.toLocaleString() : ''}` : last ? `Last sync ${ago(integration.status.lastSync)}: ${last.message}` : job?.message ?? 'Never synced'}
         </span>
         <button className="btn-secondary" onClick={() => test.mutate()} disabled={test.isPending}>

@@ -5,6 +5,7 @@ using ANalyze.Ai;
 using ANalyze.Infrastructure;
 using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Jobs;
+using ANalyze.Infrastructure.Logging;
 using ANalyze.Integrations;
 using ANalyze.Integrations.Arr;
 using ANalyze.Integrations.Backup;
@@ -57,10 +58,11 @@ builder.Services.PostConfigure<AnalyzeOptions>(o =>
 Directory.CreateDirectory(analyze.DataDir);
 Directory.CreateDirectory(analyze.ThumbsDir);
 
-builder.Host.UseSerilog((ctx, lc) => lc
+builder.Host.UseSerilog((ctx, sp, lc) => lc
     .ReadFrom.Configuration(ctx.Configuration)
     .Enrich.FromLogContext()
     .WriteTo.Console()
+    .WriteTo.Sink(new ActivityLogSink(sp.GetRequiredService<ActivityLog>()))
     .WriteTo.File(Path.Combine(analyze.DataDir, "logs", "analyze-.log"), rollingInterval: RollingInterval.Day, retainedFileCountLimit: 14));
 
 builder.Services.AddAnalyzeInfrastructure(analyze.DatabasePath);
@@ -78,6 +80,7 @@ builder.Services.AddDockerIntegration();
 builder.Services.AddBackupIntegration();
 builder.Services.AddSingleton(sp => new PreviewService(analyze.ThumbsDir, sp.GetRequiredService<ILogger<PreviewService>>()));
 builder.Services.AddSingleton<IJobObserver, JobHubObserver>();
+builder.Services.AddHostedService<LogPusher>();
 builder.Services.AddMemoryCache();
 builder.Services.AddSignalR().AddJsonProtocol(o => o.PayloadSerializerOptions.Converters.Add(new JsonStringEnumConverter(System.Text.Json.JsonNamingPolicy.CamelCase)));
 builder.Services.ConfigureHttpJsonOptions(o =>

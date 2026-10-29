@@ -1,6 +1,39 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from './client'
-import type { Category, Config, Integration, Release, Root, Rule, Summary, ActionTemplate } from './types'
+import { desktop } from '../lib/desktop'
+import type { Category, Config, HostPath, Integration, Release, Root, Rule, Summary, ActionTemplate } from './types'
+
+/** Host paths: configured in Settings, then ANalyze's own Docker mounts. Not used in the desktop app (it sees host paths). */
+export const useHostPaths = () =>
+  useQuery({
+    queryKey: ['host-paths'],
+    queryFn: () => api<{ configured: HostPath[]; auto: HostPath[] }>('/host-paths'),
+    staleTime: 5 * 60_000,
+    enabled: !desktop,
+  })
+
+const trimEnd = (p: string) => p.replace(/\/+$/, '') || '/'
+
+/** Turns a path ANalyze sees into the host path (longest matching prefix); undefined when no mapping covers it. */
+export function useToHostPath() {
+  const { data } = useHostPaths()
+  const all = [...(data?.configured ?? []), ...(data?.auto ?? [])]
+  return (path?: string | null): string | undefined => {
+    if (!path) return undefined
+    let best: HostPath | undefined
+    for (const h of all) {
+      const p = trimEnd(h.path)
+      const covers = p === '/' || path === p || path.startsWith(p + '/')
+      if (covers && (!best || p.length > trimEnd(best.path).length)) best = h
+    }
+    if (!best) return undefined
+    const from = trimEnd(best.path)
+    const rest = from === '/' ? path : path.slice(from.length)
+    const host = trimEnd(best.host)
+    const result = host === '/' ? rest || '/' : host + (rest === '' || rest.startsWith('/') ? rest : '/' + rest)
+    return result === path ? undefined : result
+  }
+}
 
 export const useConfig = () => useQuery({ queryKey: ['config'], queryFn: () => api<Config>('/config'), staleTime: 60_000 })
 
