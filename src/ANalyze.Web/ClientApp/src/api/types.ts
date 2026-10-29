@@ -257,6 +257,8 @@ export interface SearchFilter {
   sparse?: boolean
   hardlinked?: boolean
   corrupt?: boolean
+  /** Archives found extracted: complete, verified, partial or any. */
+  extracted?: string
   segment?: string
   sort?: string
   asc?: boolean

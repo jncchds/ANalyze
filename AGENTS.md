@@ -55,6 +55,12 @@ SQLite (WAL) in /data/analyze.db
   the backed-up folders (`State`: files synced/corrupt/missing/unsynced, folders synced/unsynced; `IsDir`, `EntryId`, `LocalRootId`/`LocalRelPath`,
   `Size`, `ParentSize` when the parent has the path, `Verified` = equal content hashes, folders' `Children`/`SyncedChildren`). Replaced on each sync;
   `Settings["backup:parent"]` keeps the last `BackupSnapshot` (parent info, targets, mappings used, detected mappings).
+- **ArchiveListings** (key = the archive's `EntryId`; `Size`/`MTime` it was listed at, `Format`, `Streamed`, `Error`, `Files`, `FileBytes`),
+  **ArchiveMembers** (`ArchiveId`, normalized `Path`, `Name`, `Size`, `Crc` = CRC32 or null) and **ArchiveExtractions** (`ArchiveId`, `State`
+  complete/partial, `RootId` + `BaseRelPath` + `Strip` = archive path `p` is expected at `BaseRelPath/p` with `Strip` removed from its start,
+  `FolderId`/`FolderRelPath` = deepest folder holding the matched files, counts `Matched`/`Missing`/`Smaller`/`Differs`, bytes, `Fingerprint`
+  of the matched files' ids/sizes/mtimes, CRC check results `VerifiedAt`/`VerifiedOk`/`VerifiedBad`/`Unverified`/`BadPaths`). No foreign keys:
+  stale rows are dropped by the archives phase, and readers join `Entries`.
 - **Settings** — key/value JSON: `app` (`AppSettings`), `integration:<id>` (`IntegrationSettings`, secrets encrypted with data protection).
 
 Times are unix seconds in Entries; `DateTimeOffset` columns are stored as binary longs (`DateTimeOffsetToBinaryConverter`, set globally) so
@@ -83,6 +89,16 @@ endpoints return `savedLater` (the holder) so the UI can say so.
 2. **Detect**: `FileTypes.FromExtension`, or magic bytes of the first 4 KB when the extension is unknown. Until a file is detected, the API reports its type
    from the extension (`EntryDto.From`).
 3. **Categorize** (`Categorizer`): rules for every file in scope; precedence manual > rule > AI; tags always from rules.
+3b. **Archives** (`ArchiveIndexer`, with `FindExtractedArchives`): drops listings of archives that are gone or changed (with their members and
+   extractions), then lists archives in scope without a current listing — `zip`/`zipx`/`rar`/`7z` by extension from their headers (CRC32 per
+   file included), and with `ListStreamedArchives` also `tar`/`gz`/`tgz`/`bz2`/`xz`/`zst`… up to `StreamedArchiveMaxGb` by decompressing them
+   once (`ReaderFactory`; CRC32 and size computed per file). Later volumes of multi-part rars, folders, links, `__MACOSX/`, `.DS_Store`,
+   `Thumbs.db` and `..` paths are skipped; more than 100,000 files is an error.
+3c. **Extractions** (`ExtractionMatcher`, all roots; after full scans, or when the walk or the archives phase changed something): per archive up to
+   5 anchors (largest files, unique sizes first) are looked up by size + name (the covering size index); each hit gives a `(root, base, strip)`
+   candidate (the longest tail of the archive path the found path ends with). Up to 8 candidates by votes are compared member by member through
+   the unique `(RootId, RelPath)` index (NFC and NFD name forms both tried); extra files there do not matter. Kept: complete, or ≥ 2 matched
+   files, or ≥ 1 MB matched. Rows keep their id and CRC check results for the same place while the fingerprint is unchanged.
 4. **Hash all** (`ContentHasher.HashMissingAsync`, only with `AppSettings.HashAllFiles`): full + quick hash for every non-empty file without one
    (hard links read once). Needed for backup verification. Every file may therefore have a `FullHash`: code that looks for duplicates must require
    another file with the same hash and a different identity (`SearchFilter.Duplicates`, `PlanBuilder.CreateDedupeAsync`), never just `FullHash != null`.
@@ -99,8 +115,20 @@ endpoints return `savedLater` (the holder) so the UI can say so.
 7. **History** snapshot (full scans), `PRAGMA optimize`.
 
 Hash batches (`ContentHasher`, `DuplicateFinder`) are also stored once they hold 2 GB / 8 GB of files, so big files' hashes are saved as
-they come. Phase names (`walking`, `detecting`, `categorizing`, `hashing`, `duplicates`, `verifying`, `finishing`) are explained in the UI by
+they come. Phase names (`walking`, `detecting`, `categorizing`, `archives`, `extractions`, `hashing`, `duplicates`, `verifying`, `finishing`, and the
+light jobs' `checking` and `pruning`) are explained in the UI by
 `ClientApp/src/lib/phases.ts` — keep it in sync when adding a phase.
+
+Two light jobs share the scan queue (one writer at a time, same progress and cancel; no `ScanRun` row, no `Completed` event):
+`ScanRequest.VerifyExtractions` (`ExtractionVerifier`: reads each matched file and compares its CRC32 with the archive's — the archive itself
+is never read; files whose size/mtime differ from the index count as unverified) and `ScanRequest.PruneIgnored` (`IgnorePruner`: walks the
+`(RootId, RelPath)` index and deletes the outermost entries the ignore list covers, with `EntryMaintenance.DeleteEntry`). `POST /ignore`
+and settings saves that add ignore patterns queue the prune, so ignored items leave every result list at once.
+
+Priority (`AppSettings.Priority`, `PriorityApplier`): `background` sets every thread of the process to nice 10 and the idle I/O class
+(`Native.SetBackgroundPriority`, Linux via `/proc/self/task`; new threads inherit it; elsewhere the process priority class), and
+`AppSettings.WorkerThreads()` returns 1 instead of `HashThreads`; `full` restores normal priority (needs root or CAP_SYS_NICE on Linux,
+otherwise a restart).
 
 Progress is reported to `JobBoard` (kind `scan`), throttled, and pushed through SignalR (`progress` events). The UI refetches what is on
 screen when a job changes phase and every 10 s while a scan runs; server caches (`Caches`) are dropped on phase changes too.
@@ -151,6 +179,13 @@ integrations after each scan. Plugins write labels with `Annotations.Replace(con
 Front end: `ClientApp/src/integrations/registry.tsx` maps an id to a lazy page; the settings form is generic (`pages/Integrations.tsx`).
 
 Labels are clickable: a badge links to `/integrations/{source}?entry={entryId}` (never to the external app; those links stay inside the pages).
+Extracted archives (`ArchiveEndpoints`): `GET /archives/extractions?state=complete|unverified|verified|partial|bad&rootId=&q=&sort=` (page +
+counts), `GET /archives/extractions/{id}?problems=` (every archive file as matched/missing/smaller/differs/corrupt, via
+`ExtractionMatcher.Compare`), `GET /archives/{entryId}/extractions`, `POST /archives/extractions/verify {ids | state, rootId}` (queues the
+check) and `POST /archives/extractions/plan {ids, remove: archive|extracted, op}` (archives only for complete extractions; "extracted" = only
+the matched files, never the rest of the folder). `SearchFilter.Extracted` (any/complete/verified/partial) needs `ArchiveExtractions` passed
+to `Apply`; insights `extracted-verified`, `extracted`, `extracted-partial`. UI: Duplicates → Extracted archives (`components/ExtractedArchives.tsx`).
+
 Browse also calls `GET /entries/{id}/disk` (the folder listed on disk now via `ResolveForRead`: names not in the index with lstat data and whether
 they are ignored, plus the count of indexed children gone from disk; `?sub=a/b` lists a folder further down that is not in the index,
 opened in place in Browse as `?disk=a/b`) and `POST /ignore {rootId, relPath, ignore}` / `POST /enter-filesystem`

@@ -146,6 +146,7 @@ secured.MapSystemEndpoints();
 secured.MapBrowseEndpoints();
 secured.MapFileEndpoints();
 secured.MapDuplicateEndpoints();
+secured.MapArchiveEndpoints();
 secured.MapRuleEndpoints();
 secured.MapPlanEndpoints();
 secured.MapInsightEndpoints();

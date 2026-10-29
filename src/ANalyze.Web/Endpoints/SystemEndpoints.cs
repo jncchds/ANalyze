@@ -110,7 +110,7 @@ public static class SystemEndpoints
 
         api.MapGet("/settings", (SettingsStore settings) => Masked(settings.Current));
 
-        api.MapPut("/settings", async (AppSettings body, SettingsStore settings, SecretProtector secrets, JobLock jobLock, IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions> json, CancellationToken ct) =>
+        api.MapPut("/settings", async (AppSettings body, SettingsStore settings, SecretProtector secrets, JobLock jobLock, ScanQueue queue, IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions> json, CancellationToken ct) =>
         {
             if (!string.IsNullOrWhiteSpace(body.ScanCron))
             {
@@ -144,6 +144,12 @@ public static class SystemEndpoints
                 },
             };
             var written = await settings.SaveAsync(next, ct);
+            // New ignore patterns take effect at once: what they cover leaves the index (and so every result list).
+            if (next.IgnorePatterns.Select(p => p.Trim()).Except(current.IgnorePatterns.Select(p => p.Trim())).Any())
+            {
+                queue.Enqueue(new ScanRequest(Reason: "Ignore list changed") { PruneIgnored = true });
+            }
+
             return SaveResult.Ok(Masked(next), written, jobLock, json.Value);
         });
 

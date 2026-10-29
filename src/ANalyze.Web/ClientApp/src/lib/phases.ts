@@ -5,6 +5,11 @@ const scan: Record<string, string> = {
   detecting:
     'Working out each new or changed file\'s type (video, image, document…) from its extension, or from its first 4 KB when the extension is unknown. The folder tree and sizes are already final.',
   categorizing: 'Applying your category rules to the files, so they get their category and tags.',
+  archives:
+    'Listing the files inside new or changed archives: zip, rar and 7z from their headers; tar and compressed files (when enabled) by decompressing them once.',
+  extractions: 'Looking on all roots for folders that hold the files of each archive (same paths and sizes), completely or partly.',
+  checking: 'Reading extracted files and comparing each with the CRC32 its archive stores for it. The archives themselves are not read.',
+  pruning: 'Removing files and folders that the ignore list now covers from the index, so they leave every result list.',
   hashing: 'Reading files that have no content fingerprint yet ("Hash every file" is on). Needed to verify backups and notice corruption.',
   duplicates:
     'Looking for identical files: files of the same size get a quick fingerprint of 3×64 KB, and a full read only when that matches another file.',

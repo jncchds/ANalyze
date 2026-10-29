@@ -1,5 +1,11 @@
 # Release Notes
 
+## v0.1.9 — 2026-10-29
+
+- feat: extracted archives: scans list zip, rar and 7z archives (and, when enabled, tar/tar.gz/.gz/.xz/.zst by decompressing them once) and find, on all roots, the folders that hold their files — with the same paths and sizes, even when the archive's top folder was dropped and when the folder holds other files too. Duplicates → Extracted archives shows complete and partial extractions (missing files, files cut short), checks the extracted files against the CRC32s stored in the archive without reading the archive, and creates plans to remove the archive or the extracted copy; insights and the search filter "extracted" list them
+- feat: ignoring a folder (Browse or the ignore list in Settings) removes it from the index at once, so its files leave duplicates, search and insights without waiting for the next scan
+- feat: priority setting: full speed, or background mode (low CPU priority, idle disk priority and one worker thread) so the server's other services come first
+
 ## v0.1.8 — 2026-10-29
 
 - fix: scans no longer seem stuck on "categorizing" for many minutes on large libraries: the duplicate search (and "hash all files") now shows its step at once, finds files of equal size from an index instead of reading every file record in size order (one random disk read per file), and does that search once instead of twice; the database gets two new indexes on first start

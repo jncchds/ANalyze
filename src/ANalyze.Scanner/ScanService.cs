@@ -11,10 +11,22 @@ using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Scanner;
 
-/// <summary>What to scan: everything, one root, or a folder inside a root.</summary>
-public sealed record ScanRequest(int? RootId = null, string? SubPath = null, bool SkipHashing = false, string? Reason = null);
+/// <summary>
+/// What to scan: everything, one root, or a folder inside a root. Two lighter jobs share the scan queue (one writer at a time,
+/// same progress and cancel button): <see cref="PruneIgnored"/> only removes newly ignored entries from the index, and
+/// <see cref="VerifyExtractions"/> only checks those extracted archives against their archives' CRC32s.
+/// </summary>
+public sealed record ScanRequest(int? RootId = null, string? SubPath = null, bool SkipHashing = false, string? Reason = null)
+{
+    public bool PruneIgnored { get; init; }
 
-/// <summary>Runs a scan: walk → detect → categorize → hash (all files, if enabled) → hash duplicates → verify old hashes → history snapshot.</summary>
+    public IReadOnlyList<long>? VerifyExtractions { get; init; }
+}
+
+/// <summary>
+/// Runs a scan: walk → detect → categorize → list archives and find their extractions → hash (all files, if enabled) → hash
+/// duplicates → verify old hashes → history snapshot.
+/// </summary>
 public sealed class ScanService(
     SqliteSetup sqlite,
     IDbContextFactory<AnalyzeDbContext> dbf,
@@ -28,6 +40,12 @@ public sealed class ScanService(
 
     public async Task RunAsync(ScanRequest req, CancellationToken ct)
     {
+        if (req.PruneIgnored || req.VerifyExtractions is not null)
+        {
+            await RunLightAsync(req, ct);
+            return;
+        }
+
         var s = settings.Current;
         var targets = roots.All.Where(r => !r.Missing && (req.RootId is null || r.Id == req.RootId)).ToList();
         var full = string.IsNullOrEmpty(req.SubPath);
@@ -81,10 +99,24 @@ public sealed class ScanService(
             }, ct);
             log.LogInformation("Categorizing finished in {Time}: {Changed} files got another category or tags", Format.Duration(phaseClock.Elapsed), ctx.Categorized);
 
+            if (s.FindExtractedArchives)
+            {
+                phaseClock.Restart();
+                using var write = sqlite.Open();
+                var listed = ArchiveIndexer.Run(conn, write, ctx, rootPaths, scope, s);
+                // Extractions can be on any root: look again after full scans and whenever something changed.
+                if (full || listed > 0 || ctx.Added + ctx.Changed + ctx.Removed > 0)
+                {
+                    ExtractionMatcher.Run(conn, write, ctx);
+                }
+
+                log.LogInformation("Archive phases finished in {Time}", Format.Duration(phaseClock.Elapsed));
+            }
+
             if (!req.SkipHashing && (s.HashAllFiles || s.FindDuplicates || s.VerifyAfterDays > 0))
             {
                 using var write = sqlite.Open();
-                var hasher = new ContentHasher(conn, write, ctx, rootPaths, s.HashThreads);
+                var hasher = new ContentHasher(conn, write, ctx, rootPaths, s.WorkerThreads());
                 if (s.HashAllFiles)
                 {
                     phaseClock.Restart();
@@ -96,7 +128,7 @@ public sealed class ScanService(
                 if (s.FindDuplicates)
                 {
                     phaseClock.Restart();
-                    var groups = await new DuplicateFinder(conn, write, ctx, rootPaths, Math.Max(1, s.MinDuplicateSize), s.HashThreads).RunAsync();
+                    var groups = await new DuplicateFinder(conn, write, ctx, rootPaths, Math.Max(1, s.MinDuplicateSize), s.WorkerThreads()).RunAsync();
                     log.LogInformation("Duplicate search finished in {Time}: {Groups} sets of identical files", Format.Duration(phaseClock.Elapsed), groups);
                 }
 
@@ -201,6 +233,51 @@ public sealed class ScanService(
         {
             Completed?.Invoke(run.Id);
         }
+    }
+
+    /// <summary>Prunes ignored entries or checks extractions: no walk, no scan history row, no "scan completed" event.</summary>
+    private async Task RunLightAsync(ScanRequest req, CancellationToken ct)
+    {
+        var title = req.PruneIgnored ? "Removing ignored folders" : "Checking extracted archives";
+        var ctx = new ScanContext(board, 0, title, DateTimeOffset.UtcNow, ct, log);
+        string state = JobStates.Completed, message;
+        try
+        {
+            using var conn = sqlite.Open();
+            if (req.PruneIgnored)
+            {
+                ctx.StartPhase("pruning");
+                var s = settings.Current;
+                var removed = 0;
+                foreach (var root in roots.All.Where(r => !r.Missing))
+                {
+                    removed += IgnorePruner.Run(conn, ctx, root.Id, new IgnoreMatcher(s.IgnorePatterns, root.Path));
+                }
+
+                message = $"{removed} ignored files and folders removed from the index";
+            }
+            else
+            {
+                using var write = sqlite.Open();
+                var rootPaths = roots.All.ToDictionary(r => r.Id, r => r.Path);
+                var (ok, bad) = await new ExtractionVerifier(conn, write, ctx, rootPaths, settings.Current.WorkerThreads()).RunAsync(req.VerifyExtractions!);
+                message = bad > 0 ? $"{bad} extracted files differ from their archive, {ok} match" : $"{ok} extracted files match their archive";
+            }
+
+            log.LogInformation("{Title}: {Message}", title, message);
+        }
+        catch (OperationCanceledException)
+        {
+            (state, message) = (JobStates.Cancelled, "Cancelled");
+        }
+        catch (Exception e) when (e is SqliteException or IOException or InvalidOperationException)
+        {
+            log.LogError(e, "{Title} failed", title);
+            (state, message) = (JobStates.Failed, e.Message);
+        }
+
+        ctx.Phase = state;
+        ctx.Report(state, message, force: true);
     }
 
     private void WalkRoot(SqliteConnection conn, ScanContext ctx, Root root, string? subPath, AppSettings s)

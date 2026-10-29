@@ -28,6 +28,9 @@ public sealed class AnalyzeDbContext(DbContextOptions<AnalyzeDbContext> options)
     public DbSet<EntryAnnotation> Annotations => Set<EntryAnnotation>();
     public DbSet<IntegrationItem> IntegrationItems => Set<IntegrationItem>();
     public DbSet<BackupFile> BackupFiles => Set<BackupFile>();
+    public DbSet<ArchiveListing> ArchiveListings => Set<ArchiveListing>();
+    public DbSet<ArchiveMember> ArchiveMembers => Set<ArchiveMember>();
+    public DbSet<ArchiveExtraction> ArchiveExtractions => Set<ArchiveExtraction>();
 
     protected override void ConfigureConventions(ModelConfigurationBuilder b)
     {
@@ -122,6 +125,14 @@ public sealed class AnalyzeDbContext(DbContextOptions<AnalyzeDbContext> options)
             e.HasIndex(x => new { x.LocalRootId, x.LocalRelPath });
             e.HasIndex(x => x.EntryId);
             e.HasIndex(x => new { x.IsDir, x.State });
+        });
+
+        m.Entity<ArchiveListing>(e => e.HasKey(x => x.EntryId));
+        m.Entity<ArchiveMember>(e => e.HasIndex(x => x.ArchiveId));
+        m.Entity<ArchiveExtraction>(e =>
+        {
+            e.HasIndex(x => x.ArchiveId);
+            e.HasIndex(x => new { x.State, x.MatchedBytes });
         });
     }
 

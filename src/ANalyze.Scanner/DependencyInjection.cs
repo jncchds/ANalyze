@@ -11,6 +11,7 @@ public static class DependencyInjection
         services.AddSingleton<ScanQueue>();
         services.AddHostedService<ScanWorker>();
         services.AddHostedService<ScanScheduler>();
+        services.AddHostedService<PriorityApplier>();
         return services;
     }
 }

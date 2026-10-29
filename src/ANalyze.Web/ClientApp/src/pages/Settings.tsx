@@ -34,6 +34,10 @@ interface AppSettings {
   findDuplicates: boolean
   minDuplicateSize: number
   hashThreads: number
+  priority: 'full' | 'background'
+  findExtractedArchives: boolean
+  listStreamedArchives: boolean
+  streamedArchiveMaxGb: number
   hashAllFiles: boolean
   verifyAfterDays: number
   verifyMaxGb: number
@@ -174,6 +178,19 @@ export default function Settings() {
               </div>
             </Field>
             <Toggle checked={s.scanOnStartup} onChange={(v) => set({ scanOnStartup: v })} label="Scan when the container starts" />
+            <Field
+              label="Priority"
+              hint={
+                s.priority === 'background'
+                  ? 'ANalyze gets CPU and disk time only after everything else on the server: scans, hashing and checks take longer but the server stays responsive. One worker thread is used whatever the hashing threads setting says.'
+                  : 'Scans, hashing and checks run at normal priority with the configured number of hashing threads.'
+              }
+            >
+              <select className="input w-auto" value={s.priority ?? 'full'} onChange={(e) => set({ priority: e.target.value as AppSettings['priority'] })}>
+                <option value="full">Full speed</option>
+                <option value="background">Background (let the server work first)</option>
+              </select>
+            </Field>
             <Toggle
               checked={s.crossFilesystems}
               onChange={(v) => set({ crossFilesystems: v })}
@@ -227,6 +244,29 @@ export default function Settings() {
             <Field label="Empty trash after (days, 0 = never)">
               <input className="input w-24" type="number" min={0} value={s.trashRetentionDays} onChange={(e) => set({ trashRetentionDays: Number(e.target.value) })} />
             </Field>
+          </div>
+        </Section>
+
+        <Section title="Archives">
+          <div className="space-y-3">
+            <Toggle
+              checked={s.findExtractedArchives}
+              onChange={(v) => set({ findExtractedArchives: v })}
+              label="Find extracted archives during scans"
+              hint="Lists zip, rar and 7z archives from their headers (a small read) and looks for folders that hold their files: Duplicates → Extracted archives."
+            />
+            <Toggle
+              checked={s.listStreamedArchives}
+              disabled={!s.findExtractedArchives}
+              onChange={(v) => set({ listStreamedArchives: v })}
+              label="Also list tar and compressed files (tar, tar.gz, .gz, .xz, .zst…)"
+              hint="These have no file index: each one is decompressed once to list it (CRC32s are computed on the way, so extracted copies can be checked later without reading the archive again)."
+            />
+            {s.listStreamedArchives && s.findExtractedArchives && (
+              <Field label="Skip tar and compressed files larger than (GB, 0 = no limit)">
+                <input className="input w-24" type="number" min={0} value={s.streamedArchiveMaxGb} onChange={(e) => set({ streamedArchiveMaxGb: Number(e.target.value) })} />
+              </Field>
+            )}
           </div>
         </Section>
 

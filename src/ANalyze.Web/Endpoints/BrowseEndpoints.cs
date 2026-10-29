@@ -136,8 +136,9 @@ public static class BrowseEndpoints
             return Results.Ok(new { readable = true, error = (string?)null, items, gone = known.Count(k => !onDisk.Contains(k)), truncated = extra.Count > max });
         });
 
-        // Adds or removes the full path of a folder or file in the ignore list (settings); the next scan of its folder drops it from the index.
-        api.MapPost("/ignore", async (IgnoreBody body, RootRegistry roots, SettingsStore settings, JobLock jobLock, CancellationToken ct) =>
+        // Adds or removes the full path of a folder or file in the ignore list (settings). Ignoring also queues a prune job that drops it
+        // from the index right away (so it leaves duplicates, search and insights); un-ignoring needs a scan of its folder to bring it back.
+        api.MapPost("/ignore", async (IgnoreBody body, RootRegistry roots, SettingsStore settings, JobLock jobLock, ScanQueue queue, CancellationToken ct) =>
         {
             if (roots.Get(body.RootId) is not { } root || body.RelPath.Split('/').Any(p => p is ".." or "."))
             {
@@ -154,6 +155,11 @@ public static class BrowseEndpoints
             var rest = s.IgnorePatterns.Where(p => p.Trim().TrimEnd('/') != full).ToList();
             var next = s with { IgnorePatterns = body.Ignore ? [.. rest, full] : rest };
             var written = await settings.SaveAsync(next, ct);
+            if (body.Ignore)
+            {
+                queue.Enqueue(new ScanRequest(Reason: "Ignored " + full) { PruneIgnored = true });
+            }
+
             return Results.Ok(new { pattern = full, ignored = body.Ignore, savedLater = written ? null : jobLock.Holder ?? "the running job" });
         });
 
@@ -242,7 +248,7 @@ public static class BrowseEndpoints
 
         api.MapGet("/search", async ([AsParameters] SearchQuery query, AnalyzeDbContext db, CancellationToken ct) =>
         {
-            var q = query.Filter.Apply(db.Entries.AsNoTracking());
+            var q = query.Filter.Apply(db.Entries.AsNoTracking(), db.ArchiveExtractions.AsNoTracking());
             var (total, totalSize) = await CountAsync(q, query.Filter, ct);
             var items = await query.Filter.Order(q).Skip(Math.Max(0, query.Offset ?? 0)).Take(Math.Clamp(query.Limit ?? 100, 1, 1000)).ToListAsync(ct);
             return new { items = items.Select(EntryDto.From).ToList(), total, totalSize, annotations = await AnnotationsFor(db, items.Select(i => i.Id).ToList(), ct) };
@@ -250,7 +256,7 @@ public static class BrowseEndpoints
 
         api.MapPost("/search", async (SearchFilter filter, int? offset, int? limit, AnalyzeDbContext db, CancellationToken ct) =>
         {
-            var q = filter.Apply(db.Entries.AsNoTracking());
+            var q = filter.Apply(db.Entries.AsNoTracking(), db.ArchiveExtractions.AsNoTracking());
             var (total, totalSize) = await CountAsync(q, filter, ct);
             var items = await filter.Order(q).Skip(Math.Max(0, offset ?? 0)).Take(Math.Clamp(limit ?? 100, 1, 1000)).ToListAsync(ct);
             return new Page<EntryDto>(items.Select(EntryDto.From).ToList(), total, totalSize);
@@ -279,6 +285,7 @@ public static class BrowseEndpoints
         public bool? Sparse { get; init; }
         public bool? Hardlinked { get; init; }
         public bool? Corrupt { get; init; }
+        public string? Extracted { get; init; }
         public string? Segment { get; init; }
         public string? Sort { get; init; }
         public bool? Asc { get; init; }
@@ -289,7 +296,7 @@ public static class BrowseEndpoints
         {
             Q = Q, RootId = RootId, Path = Path, CategoryId = CategoryId, Uncategorized = Uncategorized, Kind = Enum.TryParse<FileKind>(Kind, ignoreCase: true, out var k) ? k : null, Ext = Ext, Tag = Tag,
             MinSize = MinSize, MaxSize = MaxSize, OlderThanDays = OlderThanDays, NewerThanDays = NewerThanDays, NotAccessedDays = NotAccessedDays,
-            Duplicates = Duplicates, Dirs = Dirs, EmptyDirs = EmptyDirs, BrokenLinks = BrokenLinks, Sparse = Sparse, Hardlinked = Hardlinked, Corrupt = Corrupt,
+            Duplicates = Duplicates, Dirs = Dirs, EmptyDirs = EmptyDirs, BrokenLinks = BrokenLinks, Sparse = Sparse, Hardlinked = Hardlinked, Corrupt = Corrupt, Extracted = Extracted,
             Segment = Segment, Sort = Sort, Asc = Asc,
         };
     }

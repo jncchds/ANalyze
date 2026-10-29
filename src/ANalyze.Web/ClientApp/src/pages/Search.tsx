@@ -16,7 +16,7 @@ const PAGE = 300
 
 const BOOL_KEYS = ['uncategorized', 'duplicates', 'dirs', 'emptyDirs', 'brokenLinks', 'sparse', 'hardlinked', 'corrupt', 'asc'] as const
 const NUM_KEYS = ['rootId', 'categoryId', 'minSize', 'maxSize', 'olderThanDays', 'newerThanDays', 'notAccessedDays'] as const
-const STR_KEYS = ['q', 'path', 'kind', 'ext', 'tag', 'segment', 'sort'] as const
+const STR_KEYS = ['q', 'path', 'kind', 'ext', 'tag', 'segment', 'sort', 'extracted'] as const
 
 /** The search filter lives in the URL so insights, the sidebar and bookmarks can link to any result set. */
 function readFilter(p: URLSearchParams): SearchFilter {
@@ -128,6 +128,13 @@ export default function Search() {
           <input className="input" placeholder="Tag" defaultValue={filter.tag} onBlur={(e) => set({ tag: e.target.value.trim() || undefined })} aria-label="Tag" />
           <input className="input" placeholder="Inside folder named…" defaultValue={filter.segment} onBlur={(e) => set({ segment: e.target.value.trim() || undefined })} aria-label="Folder name" />
           <input className="input" placeholder="Under path: Photos/2021" defaultValue={filter.path} onBlur={(e) => set({ path: e.target.value.trim() || undefined })} aria-label="Path" />
+          <select className="input" value={filter.extracted ?? ''} onChange={(e) => set({ extracted: e.target.value || undefined })} aria-label="Extracted archives">
+            <option value="">Archives: any</option>
+            <option value="any">Archives found extracted</option>
+            <option value="complete">Archives completely extracted</option>
+            <option value="verified">Completely extracted and checked</option>
+            <option value="partial">Archives partly extracted</option>
+          </select>
         </div>
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
           {(

@@ -33,12 +33,15 @@ public sealed record SearchFilter
     public bool? Hardlinked { get; init; }
     /// <summary>Files whose content changed without a new size or mtime when re-read (possible corruption).</summary>
     public bool? Corrupt { get; init; }
+    /// <summary>Archives found extracted: complete, verified (complete and every file matches the archive's CRC32), partial or any.</summary>
+    public string? Extracted { get; init; }
     /// <summary>Folder name anywhere in the path (e.g. node_modules); with Dirs=true matches those folders themselves (outermost only).</summary>
     public string? Segment { get; init; }
     public string? Sort { get; init; }
     public bool? Asc { get; init; }
 
-    public IQueryable<Entry> Apply(IQueryable<Entry> q)
+    /// <param name="extractions">Needed for <see cref="Extracted"/>.</param>
+    public IQueryable<Entry> Apply(IQueryable<Entry> q, IQueryable<ArchiveExtraction>? extractions = null)
     {
         var all = q;
         var dirs = Dirs == true || EmptyDirs == true;
@@ -132,6 +135,18 @@ public sealed record SearchFilter
         if (Corrupt == true)
         {
             q = q.Where(e => e.CorruptAt != null);
+        }
+
+        if (!string.IsNullOrWhiteSpace(Extracted) && extractions is not null)
+        {
+            var found = Extracted.Trim().ToLowerInvariant() switch
+            {
+                "complete" => extractions.Where(x => x.State == ExtractionState.Complete),
+                "verified" => extractions.Where(x => x.State == ExtractionState.Complete && x.VerifiedAt != null && x.VerifiedBad == 0 && x.Unverified == 0),
+                "partial" => extractions.Where(x => x.State == ExtractionState.Partial),
+                _ => extractions,
+            };
+            q = q.Where(e => found.Any(a => a.ArchiveId == e.Id));
         }
 
         if (EmptyDirs == true)
