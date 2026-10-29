@@ -62,7 +62,11 @@ SQLite can sort them. Migrations are created only with `dotnet ef migrations add
 
 ## Scan pipeline (`ScanService.RunAsync`)
 
-One scan at a time (`ScanQueue` → `ScanWorker`, guarded by `JobLock` with plan apply and AI runs).
+One scan at a time (`ScanQueue` → `ScanWorker`, guarded by `JobLock`). `JobLock` serializes every background writer: scans, plan
+apply, AI runs, rule apply and integration syncs (a sync waiting for it reports `queued`). Settings saves (`SettingsStore`,
+`IntegrationHost.SaveAsync`, ignore / enter-filesystem endpoints) apply in memory at once and persist through `JobLock.WriteAsync`:
+written immediately when the lock is free, else kept per key (latest wins) and written when the running job releases it; the
+endpoints return `savedLater` (the holder) so the UI can say so.
 
 1. **Walk** (`Walker`): depth-first; per directory it loads existing children by `ParentId`, `lstat`s every name (`Native.LStat` → `statx`),
    inserts new rows, updates changed files (size/mtime/inode/type) and resets their detection and hashes, deletes vanished subtrees,
@@ -143,7 +147,9 @@ integrations after each scan. Plugins write labels with `Annotations.Replace(con
 Front end: `ClientApp/src/integrations/registry.tsx` maps an id to a lazy page; the settings form is generic (`pages/Integrations.tsx`).
 
 Labels are clickable: a badge links to `/integrations/{source}?entry={entryId}` (never to the external app; those links stay inside the pages).
-A page reads the entry with `hooks/useLocate.ts`, which calls the plugin's `GET /integrations/{id}/locate?entryId=` and opens what it returns:
+Browse also calls `GET /entries/{id}/disk` (the folder listed on disk now via `ResolveForRead`: names not in the index with lstat data and whether
+they are ignored, plus the count of indexed children gone from disk) and `POST /ignore {rootId, relPath, ignore}` / `POST /enter-filesystem`
+(adds the full path to `IgnorePatterns` / `EnterFilesystems`; the latter also queues a subtree scan). A page reads the entry with `hooks/useLocate.ts`, which calls the plugin's `GET /integrations/{id}/locate?entryId=` and opens what it returns:
 `ItemIntegration` and Plex return the title the entry belongs to (`key`, Plex also `type`) when the entry or folder holds exactly one, and the page
 opens it through `groups?key=` / `top?key=`; the backup page gets `{rootId, path}` and opens its folder view there. `Db.EntryScope` + `Db.InScope`
 give the "this entry or anything inside it" condition. A plugin without `locate` just opens its page.
@@ -160,8 +166,11 @@ Host paths (display only): `AppSettings.HostPaths` (ANalyze path → host path) 
 The desktop app does not use them (it sees host paths).
 
 `IIntegration.DockerHints` (image/name words) and `UrlField` let the Docker plugin find an app's container. `IntegrationPaths.ForAsync` returns the
-configured `mappings` followed by automatic ones from every `IPathMappingSource` (a configured mapping wins for the same prefix); failures there are
-logged and ignored. `GET /integrations` returns them as `auto` so the settings form shows them. Enabling an integration that has a UI page also shows
+configured `mappings` followed by automatic ones from every `IPathMappingSource` (`IntegrationPaths.Merge`: an automatic mapping at or below a
+configured prefix is dropped; `MapPath` takes the longest prefix, the later mapping for equal prefixes); failures there are logged and ignored.
+Then `PathAliases.Resolve` uses ANalyze's mounts (`IntegrationPaths.MountsAsync`: `AppSettings.HostPaths` + `IHostPathSource`, including mounts
+at the same path) to move targets outside every root to the same host folder's path inside a root, and adds fallback mappings for ANalyze paths
+or host paths outside every root that lead into one (never under an existing mapping's prefix). `GET /integrations` returns them as `auto` so the settings form shows them. Enabling an integration that has a UI page also shows
 it in the sidebar (there is no separate visibility setting).
 
 ### ItemIntegration (shared base)
@@ -217,7 +226,8 @@ files by state), `files?state&rootId&path&direct&q&sort` (with the parent path, 
 outside a container its mounts are `/ → /`. For another app's container (override `id=container`, else the URL host matching a container name,
 compose service or IP, else a unique published port, else `DockerHints` in the image/name), `MountMath.Mappings` pairs mounts that overlap on the host:
 other `/movies` ← host `/mnt/media/movies`, ours `/library` ← host `/mnt/media` ⇒ `/movies → /library/movies` (and the reverse case when our mount
-is inside theirs). Only mappings that reach a scanned root are used. Sync labels local folders that other containers mount (`mount` annotations).
+is inside theirs). A folder we see through several mounts gives one candidate each, our most specific mount first; `MappingsFor` keeps the first
+per prefix that reaches a scanned root. Sync labels local folders that other containers mount (`mount` annotations).
 `GET /integrations/docker/containers` feeds the Docker page.
 
 ### Plex

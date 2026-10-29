@@ -86,7 +86,7 @@ public static class SystemEndpoints
             {
                 try
                 {
-                    auto.AddRange((await s.GetAsync(ct)).Where(a => configured.All(c => c.Path.TrimEnd('/') != a.Path.TrimEnd('/'))));
+                    auto.AddRange((await s.GetAsync(ct)).Where(a => a.Path != a.Host && configured.All(c => c.Path.TrimEnd('/') != a.Path.TrimEnd('/'))));
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
                 {
@@ -110,7 +110,7 @@ public static class SystemEndpoints
 
         api.MapGet("/settings", (SettingsStore settings) => Masked(settings.Current));
 
-        api.MapPut("/settings", async (AppSettings body, SettingsStore settings, SecretProtector secrets, CancellationToken ct) =>
+        api.MapPut("/settings", async (AppSettings body, SettingsStore settings, SecretProtector secrets, JobLock jobLock, IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions> json, CancellationToken ct) =>
         {
             if (!string.IsNullOrWhiteSpace(body.ScanCron))
             {
@@ -143,8 +143,8 @@ public static class SystemEndpoints
                     MinConfidence = Math.Clamp(body.Ai.MinConfidence, 0, 1),
                 },
             };
-            await settings.SaveAsync(next, ct);
-            return Results.Ok(Masked(next));
+            var written = await settings.SaveAsync(next, ct);
+            return SaveResult.Ok(Masked(next), written, jobLock, json.Value);
         });
 
         // Everything the sidebar needs in one call.

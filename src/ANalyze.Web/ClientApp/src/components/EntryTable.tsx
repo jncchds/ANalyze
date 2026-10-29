@@ -112,7 +112,7 @@ export function EntryTable({
                     {e.otherFilesystem && (
                       <span
                         className="pill-amber shrink-0 cursor-help"
-                        title={'Another filesystem is mounted here (a separate disk, share, dataset or subvolume), so the scan did not go inside and it looks empty. Turn on "Descend into other filesystems mounted inside a root" in Settings and scan again.'}
+                        title={'Another filesystem is mounted here (a separate disk, share, dataset or subvolume), so the scan did not go inside and it looks empty. Open it and choose "Enter this filesystem", or turn on "Descend into other filesystems mounted inside a root" in Settings.'}
                       >
                         not scanned: other filesystem
                       </span>

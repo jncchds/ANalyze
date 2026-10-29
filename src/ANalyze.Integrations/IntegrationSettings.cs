@@ -31,10 +31,12 @@ public sealed class IntegrationSettings
     public static string MapPath(string externalPath, IReadOnlyList<PathMapping> mappings)
     {
         var p = externalPath.Replace('\\', '/');
+        // Longest prefix wins; for the same prefix the later mapping (the one added last) wins.
         var best = mappings
-            .Select(m => (From: m.From.Replace('\\', '/').TrimEnd('/'), To: m.To.TrimEnd('/')))
+            .Select((m, i) => (From: m.From.Replace('\\', '/').TrimEnd('/'), To: m.To.TrimEnd('/'), Index: i))
             .Where(m => m.From.Length > 0 && (p == m.From || p.StartsWith(m.From + "/", StringComparison.Ordinal)))
             .OrderByDescending(m => m.From.Length)
+            .ThenByDescending(m => m.Index)
             .FirstOrDefault();
         return best.From is null ? p : best.To + p[best.From.Length..];
     }

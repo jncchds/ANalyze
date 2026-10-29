@@ -1,3 +1,5 @@
+using ANalyze.Infrastructure.Roots;
+using ANalyze.Infrastructure.Settings;
 using System.Net.Http.Json;
 using System.Text.Json;
 using ANalyze.Integrations;
@@ -37,6 +39,79 @@ public class MountMathTests
     [Fact]
     public void Outside_a_container_paths_are_host_paths() =>
         Assert.Equal([("/tv", "/mnt/media/tv")], MountMath.Mappings([M("/mnt/media/tv", "/tv")], [M("/", "/")]));
+
+    [Fact]
+    public void A_folder_seen_twice_gives_both_candidates_most_specific_first()
+    {
+        // ANalyze: /mnt/main → /mnt/main and the dataset /mnt/main/media → /mnt/media; Plex: /mnt/main/media → /media/data.
+        var self = new[] { M("/mnt/main", "/mnt/main"), M("/mnt/main/media", "/mnt/media") };
+        Assert.Equal([("/media/data", "/mnt/media"), ("/media/data", "/mnt/main/media")], MountMath.Mappings([M("/mnt/main/media", "/media/data")], self));
+    }
+}
+
+public class MappingPriorityTests
+{
+    [Fact]
+    public void Manual_mappings_cover_their_whole_prefix_and_docker_fills_the_rest()
+    {
+        var merged = IntegrationPaths.Merge(
+            [new PathMapping("/downloads", "/mnt/media/dl")],
+            [new PathMapping("/downloads/movies", "/mnt/elsewhere"), new PathMapping("/downloads", "/x"), new PathMapping("/tv", "/mnt/media/tv")]);
+        Assert.Equal([new PathMapping("/downloads", "/mnt/media/dl"), new PathMapping("/tv", "/mnt/media/tv")], merged);
+        Assert.Equal("/mnt/media/dl/movies/a.mkv", IntegrationSettings.MapPath("/downloads/movies/a.mkv", merged));
+    }
+
+    [Fact]
+    public void The_latest_mapping_for_the_same_prefix_wins() =>
+        Assert.Equal("/new/a", IntegrationSettings.MapPath("/data/a", [new PathMapping("/data", "/old"), new PathMapping("/data/", "/new")]));
+
+    [Fact]
+    public void The_longest_prefix_still_wins_over_order() =>
+        Assert.Equal("/m/a", IntegrationSettings.MapPath("/data/movies/a", [new PathMapping("/data/movies", "/m"), new PathMapping("/data", "/d")]));
+}
+
+public class PathAliasTests
+{
+    // ANalyze's mounts from the issue: /mnt/main → /mnt/main, /mnt/main/media → /mnt/media.
+    private static readonly HostPath[] Mounts = [new("/mnt/main", "/mnt/main"), new("/mnt/media", "/mnt/main/media")];
+
+    private static Func<string, bool> Roots(params string[] roots) => p => roots.Any(r => RootRegistry.IsUnder(r, p));
+
+    [Theory]
+    [InlineData("/mnt/main/media", "/mnt/media")]
+    [InlineData("/mnt/main/media/Movies/A/a.mkv", "/mnt/media/Movies/A/a.mkv")]
+    [InlineData("/mnt/media/TV", "/mnt/media/TV")]
+    public void Paths_through_the_parent_mount_reach_the_dataset_root(string path, string expected) =>
+        Assert.Equal(expected, PathAliases.IntoRoot(path, Mounts, Roots("/mnt/media")));
+
+    [Fact]
+    public void Dataset_paths_reach_a_parent_root() =>
+        Assert.Equal("/mnt/main/media/Movies", PathAliases.IntoRoot("/mnt/media/Movies", Mounts, Roots("/mnt/main")));
+
+    [Fact]
+    public void Paths_no_mount_leads_into_a_root_stay_unresolved() =>
+        Assert.Null(PathAliases.IntoRoot("/mnt/main/backups", Mounts, Roots("/mnt/media")));
+
+    [Fact]
+    public void Mapping_targets_and_unmapped_paths_are_moved_into_the_root()
+    {
+        // qBittorrent configured as /downloads → /mnt/main/media (the host path); only /mnt/media is scanned.
+        var resolved = PathAliases.Resolve([new PathMapping("/downloads", "/mnt/main/media")], Mounts, Roots("/mnt/media"));
+        Assert.Equal("/mnt/media/Movies/x.mkv", IntegrationSettings.MapPath("/downloads/Movies/x.mkv", resolved));
+        // An app that reports the path through /mnt/main (or the host path) finds the file too.
+        Assert.Equal("/mnt/media/TV/y.mkv", IntegrationSettings.MapPath("/mnt/main/media/TV/y.mkv", resolved));
+        // Other paths are untouched.
+        Assert.Equal("/config/z", IntegrationSettings.MapPath("/config/z", resolved));
+    }
+
+    [Fact]
+    public void Mappings_already_inside_a_root_are_kept()
+    {
+        var resolved = PathAliases.Resolve([new PathMapping("/media/data", "/mnt/main/media")], Mounts, Roots("/mnt/main"));
+        Assert.Equal(new PathMapping("/media/data", "/mnt/main/media"), resolved[0]);
+        // ANalyze's other path for the dataset leads into the /mnt/main root.
+        Assert.Equal("/mnt/main/media/a", IntegrationSettings.MapPath("/mnt/media/a", resolved));
+    }
 }
 
 public class DockerMatchTests

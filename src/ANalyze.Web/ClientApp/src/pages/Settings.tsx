@@ -4,7 +4,7 @@ import { api } from '../api/client'
 import { useConfig, useHostPaths, useRoots } from '../api/hooks'
 import type { HostPath } from '../api/types'
 import { PathText } from '../components/PathText'
-import { ErrorBox, Field, Loading, PageTitle, Section, Toggle } from '../components/ui'
+import { ErrorBox, Field, Loading, PageTitle, SavedLater, Section, Toggle } from '../components/ui'
 import { desktop } from '../lib/desktop'
 import { ago, bytes, dateTime, duration } from '../lib/format'
 
@@ -29,6 +29,7 @@ interface AppSettings {
   scanOnStartup: boolean
   ignorePatterns: string[]
   crossFilesystems: boolean
+  enterFilesystems: string[]
   sniffUnknownFiles: boolean
   findDuplicates: boolean
   minDuplicateSize: number
@@ -77,9 +78,11 @@ export default function Settings() {
   useEffect(() => {
     if (q.data && !dirty) setS(q.data)
   }, [q.data, dirty])
+  const [savedLater, setSavedLater] = useState<string | null>(null)
   const save = useMutation({
-    mutationFn: (v: AppSettings) => api<AppSettings>('/settings', { method: 'PUT', json: v }),
-    onSuccess: (v) => {
+    mutationFn: (v: AppSettings) => api<AppSettings & { savedLater?: string | null }>('/settings', { method: 'PUT', json: v }),
+    onSuccess: ({ savedLater, ...v }) => {
+      setSavedLater(savedLater ?? null)
       setS(v)
       setDirty(false)
       qc.invalidateQueries({ queryKey: ['config'] })
@@ -88,6 +91,7 @@ export default function Settings() {
     },
   })
   const test = useMutation({ mutationFn: () => api<{ ok: boolean; reply?: string; milliseconds: number; error?: string }>('/ai/test', { method: 'POST', json: s?.ai }) })
+  const scanRoot = useMutation({ mutationFn: (rootId: number) => api('/scan', { method: 'POST', json: { rootId } }) })
   const refreshRoots = useMutation({ mutationFn: () => api('/roots/refresh', { method: 'POST' }), onSuccess: () => qc.invalidateQueries({ queryKey: ['roots'] }) })
 
   if (q.isLoading || !s) return <Loading />
@@ -110,6 +114,7 @@ export default function Settings() {
         Settings
       </PageTitle>
       {save.error && <ErrorBox error={save.error} />}
+      {savedLater && !dirty && <SavedLater holder={savedLater} />}
       <div className="grid gap-4 lg:grid-cols-2">
         <Section
           title="Roots"
@@ -139,6 +144,9 @@ export default function Settings() {
                 <PathText path={r.path} className="flex-1" />
                 <span className="text-xs muted">{r.missing ? 'not mounted' : r.readOnly ? 'read-only' : 'read-write'}</span>
                 <span className="text-xs muted">{r.lastScanAt ? `scanned ${ago(r.lastScanAt)}` : 'never scanned'}</span>
+                <button className="btn-ghost px-2 py-0.5 text-xs" title={`Scan only ${r.path}`} disabled={r.missing} onClick={() => scanRoot.mutate(r.id)}>
+                  ⟳ Scan
+                </button>
                 {desktop && (
                   <button className="btn-ghost px-2 py-0.5 text-xs" title="Stop analyzing this folder" onClick={() => void desktop?.removeRoot(r.path)}>
                     Remove
@@ -172,8 +180,22 @@ export default function Settings() {
               label="Descend into other filesystems mounted inside a root"
               hint="Separate disks, shares, ZFS datasets and btrfs subvolumes below a root. When off they are listed but look empty, and integrations cannot find files in them."
             />
+            {!s.crossFilesystems && (
+              <Field
+                label="Other filesystems to enter (one full path per line)"
+                hint="Entered even though crossing is off, with the filesystems mounted below them. E.g. /mnt/main/media to scan that ZFS dataset inside the /mnt/main root."
+              >
+                <textarea
+                  className="input font-mono"
+                  rows={3}
+                  value={(s.enterFilesystems ?? []).join('\n')}
+                  onChange={(e) => set({ enterFilesystems: e.target.value.split('\n') })}
+                  placeholder="/mnt/main/media"
+                />
+              </Field>
+            )}
             <Toggle checked={s.sniffUnknownFiles} onChange={(v) => set({ sniffUnknownFiles: v })} label="Read file headers to detect unknown types" hint="One small read per file with an unknown extension" />
-            <Field label="Ignore (one glob per line)" hint="Without '/' a pattern matches a name anywhere (e.g. .snapshot); with '/' it matches the path from the root (e.g. Media/Cache/**).">
+            <Field label="Ignore (one glob per line)" hint="Without '/' a pattern matches a name anywhere (e.g. .snapshot); with '/' it matches the path from the root (e.g. Media/Cache/**); a full path such as /mnt/main/backups works too. Folders can also be ignored from the explorer.">
               <textarea className="input font-mono" rows={4} value={s.ignorePatterns.join('\n')} onChange={(e) => set({ ignorePatterns: e.target.value.split('\n') })} />
             </Field>
             <Field label="Keep folder size history for this many levels">
@@ -358,3 +380,4 @@ function HostPathsSection({ value, onChange }: { value: HostPath[]; onChange: (v
     </Section>
   )
 }
+

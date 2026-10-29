@@ -241,3 +241,13 @@ export function Progress({ value, max, className }: { value: number; max: number
     </div>
   )
 }
+
+/** A save made while a job held the database: in effect now, written to the database once that job is done. */
+export function SavedLater({ holder }: { holder: string }) {
+  return (
+    <p className="mb-3 text-sm text-warning">
+      Saved and in effect. {holder.startsWith('scan') ? 'A scan' : `A job (${holder})`} is using the database, so the change is written to it as soon as that
+      finishes.
+    </p>
+  )
+}

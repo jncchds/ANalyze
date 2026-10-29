@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useIntegrations } from '../api/hooks'
 import type { AutoMappings, Integration, IntegrationField, IntegrationSettings } from '../api/types'
-import { Empty, ErrorBox, Field, Loading, PageTitle, Section, Toggle } from '../components/ui'
+import { Empty, ErrorBox, Field, Loading, PageTitle, SavedLater, Section, Toggle } from '../components/ui'
 import { isActive, useJob } from '../hooks/useJobs'
 import { integrationUi } from '../integrations/registry'
 import { ago } from '../lib/format'
@@ -49,9 +49,11 @@ function IntegrationCard({ integration }: { integration: Integration }) {
   }
   const setValue = (key: string, value: unknown) => update({ values: { ...s.values, [key]: value } })
 
+  const [savedLater, setSavedLater] = useState<string | null>(null)
   const save = useMutation({
-    mutationFn: () => api<IntegrationSettings>(`/integrations/${integration.id}`, { method: 'PUT', json: s }),
-    onSuccess: (saved) => {
+    mutationFn: () => api<IntegrationSettings & { savedLater?: string | null }>(`/integrations/${integration.id}`, { method: 'PUT', json: s }),
+    onSuccess: ({ savedLater, ...saved }) => {
+      setSavedLater(savedLater ?? null)
       setS(saved)
       setDirty(false)
       qc.invalidateQueries({ queryKey: ['integrations'] })
@@ -118,10 +120,11 @@ function IntegrationCard({ integration }: { integration: Integration }) {
           )}
         </div>
       )}
+      {savedLater && !dirty && <div className="mt-2"><SavedLater holder={savedLater} /></div>}
       {(save.error || test.error || sync.error) && <div className="mt-2"><ErrorBox error={save.error ?? test.error ?? sync.error} /></div>}
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <span className="flex-1 text-xs muted" title={syncing ? phaseHint(`integration:${integration.id}`, job?.phase) : undefined}>
-          {syncing ? `Syncing… ${job?.phase ?? ''} ${job?.done ? job.done.toLocaleString() : ''}` : last ? `Last sync ${ago(integration.status.lastSync)}: ${last.message}` : job?.message ?? 'Never synced'}
+          {job?.state === 'queued' ? `Queued: ${job.message ?? 'waiting for the running job'}` : syncing ? `Syncing… ${job?.phase ?? ''} ${job?.done ? job.done.toLocaleString() : ''}` : last ? `Last sync ${ago(integration.status.lastSync)}: ${last.message}` : job?.message ?? 'Never synced'}
         </span>
         <button className="btn-secondary" onClick={() => test.mutate()} disabled={test.isPending}>
           Test connection

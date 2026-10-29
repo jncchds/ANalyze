@@ -1,5 +1,15 @@
 # Release Notes
 
+## v0.1.7 — 2026-10-29
+
+- fix: path mappings follow ANalyze's own mounts: when one host folder is visible under two paths (e.g. /mnt/main and its ZFS dataset /mnt/main/media mounted again at /mnt/media), an app path that leads to /mnt/main/media/… finds the file under whichever path is scanned — for Docker mappings, manual mappings that point at a host path, and subfolders
+- fix: a manual mapping now covers its whole prefix: Docker's mappings never override any part of it (e.g. a Docker /downloads/movies no longer beats a manual /downloads), and for the same prefix the mapping added last wins
+- fix: integration syncs wait for a running scan, plan, AI run or another sync and run one after the other (shown as "Queued"), instead of fighting over the database; settings saves take effect at once and are written to the database as soon as the running job has finished
+- feat: Browse compares a folder with the disk: files and folders that are there but not scanned yet, or ignored, are listed with buttons to scan the folder or ignore/stop ignoring them; "Ignore this folder" and "Scan this folder" in the header
+- feat: other filesystems can be chosen one by one: with "Descend into other filesystems" off, "Other filesystems to enter" (Settings) or "Enter this filesystem" (Browse) scans just those datasets — no need to mount a dataset separately to scan it
+- feat: ignore patterns accept full paths (/mnt/main/backups)
+- feat: scan a single root from the sidebar ("Scan <root>" next to "Scan all") or from the roots list in Settings
+
 ## v0.1.6 — 2026-10-29
 
 - feat: Activity log page — what ANalyze is doing step by step: each scan phase with counts and times, folders it skipped and why, unreadable files, integration syncs (mappings used, items not found and why), plans and AI runs; follows live, filters by level, area and text. Kept in memory (last 20,000 lines); the log files keep the full history

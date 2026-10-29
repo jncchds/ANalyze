@@ -200,6 +200,17 @@ public class PathSafetyTests
         Assert.True(m.IsIgnored(".analyze-trash", ".analyze-trash", 1));
         Assert.False(m.IsIgnored("x/.analyze-trash", ".analyze-trash", 2));
     }
+
+    [Fact]
+    public void Ignore_matcher_full_paths()
+    {
+        var m = new IgnoreMatcher(["/mnt/main/backups", "/Old/**"], "/mnt/main");
+        Assert.True(m.IsIgnored("backups", "backups", 1));
+        Assert.False(m.IsIgnored("media", "media", 1));
+        // A leading '/' still means "from the root" too, as before.
+        Assert.True(m.IsIgnored("Old/x", "x", 2));
+        Assert.False(new IgnoreMatcher(["/mnt/main/backups"], "/mnt/other").IsIgnored("backups", "backups", 1));
+    }
 }
 
 public class IntegrationPathTests
@@ -296,5 +307,31 @@ public class ActivityLogTests
         Assert.Equal("512 B", ANalyze.Infrastructure.Logging.Format.Bytes(512));
         Assert.Equal("1.5 KB", ANalyze.Infrastructure.Logging.Format.Bytes(1536));
         Assert.Equal("10 GB", ANalyze.Infrastructure.Logging.Format.Bytes(10L << 30));
+    }
+}
+
+public class JobLockTests
+{
+    [Fact]
+    public async Task Writes_run_at_once_when_free_and_after_the_job_when_busy()
+    {
+        var jobLock = new ANalyze.Infrastructure.Jobs.JobLock();
+        var written = new List<string>();
+        Assert.True(await jobLock.WriteAsync("a", _ => { written.Add("a1"); return Task.CompletedTask; }, CancellationToken.None));
+
+        var job = await jobLock.AcquireAsync("scan", CancellationToken.None);
+        Assert.False(await jobLock.WriteAsync("a", _ => { written.Add("a2"); return Task.CompletedTask; }, CancellationToken.None));
+        Assert.False(await jobLock.WriteAsync("a", _ => { written.Add("a3"); return Task.CompletedTask; }, CancellationToken.None));
+        Assert.Equal(["a1"], written);
+
+        job.Dispose();
+        for (var i = 0; i < 100 && written.Count < 2; i++)
+        {
+            await Task.Delay(20);
+        }
+
+        // Only the latest queued write for a key runs.
+        Assert.Equal(["a1", "a3"], written);
+        Assert.Empty(jobLock.PendingWrites);
     }
 }

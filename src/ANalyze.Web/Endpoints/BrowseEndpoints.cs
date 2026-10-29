@@ -1,6 +1,9 @@
 using ANalyze.Domain;
+using ANalyze.Infrastructure;
 using ANalyze.Infrastructure.Data;
+using ANalyze.Infrastructure.Jobs;
 using ANalyze.Infrastructure.Roots;
+using ANalyze.Infrastructure.Settings;
 using ANalyze.Scanner;
 using ANalyze.Web.Api;
 using ANalyze.Web.Infrastructure;
@@ -15,6 +18,8 @@ public static class BrowseEndpoints
     public sealed record TreeNode(long Id, string Name, long Size, bool IsDir, int? CategoryId, long Files, List<TreeNode>? Children, bool Other = false);
 
     public sealed record CategoryBody(int? CategoryId);
+
+    public sealed record IgnoreBody(int RootId, string RelPath, bool Ignore = true);
 
     public static void MapBrowseEndpoints(this RouteGroupBuilder api)
     {
@@ -76,6 +81,95 @@ public static class BrowseEndpoints
             var ids = items.Select(i => i.Id).ToList();
             var notes = await AnnotationsFor(db, ids, ct);
             return new { items = items.Select(EntryDto.From).ToList(), total, annotations = notes };
+        });
+
+        // The folder as it is on disk now, compared with the index: what is there but not indexed (new since the last scan,
+        // ignored, or never entered) and how many indexed children are gone. Only names and lstat data, never content.
+        api.MapGet("/entries/{id:long}/disk", async (long id, AnalyzeDbContext db, RootRegistry roots, SettingsStore settings, CancellationToken ct) =>
+        {
+            var e = await db.Entries.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id && x.IsDir, ct);
+            if (e is null || roots.Get(e.RootId) is not { } root)
+            {
+                return Results.NotFound();
+            }
+
+            string dir;
+            List<string> names;
+            try
+            {
+                dir = roots.ResolveForRead(e.RootId, e.RelPath);
+                names = Directory.EnumerateFileSystemEntries(dir, "*", new EnumerationOptions { RecurseSubdirectories = false, IgnoreInaccessible = false, AttributesToSkip = 0 })
+                    .Select(Path.GetFileName).OfType<string>().ToList();
+            }
+            catch (Exception x) when (x is IOException or UnauthorizedAccessException)
+            {
+                return Results.Ok(new { readable = false, error = x.Message, items = Array.Empty<object>(), gone = 0, truncated = false });
+            }
+
+            var known = (await db.Entries.AsNoTracking().Where(x => x.ParentId == id).Select(x => x.Name).ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
+            var ignore = new IgnoreMatcher(settings.Current.IgnorePatterns, root.Path);
+            var onDisk = names.ToHashSet(StringComparer.Ordinal);
+            const int max = 2000;
+            var extra = names.Where(n => !known.Contains(n)).Order(StringComparer.OrdinalIgnoreCase).ToList();
+            var items = extra.Take(max).Select(n =>
+            {
+                var rel = e.RelPath.Length == 0 ? n : e.RelPath + "/" + n;
+                var st = Native.LStat(Path.Combine(dir, n));
+                return new
+                {
+                    name = n,
+                    relPath = rel,
+                    fullPath = RootRegistry.Combine(root.Path, rel),
+                    isDir = st.IsDir,
+                    isSymlink = st.IsSymlink,
+                    size = st.IsDir ? 0 : st.Size,
+                    mTime = st.MTime,
+                    ignored = ignore.IsIgnored(rel, n, e.Depth + 1),
+                };
+            }).ToList();
+            return Results.Ok(new { readable = true, error = (string?)null, items, gone = known.Count(k => !onDisk.Contains(k)), truncated = extra.Count > max });
+        });
+
+        // Adds or removes the full path of a folder or file in the ignore list (settings); the next scan of its folder drops it from the index.
+        api.MapPost("/ignore", async (IgnoreBody body, RootRegistry roots, SettingsStore settings, JobLock jobLock, CancellationToken ct) =>
+        {
+            if (roots.Get(body.RootId) is not { } root || body.RelPath.Split('/').Any(p => p is ".." or "."))
+            {
+                return Results.NotFound();
+            }
+
+            var full = RootRegistry.Combine(root.Path, body.RelPath.Trim('/'));
+            if (body.RelPath.Trim('/').Length == 0)
+            {
+                return Results.Problem("A root cannot be ignored; remove it from the roots instead.", statusCode: 400);
+            }
+
+            var s = settings.Current;
+            var rest = s.IgnorePatterns.Where(p => p.Trim().TrimEnd('/') != full).ToList();
+            var next = s with { IgnorePatterns = body.Ignore ? [.. rest, full] : rest };
+            var written = await settings.SaveAsync(next, ct);
+            return Results.Ok(new { pattern = full, ignored = body.Ignore, savedLater = written ? null : jobLock.Holder ?? "the running job" });
+        });
+
+        // Enters another filesystem mounted at this folder from now on (cross-filesystem scanning off) and scans it.
+        api.MapPost("/enter-filesystem", async (IgnoreBody body, RootRegistry roots, SettingsStore settings, ScanQueue queue, JobLock jobLock, CancellationToken ct) =>
+        {
+            if (roots.Get(body.RootId) is not { } root || body.RelPath.Split('/').Any(p => p is ".." or "."))
+            {
+                return Results.NotFound();
+            }
+
+            var rel = body.RelPath.Trim('/');
+            var full = RootRegistry.Combine(root.Path, rel);
+            var s = settings.Current;
+            var written = true;
+            if (!s.EnterFilesystems.Any(p => RootRegistry.IsUnder(p.Trim().TrimEnd('/'), full)))
+            {
+                written = await settings.SaveAsync(s with { EnterFilesystems = [.. s.EnterFilesystems.Where(p => p.Trim().Length > 0), full] }, ct);
+            }
+
+            queue.Enqueue(new ScanRequest(root.Id, rel, Reason: $"Entering the filesystem at {full}"));
+            return Results.Ok(new { path = full, savedLater = written ? null : jobLock.Holder ?? "the running job" });
         });
 
         // Nested sizes for the treemap/sunburst; small children are folded into "other".
