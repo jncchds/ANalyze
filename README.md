@@ -84,7 +84,12 @@ later scans only look at what changed (size, mtime, inode), so they are much fas
   and listed in the activity log, and you choose the ones to enter under *Other filesystems to enter* (e.g.
   `/mnt/main/media`, which also covers the datasets below it) or with **Enter this filesystem** in Browse.
 - **Ignoring** — skip folders with *Ignore* in Settings (names like `.snapshot`, paths from the root like
-  `Media/Cache/**`, or full paths like `/mnt/main/backups`) or with **Ignore** in Browse.
+  `Media/Cache/**`, or full paths like `/mnt/main/backups`) or with **Ignore** in Browse. What you ignore leaves the
+  index at once, so it disappears from duplicates, search and insights without waiting for a scan (stop ignoring it and
+  scan its folder to bring it back).
+- **Priority** — **Settings → Scanning → Priority**: *Full speed*, or *Background*: ANalyze runs at low CPU priority and
+  gets disk time only when nothing else wants it, with one worker thread, so the server's other services stay
+  responsive while it scans and hashes (it takes longer).
 - **Not scanned yet** — Browse compares each folder with the disk: what is there but not scanned yet, or ignored, is
   listed under the folder with buttons to scan the folder or (stop) ignoring an item. Folders in that list open, as deep
   as they go, read live from the disk.
@@ -147,6 +152,22 @@ Files are grouped by size; a quick hash (first/middle/last 64 KB) filters candid
 xxHash128. Hashes are cached and recomputed only for changed files. The dedupe wizard keeps the oldest, newest,
 shortest-path, deepest-path, or a copy inside preferred folders, and trashes, deletes or **hard-links** the others
 (hard links keep every path working while storing the data once).
+
+### Extracted archives
+
+Scans list the files inside zip, rar and 7z archives (from their headers, a small read) and look on every root for
+folders that hold them — same relative paths and sizes, also when the archive's top folder was not kept, and whatever
+else the folder contains. **Duplicates → Extracted archives** shows:
+
+- **complete** extractions (every file there) and **partial** ones, with the files that are missing or *cut short*
+  (smaller than in the archive — an interrupted extraction);
+- **Check against archive**: reads the extracted files and compares each with the CRC32 the archive stores for it, so
+  you know the copy is intact without reading the archive; files that differ are listed;
+- plans to remove the archive (complete extractions only) or the extracted copy (only the files that came from the archive).
+
+tar, tar.gz, .gz, .xz, .zst… have no file index: turn on *Also list tar and compressed files* in **Settings → Archives**
+to decompress each one once (CRC32s are computed on the way; there is a size limit). Insights and the Search filter
+*Archives* list them too.
 
 ## Rules and categories
 

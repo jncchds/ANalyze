@@ -134,3 +134,21 @@ public enum LogSeverity
     Warning = 3,
     Error = 4,
 }
+
+/// <summary>How hard ANalyze may use the machine.</summary>
+public enum RunPriority
+{
+    /// <summary>Normal priority and the configured number of hashing threads.</summary>
+    Full,
+    /// <summary>Low CPU priority, idle disk I/O class and one worker thread, so the server's other services come first.</summary>
+    Background,
+}
+
+/// <summary>How much of an archive was found extracted.</summary>
+public enum ExtractionState
+{
+    /// <summary>Every file of the archive is there with the same size.</summary>
+    Complete,
+    /// <summary>Some files are missing, smaller or different.</summary>
+    Partial,
+}

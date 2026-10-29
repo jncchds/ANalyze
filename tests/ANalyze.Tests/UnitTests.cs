@@ -335,3 +335,32 @@ public class JobLockTests
         Assert.Empty(jobLock.PendingWrites);
     }
 }
+
+public class PriorityTests
+{
+    [Fact]
+    public void Background_mode_lowers_every_thread_and_new_threads_inherit_it()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return; // thread priorities are checked through /proc
+        }
+
+        Assert.Null(ANalyze.Infrastructure.Native.SetBackgroundPriority(true));
+        try
+        {
+            static int Nice(string tid) => int.Parse(File.ReadAllText($"/proc/self/task/{tid}/stat").Split(')')[1].Split(' ', StringSplitOptions.RemoveEmptyEntries)[16]);
+            Assert.All(Directory.GetDirectories("/proc/self/task").Select(Path.GetFileName), t => Assert.Equal(10, Nice(t!)));
+            var child = 0;
+            var thread = new Thread(() => child = Nice(File.ReadAllText("/proc/thread-self/stat").Split(' ')[0]));
+            thread.Start();
+            thread.Join();
+            Assert.Equal(10, child);
+        }
+        finally
+        {
+            // Raising the priority again needs root; without it the test process simply stays at low priority.
+            ANalyze.Infrastructure.Native.SetBackgroundPriority(false);
+        }
+    }
+}

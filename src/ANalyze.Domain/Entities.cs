@@ -321,3 +321,76 @@ public sealed class Setting
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
+/// <summary>
+/// The file list of an archive (scan phase "archives"). Valid while the archive keeps <see cref="Size"/> and <see cref="MTime"/>;
+/// otherwise it is listed again.
+/// </summary>
+public sealed class ArchiveListing
+{
+    /// <summary>The archive's entry (also the key).</summary>
+    public long EntryId { get; set; }
+    public long Size { get; set; }
+    public long MTime { get; set; }
+    /// <summary>zip, rar, 7z (headers read), or tar, gz… (streamed: decompressed once, CRC32 computed per file).</summary>
+    public string? Format { get; set; }
+    public bool Streamed { get; set; }
+    public long ListedAt { get; set; }
+    /// <summary>Why the archive could not be listed (encrypted headers, damaged, too many files…); no members then.</summary>
+    public string? Error { get; set; }
+    public int Files { get; set; }
+    public long FileBytes { get; set; }
+}
+
+/// <summary>A file inside an archive (folders and links are not stored).</summary>
+public sealed class ArchiveMember
+{
+    public long Id { get; set; }
+    public long ArchiveId { get; set; }
+    /// <summary>Path inside the archive, '/'-separated, without a leading slash.</summary>
+    public required string Path { get; set; }
+    public required string Name { get; set; }
+    public long Size { get; set; }
+    /// <summary>CRC32 of the content (from the archive's headers, or computed while streaming); null when unknown.</summary>
+    public long? Crc { get; set; }
+}
+
+/// <summary>
+/// A place where an archive's files were found extracted: archive member <c>p</c> (with <see cref="Strip"/> removed from its start)
+/// is expected at <c>BaseRelPath/p</c> on <see cref="RootId"/>. Recomputed by scans; verification results survive as long as the
+/// matched files keep their <see cref="Fingerprint"/>.
+/// </summary>
+public sealed class ArchiveExtraction
+{
+    public long Id { get; set; }
+    public long ArchiveId { get; set; }
+    public ExtractionState State { get; set; }
+    public int RootId { get; set; }
+    /// <summary>The folder the archive's paths start from ("" = the root).</summary>
+    public required string BaseRelPath { get; set; }
+    /// <summary>Leading folders of the archive's paths that the extraction left out ("" or "folder/").</summary>
+    public required string Strip { get; set; }
+    /// <summary>Deepest folder that holds all matched files (for display and links).</summary>
+    public long? FolderId { get; set; }
+    public required string FolderRelPath { get; set; }
+    public int Files { get; set; }
+    public int Matched { get; set; }
+    public int Missing { get; set; }
+    /// <summary>Present but smaller than in the archive: typical of an interrupted extraction.</summary>
+    public int Smaller { get; set; }
+    /// <summary>Present but larger than in the archive (or a folder in place of a file).</summary>
+    public int Differs { get; set; }
+    public long Bytes { get; set; }
+    public long MatchedBytes { get; set; }
+    /// <summary>Hash of the matched files' ids, sizes and mtimes: verification results are kept while it stays the same.</summary>
+    public required string Fingerprint { get; set; }
+    public long FoundAt { get; set; }
+    /// <summary>When the extracted files were last compared with the archive's CRC32s.</summary>
+    public long? VerifiedAt { get; set; }
+    public int VerifiedOk { get; set; }
+    public int VerifiedBad { get; set; }
+    /// <summary>Matched files that could not be checked (no CRC in the archive, unreadable, changed since the scan).</summary>
+    public int Unverified { get; set; }
+    /// <summary>JSON array of archive paths whose extracted content differs from the archive (at most 500).</summary>
+    public string? BadPaths { get; set; }
+}
+

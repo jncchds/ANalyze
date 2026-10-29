@@ -38,6 +38,12 @@ public sealed record AppSettings
 
     public int HashThreads { get; init; } = 2;
 
+    /// <summary>Full speed, or background mode: low CPU and disk priority and a single worker thread.</summary>
+    public RunPriority Priority { get; init; } = RunPriority.Full;
+
+    /// <summary>Threads for hashing, archive listing and checks: <see cref="HashThreads"/>, or one in background mode.</summary>
+    public int WorkerThreads() => Priority == RunPriority.Background ? 1 : Math.Max(1, HashThreads);
+
     /// <summary>Hash every file, not only duplicate candidates: needed to verify backups and to notice corruption.</summary>
     public bool HashAllFiles { get; init; }
 
@@ -46,6 +52,18 @@ public sealed record AppSettings
 
     /// <summary>Most data re-read for verification per scan, in GB; 0 = no limit.</summary>
     public int VerifyMaxGb { get; init; } = 200;
+
+    /// <summary>List archives during scans and look for folders where their files were extracted.</summary>
+    public bool FindExtractedArchives { get; init; } = true;
+
+    /// <summary>
+    /// Also list tar and single-file compressed archives (tar, tar.gz, .gz, .xz…). They have no file index, so listing one
+    /// decompresses all of it (once; CRC32s are computed on the way).
+    /// </summary>
+    public bool ListStreamedArchives { get; init; }
+
+    /// <summary>Streamed archives larger than this (GB) are not listed; 0 = no limit.</summary>
+    public int StreamedArchiveMaxGb { get; init; } = 20;
 
     public int TrashRetentionDays { get; init; } = 30;
 

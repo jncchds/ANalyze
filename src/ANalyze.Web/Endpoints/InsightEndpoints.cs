@@ -58,7 +58,7 @@ public static class InsightEndpoints
         async Task Add(string key, string title, string description, string severity, SearchFilter filter, ActionOp? op)
         {
             filter = filter with { RootId = rootId };
-            var q = filter.Apply(db.Entries.AsNoTracking());
+            var q = filter.Apply(db.Entries.AsNoTracking(), db.ArchiveExtractions.AsNoTracking());
             var dirs = filter.Dirs == true || filter.EmptyDirs == true;
             var agg = await q.GroupBy(_ => 1).Select(g => new { N = g.LongCount(), B = dirs ? g.Sum(e => e.TotalSize) : g.Sum(e => e.Size) }).FirstOrDefaultAsync(ct);
             if (agg is { N: > 0 })
@@ -83,6 +83,15 @@ public static class InsightEndpoints
         await AddCategory("system", "System files", "OS & NAS metadata", "Thumbs.db, .DS_Store, @eaDir and recycle bins.", "low", ActionOp.Trash);
         await Add("corrupt", "Possibly corrupted files", "Content changed although size and modification time did not (found when hashes were verified) — bit rot, or a program that restores timestamps. Compare with a backup.", "high",
             new SearchFilter { Corrupt = true }, null);
+        await Add("extracted-verified", "Archives already extracted (checked)",
+            "Every file of the archive is extracted and matches the archive's CRC32: the archive, or the extracted copy, can go. See Duplicates → Extracted archives.", "medium",
+            new SearchFilter { Extracted = "verified" }, ActionOp.Trash);
+        await Add("extracted", "Archives already extracted",
+            "Every file of the archive was found extracted with the same size. Check them against the archive in Duplicates → Extracted archives before removing either copy.", "info",
+            new SearchFilter { Extracted = "complete" }, null);
+        await Add("extracted-partial", "Partially extracted archives",
+            "Some of the archive's files were found extracted, others are missing or smaller (an interrupted or selective extraction).", "info",
+            new SearchFilter { Extracted = "partial" }, null);
         await Add("copynames", "Files named like copies", "'file (1).jpg', 'report - Copy.docx' — often accidental duplicates.", "medium", new SearchFilter { Tag = "copy-name" }, ActionOp.Trash);
         await Add("huge", "Huge files", "Single files over 4 GB.", "info", new SearchFilter { MinSize = 4L << 30 }, null);
         await Add("stale", "Untouched for 5+ years", "Files not modified in five years — archive candidates.", "info", new SearchFilter { OlderThanDays = 1825, MinSize = 1 << 20 }, ActionOp.Move);

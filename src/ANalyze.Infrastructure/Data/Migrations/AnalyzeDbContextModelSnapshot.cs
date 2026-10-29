@@ -238,6 +238,153 @@ namespace ANalyze.Infrastructure.Data.Migrations
                     b.ToTable("AiRuleSuggestions");
                 });
 
+            modelBuilder.Entity("ANalyze.Domain.ArchiveExtraction", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("ArchiveId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("BadPaths")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("BaseRelPath")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Bytes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Differs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Files")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("FolderId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("FolderRelPath")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("FoundAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Matched")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("MatchedBytes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Missing")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("RootId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Smaller")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("State")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Strip")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Unverified")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("VerifiedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("VerifiedBad")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("VerifiedOk")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ArchiveId");
+
+                    b.HasIndex("State", "MatchedBytes");
+
+                    b.ToTable("ArchiveExtractions");
+                });
+
+            modelBuilder.Entity("ANalyze.Domain.ArchiveListing", b =>
+                {
+                    b.Property<long>("EntryId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Error")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("FileBytes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Files")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Format")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("ListedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("MTime")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("Size")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("Streamed")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("EntryId");
+
+                    b.ToTable("ArchiveListings");
+                });
+
+            modelBuilder.Entity("ANalyze.Domain.ArchiveMember", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("ArchiveId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("Crc")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Path")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Size")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ArchiveId");
+
+                    b.ToTable("ArchiveMembers");
+                });
+
             modelBuilder.Entity("ANalyze.Domain.BackupFile", b =>
                 {
                     b.Property<long>("Id")

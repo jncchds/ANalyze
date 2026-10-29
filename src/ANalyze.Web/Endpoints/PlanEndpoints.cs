@@ -81,7 +81,7 @@ public static class PlanEndpoints
         api.MapPost("/plans/from-filter", async (FilterPlanBody b, PlanBuilder builder, AnalyzeDbContext db, CancellationToken ct) =>
         {
             var (op, dest, conflict) = await FromTemplateAsync(db, b.TemplateId, b.Op, b.Destination, b.Conflict, ct);
-            var ids = await b.Filter.Apply(db.Entries.AsNoTracking()).OrderBy(e => e.Id).Select(e => e.Id).Take(PlanBuilder.MaxItems + 1).ToListAsync(ct);
+            var ids = await b.Filter.Apply(db.Entries.AsNoTracking(), db.ArchiveExtractions.AsNoTracking()).OrderBy(e => e.Id).Select(e => e.Id).Take(PlanBuilder.MaxItems + 1).ToListAsync(ct);
             if (ids.Count > PlanBuilder.MaxItems)
             {
                 return Results.Problem($"The filter matches more than {PlanBuilder.MaxItems} items; narrow it down.", statusCode: 400);

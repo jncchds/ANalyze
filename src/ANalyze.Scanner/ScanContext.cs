@@ -42,7 +42,7 @@ internal sealed class ScanContext(JobBoard board, long scanId, string title, Dat
             Title = title,
             Done = Done,
             Total = Total,
-            Bytes = Phase is "hashing" or "duplicates" or "verifying" ? HashedBytes : BytesSeen,
+            Bytes = Phase is "hashing" or "duplicates" or "verifying" or "archives" or "checking" ? HashedBytes : BytesSeen,
             TotalBytes = TotalBytes,
             Current = Current,
             Message = message,

@@ -56,6 +56,11 @@ public sealed class TestApp : WebApplicationFactory<Program>
         {
             await Task.Delay(100);
             var scans = await http.GetFromJsonAsync<JsonElement>("/api/v1/scans?limit=1");
+            if (scans.GetArrayLength() > 0 && scans[0].GetProperty("id").GetInt64() > before && scans[0].GetProperty("status").GetString() is "failed")
+            {
+                throw new InvalidOperationException("Scan failed: " + scans[0]);
+            }
+
             if (scans.GetArrayLength() > 0 && scans[0].GetProperty("id").GetInt64() > before && scans[0].GetProperty("status").GetString() is "completed")
             {
                 return;

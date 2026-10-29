@@ -4,6 +4,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { api, fileUrl } from '../api/client'
 import type { DedupeKeep } from '../api/types'
 import { EntryDrawer } from '../components/EntryDrawer'
+import { ExtractedArchives } from '../components/ExtractedArchives'
 import { Empty, ErrorBox, Field, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../components/ui'
 import { useScope } from '../hooks/useScope'
 import { bytes, count, date } from '../lib/format'
@@ -39,7 +40,7 @@ const IMAGE_EXT = /\.(jpe?g|png|gif|webp|bmp|heic|avif|tiff?)$/i
 export default function Duplicates() {
   const { rootId } = useScope()
   const [params] = useSearchParams()
-  const [tab, setTab] = useState<'groups' | 'folders'>('groups')
+  const [tab, setTab] = useState<'groups' | 'folders' | 'archives'>(params.get('tab') === 'archives' ? 'archives' : 'groups')
   const [sort, setSort] = useState('wasted')
   const [offset, setOffset] = useState(0)
   const [q, setQ] = useState(params.get('q') ?? '')
@@ -73,6 +74,7 @@ export default function Duplicates() {
         tabs={[
           { id: 'groups', label: 'Groups' },
           { id: 'folders', label: 'Similar folders' },
+          { id: 'archives', label: 'Extracted archives' },
         ]}
         value={tab}
         onChange={setTab}
@@ -145,6 +147,8 @@ export default function Duplicates() {
           )}
         </>
       )}
+
+      {tab === 'archives' && <ExtractedArchives />}
 
       {tab === 'folders' && (
         <Section title="Folder pairs sharing identical files" actions={<span className="text-xs muted">often copied backups or extracted archives</span>}>
