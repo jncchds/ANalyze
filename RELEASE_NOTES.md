@@ -1,5 +1,11 @@
 # Release Notes
 
+## v0.1.8 — 2026-10-29
+
+- fix: scans no longer seem stuck on "categorizing" for many minutes on large libraries: the duplicate search (and "hash all files") now shows its step at once, finds files of equal size from an index instead of reading every file record in size order (one random disk read per file), and does that search once instead of twice; the database gets two new indexes on first start
+- feat: Browse opens folders that are not scanned yet (or ignored), as deep as they go: their files and subfolders are read live from the disk, with a path back up and Ignore on every item
+- feat: the Docker Hub page shows the README (links point to GitHub, plus a link to the repository), updated with every image built from main; the README got a clearer layout
+
 ## v0.1.7 — 2026-10-29
 
 - fix: path mappings follow ANalyze's own mounts: when one host folder is visible under two paths (e.g. /mnt/main and its ZFS dataset /mnt/main/media mounted again at /mnt/media), an app path that leads to /mnt/main/media/… finds the file under whichever path is scanned — for Docker mappings, manual mappings that point at a host path, and subfolders

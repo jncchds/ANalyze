@@ -1,3 +1,4 @@
+using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure;
 using ANalyze.Infrastructure.Roots;
 using ANalyze.Infrastructure.Logging;
@@ -34,19 +35,20 @@ internal sealed class ContentHasher(SqliteConnection read, SqliteConnection writ
 
     /// <summary>Full hash for every non-empty file that has none. Hard links are read once.</summary>
     public Task<long> HashMissingAsync() =>
-        RunAsync("hashing", "FullHash IS NULL", $"ORDER BY {DuplicateFinder.IdentitySql}", [], maxBytes: 0, verify: false);
+        RunAsync("hashing", "FullHash IS NULL", $"ORDER BY {DuplicateFinder.IdentitySql}", [], maxBytes: 0, verify: false, countIndex: AnalyzeDbContext.UnhashedIndex);
 
     /// <summary>Re-reads files hashed before <paramref name="olderThan"/> (oldest first, up to <paramref name="maxBytes"/>; 0 = all).</summary>
     public Task<long> VerifyAsync(long olderThan, long maxBytes) =>
         RunAsync("verifying", "FullHash IS NOT NULL AND COALESCE(HashedAt, 0) < $cut", "ORDER BY COALESCE(HashedAt, 0), Id", [("$cut", olderThan)], maxBytes, verify: true);
 
-    private async Task<long> RunAsync(string phase, string where, string order, (string, object)[] args, long maxBytes, bool verify)
+    private async Task<long> RunAsync(string phase, string where, string order, (string, object)[] args, long maxBytes, bool verify, string? countIndex = null)
     {
         ctx.HashedBytes = 0;
         var filter = $"IsDir = 0 AND IsSymlink = 0 AND Size > 0 AND {where}";
+        ctx.StartPhase(phase); // before the count, which can take a while on a large database
         using (var c = read.CreateCommand())
         {
-            c.CommandText = $"SELECT COUNT(*), COALESCE(SUM(Size), 0) FROM Entries WHERE {filter}";
+            c.CommandText = $"SELECT COUNT(*), COALESCE(SUM(Size), 0) FROM Entries {(countIndex is null ? "" : "INDEXED BY " + countIndex)} WHERE {filter}";
             foreach (var (n, v) in args)
             {
                 c.Parameters.AddWithValue(n, v);
@@ -54,7 +56,9 @@ internal sealed class ContentHasher(SqliteConnection read, SqliteConnection writ
 
             using var r = c.ExecuteReader();
             r.Read();
-            ctx.StartPhase(phase, r.GetInt64(0), maxBytes > 0 ? Math.Min(maxBytes, r.GetInt64(1)) : r.GetInt64(1));
+            ctx.Total = r.GetInt64(0);
+            ctx.TotalBytes = maxBytes > 0 ? Math.Min(maxBytes, r.GetInt64(1)) : r.GetInt64(1);
+            ctx.Report(force: true);
         }
 
         ctx.Log.LogInformation(verify

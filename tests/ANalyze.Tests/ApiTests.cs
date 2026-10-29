@@ -108,6 +108,28 @@ public class ScanAndActionTests
     }
 
     [Fact]
+    public async Task Disk_listing_goes_into_folders_that_are_not_scanned_yet()
+    {
+        await using var app = new TestApp();
+        using var http = app.CreateClient();
+        await app.ScanAsync(http);
+        Directory.CreateDirectory(Path.Combine(app.Library, "new/2024/deep"));
+        File.WriteAllText(Path.Combine(app.Library, "new/2024/deep/a.txt"), "hello");
+        var rootEntry = (await http.GetFromJsonAsync<JsonElement>("/api/v1/roots"))[0].GetProperty("rootEntryId").GetInt64();
+
+        var top = await http.GetFromJsonAsync<JsonElement>($"/api/v1/entries/{rootEntry}/disk");
+        Assert.Contains(top.GetProperty("items").EnumerateArray(), i => i.GetProperty("name").GetString() == "new" && i.GetProperty("isDir").GetBoolean());
+
+        var deep = await http.GetFromJsonAsync<JsonElement>($"/api/v1/entries/{rootEntry}/disk?sub=new/2024/deep");
+        var item = Assert.Single(deep.GetProperty("items").EnumerateArray());
+        Assert.Equal("new/2024/deep/a.txt", item.GetProperty("relPath").GetString());
+        Assert.Equal(5, item.GetProperty("size").GetInt64());
+
+        Assert.Equal(HttpStatusCode.NotFound, (await http.GetAsync($"/api/v1/entries/{rootEntry}/disk?sub=new/../..")).StatusCode);
+        Assert.False((await http.GetFromJsonAsync<JsonElement>($"/api/v1/entries/{rootEntry}/disk?sub=missing")).GetProperty("readable").GetBoolean());
+    }
+
+    [Fact]
     public async Task Preview_endpoints_never_leave_the_root()
     {
         await using var app = new TestApp();

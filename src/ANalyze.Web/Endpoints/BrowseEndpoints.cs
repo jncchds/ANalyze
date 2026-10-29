@@ -85,19 +85,23 @@ public static class BrowseEndpoints
 
         // The folder as it is on disk now, compared with the index: what is there but not indexed (new since the last scan,
         // ignored, or never entered) and how many indexed children are gone. Only names and lstat data, never content.
-        api.MapGet("/entries/{id:long}/disk", async (long id, AnalyzeDbContext db, RootRegistry roots, SettingsStore settings, CancellationToken ct) =>
+        // `sub` lists a folder further down that is not in the index (a path below this folder, e.g. "new/2024"): all of it is unindexed.
+        api.MapGet("/entries/{id:long}/disk", async (long id, string? sub, AnalyzeDbContext db, RootRegistry roots, SettingsStore settings, CancellationToken ct) =>
         {
             var e = await db.Entries.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id && x.IsDir, ct);
-            if (e is null || roots.Get(e.RootId) is not { } root)
+            sub = sub?.Trim('/') ?? "";
+            if (e is null || roots.Get(e.RootId) is not { } root || sub.Split('/').Any(p => p is ".." or "."))
             {
                 return Results.NotFound();
             }
 
+            var baseRel = sub.Length == 0 ? e.RelPath : e.RelPath.Length == 0 ? sub : e.RelPath + "/" + sub;
+            var baseDepth = e.Depth + (sub.Length == 0 ? 0 : sub.Split('/').Length);
             string dir;
             List<string> names;
             try
             {
-                dir = roots.ResolveForRead(e.RootId, e.RelPath);
+                dir = roots.ResolveForRead(e.RootId, baseRel);
                 names = Directory.EnumerateFileSystemEntries(dir, "*", new EnumerationOptions { RecurseSubdirectories = false, IgnoreInaccessible = false, AttributesToSkip = 0 })
                     .Select(Path.GetFileName).OfType<string>().ToList();
             }
@@ -106,14 +110,16 @@ public static class BrowseEndpoints
                 return Results.Ok(new { readable = false, error = x.Message, items = Array.Empty<object>(), gone = 0, truncated = false });
             }
 
-            var known = (await db.Entries.AsNoTracking().Where(x => x.ParentId == id).Select(x => x.Name).ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
+            var known = sub.Length > 0
+                ? new HashSet<string>(StringComparer.Ordinal)
+                : (await db.Entries.AsNoTracking().Where(x => x.ParentId == id).Select(x => x.Name).ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
             var ignore = new IgnoreMatcher(settings.Current.IgnorePatterns, root.Path);
             var onDisk = names.ToHashSet(StringComparer.Ordinal);
             const int max = 2000;
             var extra = names.Where(n => !known.Contains(n)).Order(StringComparer.OrdinalIgnoreCase).ToList();
             var items = extra.Take(max).Select(n =>
             {
-                var rel = e.RelPath.Length == 0 ? n : e.RelPath + "/" + n;
+                var rel = baseRel.Length == 0 ? n : baseRel + "/" + n;
                 var st = Native.LStat(Path.Combine(dir, n));
                 return new
                 {
@@ -124,7 +130,7 @@ public static class BrowseEndpoints
                     isSymlink = st.IsSymlink,
                     size = st.IsDir ? 0 : st.Size,
                     mTime = st.MTime,
-                    ignored = ignore.IsIgnored(rel, n, e.Depth + 1),
+                    ignored = ignore.IsIgnored(rel, n, baseDepth + 1),
                 };
             }).ToList();
             return Results.Ok(new { readable = true, error = (string?)null, items, gone = known.Count(k => !onDisk.Contains(k)), truncated = extra.Count > max });

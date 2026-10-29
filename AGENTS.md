@@ -88,7 +88,11 @@ endpoints return `savedLater` (the holder) so the UI can say so.
    another file with the same hash and a different identity (`SearchFilter.Duplicates`, `PlanBuilder.CreateDedupeAsync`), never just `FullHash != null`.
 5. **Duplicates** (`DuplicateFinder`, all roots): sizes with ≥ 2 distinct identities (`dev:inode`, or the row id where inodes are unavailable)
    → quick hash (XxHash3 of 3×64 KB + size) → full hash (XxHash128) only on quick-hash collisions; files ≤ 192 KB get the full hash directly.
-   Hard-link siblings share one hash computation.
+   Hard-link siblings share one hash computation. The candidate sizes go into a temp table (`DupSizes`) once; the size search reads only the
+   covering index `(IsDir, Size, IsSymlink, Inode, Dev)`, and the "not hashed yet" counts here and in step 4 read only the partial index
+   `IX_Entries_Unhashed` (`Size` where `IsDir = 0 AND IsSymlink = 0 AND FullHash IS NULL`, named with `INDEXED BY`). Never add a scan-wide
+   query that reads `Entries` rows in size order: on a disk-backed database that is one random read per file (tens of minutes for millions).
+   Hashing and duplicate phases are reported before their first query.
 6. **Verify** (full scans with `VerifyAfterDays > 0`, `ContentHasher.VerifyAsync`): re-reads files with `HashedAt` older than that, oldest first, up to
    `VerifyMaxGb`; a different hash with unchanged size and mtime sets `CorruptAt` (insight "Possibly corrupted files", search `corrupt=true`;
    `DELETE /files/{id}/corrupt` accepts the new content). Files whose size/mtime differ from the index are skipped (the next walk resets them).
@@ -148,7 +152,8 @@ Front end: `ClientApp/src/integrations/registry.tsx` maps an id to a lazy page; 
 
 Labels are clickable: a badge links to `/integrations/{source}?entry={entryId}` (never to the external app; those links stay inside the pages).
 Browse also calls `GET /entries/{id}/disk` (the folder listed on disk now via `ResolveForRead`: names not in the index with lstat data and whether
-they are ignored, plus the count of indexed children gone from disk) and `POST /ignore {rootId, relPath, ignore}` / `POST /enter-filesystem`
+they are ignored, plus the count of indexed children gone from disk; `?sub=a/b` lists a folder further down that is not in the index,
+opened in place in Browse as `?disk=a/b`) and `POST /ignore {rootId, relPath, ignore}` / `POST /enter-filesystem`
 (adds the full path to `IgnorePatterns` / `EnterFilesystems`; the latter also queues a subtree scan). A page reads the entry with `hooks/useLocate.ts`, which calls the plugin's `GET /integrations/{id}/locate?entryId=` and opens what it returns:
 `ItemIntegration` and Plex return the title the entry belongs to (`key`, Plex also `type`) when the entry or folder holds exactly one, and the page
 opens it through `groups?key=` / `top?key=`; the backup page gets `{rootId, path}` and opens its folder view there. `Db.EntryScope` + `Db.InScope`
@@ -269,3 +274,7 @@ CI (`.github/workflows/docker.yml`, job `desktop`): Linux x64+arm64 (AppImage, t
 (NSIS installer, zip) on every non-PR build, uploaded as artifacts named `ANalyze-*` (the release job downloads only those: the run also
 holds Docker's build record, which is not a zip). Builds of `main` publish them as the GitHub release `v<VERSION>` (job `release`):
 created with its tag when a new version first reaches main (notes = that version's `RELEASE_NOTES.md` section), files replaced by later builds of the same version.
+Builds of `main` also set the Docker Hub description (job `docker`): `.github/scripts/dockerhub-readme.mjs` turns `README.md` into it (relative
+links and images → GitHub URLs, `#section` links → the README on GitHub, GitHub alerts → bold labels, a repository link at
+`<!-- dockerhub:github-link -->`, cut at 25,000 bytes) and `peter-evans/dockerhub-description` uploads it; `DOCKERHUB_TOKEN` needs the
+"Read, Write, Delete" scope. Keep README links relative (or absolute) and its images in the repository so both sites show them.

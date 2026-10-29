@@ -475,12 +475,16 @@ namespace ANalyze.Infrastructure.Data.Migrations
 
                     b.HasIndex("ParentId");
 
-                    b.HasIndex("IsDir", "Size");
+                    b.HasIndex("Size")
+                        .HasDatabaseName("IX_Entries_Unhashed")
+                        .HasFilter("IsDir = 0 AND IsSymlink = 0 AND FullHash IS NULL");
 
                     b.HasIndex("IsDir", "TotalSize");
 
                     b.HasIndex("RootId", "RelPath")
                         .IsUnique();
+
+                    b.HasIndex("IsDir", "Size", "IsSymlink", "Inode", "Dev");
 
                     b.ToTable("Entries");
                 });

@@ -1,3 +1,4 @@
+using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Roots;
 using ANalyze.Infrastructure.Logging;
 using Microsoft.Data.Sqlite;
@@ -41,26 +42,44 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
     public async Task<long> RunAsync()
     {
         ctx.HashedBytes = 0;
+
+        // Show the phase before the size search: on a large database it reads the whole size index.
+        ctx.StartPhase("duplicates");
+        ctx.Log.LogInformation("Finding duplicates: looking for files that share their size with another file");
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        // The candidate sizes are found once and reused by the count and the file list below.
         using (var c = read.CreateCommand())
         {
-            c.CommandText = $"SELECT COUNT(*), COALESCE(SUM(Size), 0) FROM Entries WHERE IsDir=0 AND IsSymlink=0 AND FullHash IS NULL AND Size IN ({CandidateSizesSql})";
+            c.CommandText = $"""
+                CREATE TEMP TABLE IF NOT EXISTS DupSizes (Size INTEGER PRIMARY KEY);
+                DELETE FROM DupSizes;
+                INSERT INTO DupSizes {CandidateSizesSql};
+                """;
             c.Parameters.AddWithValue("$min", minSize);
+            c.ExecuteNonQuery();
+        }
+
+        using (var c = read.CreateCommand())
+        {
+            c.CommandText = $"SELECT COUNT(*), COALESCE(SUM(Size), 0) FROM Entries INDEXED BY {AnalyzeDbContext.UnhashedIndex} WHERE IsDir=0 AND IsSymlink=0 AND FullHash IS NULL AND Size IN (SELECT Size FROM DupSizes)";
             using var r = c.ExecuteReader();
             r.Read();
-            ctx.StartPhase("duplicates", r.GetInt64(0), r.GetInt64(1));
+            ctx.Total = r.GetInt64(0);
+            ctx.TotalBytes = r.GetInt64(1);
+            ctx.Report(force: true);
         }
 
         ctx.Log.LogInformation(
-            "Finding duplicates: {Count} files ({Size}) share their size with another file and have no hash yet; a quick hash of 3×64 KB comes first, the full hash only when that matches",
-            ctx.Total, Format.Bytes(ctx.TotalBytes));
+            "Finding duplicates: {Count} files ({Size}) share their size with another file and have no hash yet (found in {Time}); a quick hash of 3×64 KB comes first, the full hash only when that matches",
+            ctx.Total, Format.Bytes(ctx.TotalBytes), Format.Duration(clock.Elapsed));
 
         using var q = read.CreateCommand();
         q.CommandText = $"""
             SELECT Id, RootId, RelPath, Size, {IdentitySql}, QuickHash, FullHash FROM Entries
-            WHERE IsDir = 0 AND IsSymlink = 0 AND Size IN ({CandidateSizesSql})
+            WHERE IsDir = 0 AND IsSymlink = 0 AND Size IN (SELECT Size FROM DupSizes)
             ORDER BY Size DESC, Id
             """;
-        q.Parameters.AddWithValue("$min", minSize);
 
         var batch = new List<List<Row>>();
         var batchCount = 0;
@@ -123,8 +142,10 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
             ctx.Log.LogWarning("{Count} more files could not be read", ctx.UnloggedProblems);
         }
 
+        ctx.Log.LogInformation("Finding duplicates: counting the sets of identical files");
         using var groups = read.CreateCommand();
         groups.CommandText = $"""
+            DROP TABLE IF EXISTS temp.DupSizes;
             SELECT COUNT(*) FROM (SELECT FullHash FROM Entries WHERE FullHash IS NOT NULL AND IsDir = 0 AND IsSymlink = 0
             GROUP BY FullHash HAVING COUNT(DISTINCT {IdentitySql}) > 1)
             """;

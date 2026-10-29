@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useCategoryMap, useRoots } from '../api/hooks'
@@ -45,6 +45,19 @@ const VIEW_KEY = 'analyze.browse.view'
 export default function Browse() {
   const params = useParams()
   const navigate = useNavigate()
+  const [search, setSearch] = useSearchParams()
+  // A folder below this one that is only on disk (not in the index), e.g. "new/2024"; kept in the URL so Back works.
+  const diskSub = (search.get('disk') ?? '').replace(/^\/+|\/+$/g, '')
+  const openDiskSub = useCallback(
+    (sub: string) =>
+      setSearch((p) => {
+        const n = new URLSearchParams(p)
+        if (sub) n.set('disk', sub)
+        else n.delete('disk')
+        return n
+      }),
+    [setSearch],
+  )
   const roots = useRoots()
   const { rootId } = useScope()
   const categories = useCategoryMap()
@@ -83,8 +96,8 @@ export default function Browse() {
   const qc = useQueryClient()
   const [savedLater, setSavedLater] = useState<string | null>(null)
   const disk = useQuery({
-    queryKey: ['disk', id],
-    queryFn: () => api<DiskListing>(`/entries/${id}/disk`),
+    queryKey: ['disk', id, diskSub],
+    queryFn: () => api<DiskListing>(`/entries/${id}/disk`, { query: diskSub ? { sub: diskSub } : undefined }),
     enabled: !!id && view === 'list',
   })
   const rootOf = detail.data?.root?.id
@@ -211,7 +224,7 @@ export default function Browse() {
         </div>
       )}
 
-      {view === 'map' ? (
+      {view === 'list' && diskSub ? null : view === 'map' ? (
         <div className="card p-2">
           {tree.isLoading ? <Loading /> : tree.data ? <Treemap data={tree.data} categories={categories} onOpen={openTree} height={560} /> : null}
         </div>
@@ -242,6 +255,9 @@ export default function Browse() {
       {view === 'list' && disk.data && e && (
         <DiskDiff
           listing={disk.data}
+          folderName={d?.breadcrumbs.at(-1)?.name ?? e.name}
+          sub={diskSub}
+          onOpenSub={openDiskSub}
           busy={ignore.isPending || scanHere.isPending}
           onScan={() => scanHere.mutate(e.relPath)}
           onIgnore={(i) => ignore.mutate({ relPath: i.relPath, ignore: !i.ignored })}
@@ -267,15 +283,58 @@ function toggle(s: Set<number>, id: number) {
   return n
 }
 
-/** What is in this folder on disk but not in the index: new since the last scan, or ignored. */
-function DiskDiff({ listing, busy, onScan, onIgnore }: { listing: DiskListing; busy: boolean; onScan: () => void; onIgnore: (i: DiskItem) => void }) {
-  if (!listing.readable) return <p className="mt-3 text-sm text-warning">The folder cannot be read on disk right now: {listing.error}</p>
+/**
+ * What is in this folder on disk but not in the index: new since the last scan, or ignored.
+ * Folders open in place (`sub`), as deep as they go, all read live from the disk.
+ */
+function DiskDiff({
+  listing,
+  folderName,
+  sub,
+  onOpenSub,
+  busy,
+  onScan,
+  onIgnore,
+}: {
+  listing: DiskListing
+  folderName: string
+  sub: string
+  onOpenSub: (sub: string) => void
+  busy: boolean
+  onScan: () => void
+  onIgnore: (i: DiskItem) => void
+}) {
+  const parts = sub ? sub.split('/') : []
+  const trail = sub ? (
+    <nav className="mb-2 flex flex-wrap items-center gap-1 text-sm">
+      <button className="hover:text-accent" onClick={() => onOpenSub('')}>
+        {folderName}
+      </button>
+      {parts.map((p, i) => (
+        <span key={i} className="flex items-center gap-1">
+          <span className="muted">/</span>
+          {i === parts.length - 1 ? <span className="font-semibold">{p}</span> : (
+            <button className="hover:text-accent" onClick={() => onOpenSub(parts.slice(0, i + 1).join('/'))}>
+              {p}
+            </button>
+          )}
+        </span>
+      ))}
+    </nav>
+  ) : null
+  if (!listing.readable)
+    return (
+      <div className="mt-3">
+        {trail}
+        <p className="text-sm text-warning">The folder cannot be read on disk right now: {listing.error}</p>
+      </div>
+    )
   const notScanned = listing.items.filter((i) => !i.ignored).length
-  if (listing.items.length === 0 && listing.gone === 0) return null
+  if (!sub && listing.items.length === 0 && listing.gone === 0) return null
   return (
     <Section
       className="mt-4"
-      title="On disk, not in the index"
+      title={sub ? 'On disk, not in the index (read live from the disk)' : 'On disk, not in the index'}
       actions={
         notScanned > 0 || listing.gone > 0 ? (
           <button className="btn-primary px-2 py-1 text-xs" onClick={onScan} disabled={busy}>
@@ -284,6 +343,8 @@ function DiskDiff({ listing, busy, onScan, onIgnore }: { listing: DiskListing; b
         ) : undefined
       }
     >
+      {trail}
+      {sub && listing.items.length === 0 && <p className="text-sm muted">This folder is empty on disk.</p>}
       {listing.gone > 0 && (
         <p className="mb-2 text-sm muted">
           {listing.gone.toLocaleString()} {listing.gone === 1 ? 'item' : 'items'} in the index {listing.gone === 1 ? 'is' : 'are'} no longer on disk.
@@ -293,9 +354,19 @@ function DiskDiff({ listing, busy, onScan, onIgnore }: { listing: DiskListing; b
         {listing.items.map((i) => (
           <li key={i.name} className="flex items-center gap-2 py-1.5 text-sm">
             <span className="shrink-0">{i.isSymlink ? '🔗' : kindIcon('unknown', i.isDir)}</span>
-            <span className={`min-w-0 flex-1 truncate ${i.isDir ? 'font-semibold' : ''} ${i.ignored ? 'muted line-through' : ''}`} title={i.fullPath}>
-              {i.name}
-            </span>
+            {i.isDir && !i.isSymlink ? (
+              <button
+                className={`min-w-0 flex-1 truncate text-left font-semibold hover:text-accent ${i.ignored ? 'muted line-through' : ''}`}
+                title={`${i.fullPath} — open`}
+                onClick={() => onOpenSub(sub ? `${sub}/${i.name}` : i.name)}
+              >
+                {i.name}
+              </button>
+            ) : (
+              <span className={`min-w-0 flex-1 truncate ${i.isDir ? 'font-semibold' : ''} ${i.ignored ? 'muted line-through' : ''}`} title={i.fullPath}>
+                {i.name}
+              </span>
+            )}
             {i.ignored ? (
               <span className="pill-muted shrink-0" title="Matches the ignore list in Settings; scans skip it">
                 🚫 ignored
