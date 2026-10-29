@@ -2,13 +2,14 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using ANalyze.Domain;
 using ANalyze.Infrastructure.Data;
+using ANalyze.Infrastructure.Jobs;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace ANalyze.Infrastructure.Settings;
 
 /// <summary>Caches <see cref="AppSettings"/> stored in the settings table and notifies listeners on change.</summary>
-public sealed class SettingsStore(IServiceScopeFactory scopes)
+public sealed class SettingsStore(IServiceScopeFactory scopes, JobLock jobLock)
 {
     private const string Key = "app";
 
@@ -18,7 +19,6 @@ public sealed class SettingsStore(IServiceScopeFactory scopes)
     };
 
     private volatile AppSettings? _current;
-    private readonly SemaphoreSlim _lock = new(1, 1);
 
     public event Action<AppSettings>? Changed;
 
@@ -33,34 +33,34 @@ public sealed class SettingsStore(IServiceScopeFactory scopes)
         return _current;
     }
 
-    public async Task SaveAsync(AppSettings settings, CancellationToken ct = default)
+    /// <summary>
+    /// Applies <paramref name="settings"/> at once and stores them. Returns false when a job (a scan, a sync…) holds the database:
+    /// the settings are then in effect but written once that job has finished.
+    /// </summary>
+    public async Task<bool> SaveAsync(AppSettings settings, CancellationToken ct = default)
     {
-        await _lock.WaitAsync(ct);
-        try
-        {
-            await using var scope = scopes.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<AnalyzeDbContext>();
-            var json = JsonSerializer.Serialize(settings, Json);
-            var row = await db.Settings.FirstOrDefaultAsync(s => s.Key == Key, ct);
-            if (row is null)
-            {
-                db.Settings.Add(new Setting { Key = Key, Value = json });
-            }
-            else
-            {
-                row.Value = json;
-                row.UpdatedAt = DateTimeOffset.UtcNow;
-            }
-
-            await db.SaveChangesAsync(ct);
-            _current = settings;
-        }
-        finally
-        {
-            _lock.Release();
-        }
-
+        _current = settings;
         Changed?.Invoke(settings);
+        return await jobLock.WriteAsync("settings", PersistAsync, ct);
+    }
+
+    private async Task PersistAsync(CancellationToken ct)
+    {
+        await using var scope = scopes.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AnalyzeDbContext>();
+        var json = JsonSerializer.Serialize(Current, Json);
+        var row = await db.Settings.FirstOrDefaultAsync(s => s.Key == Key, ct);
+        if (row is null)
+        {
+            db.Settings.Add(new Setting { Key = Key, Value = json });
+        }
+        else
+        {
+            row.Value = json;
+            row.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        await db.SaveChangesAsync(ct);
     }
 
     public static AppSettings Defaults() => new()

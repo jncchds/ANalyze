@@ -21,6 +21,7 @@ public sealed class IntegrationHost(
     IDbContextFactory<AnalyzeDbContext> dbf,
     SecretProtector secrets,
     JobBoard board,
+    JobLock jobLock,
     Microsoft.Extensions.Configuration.IConfiguration config,
     ILogger<IntegrationHost> log)
 {
@@ -93,31 +94,38 @@ public sealed class IntegrationHost(
         return incoming;
     }
 
-    public async Task SaveAsync(string id, IntegrationSettings incoming, CancellationToken ct)
+    /// <summary>
+    /// Applies the settings at once and stores them. Returns false when a job (a scan, a sync…) holds the database: they are
+    /// then written once it has finished.
+    /// </summary>
+    public async Task<bool> SaveAsync(string id, IntegrationSettings incoming, CancellationToken ct)
     {
         var integration = Get(id) ?? throw new KeyNotFoundException(id);
         var merged = await MergeAsync(id, incoming, ct);
-        var stored = Clone(merged);
-        foreach (var f in integration.Fields.Where(f => f.Secret))
-        {
-            stored.Values[f.Key] = secrets.Protect(stored.GetString(f.Key));
-        }
-
-        await using var db = await dbf.CreateDbContextAsync(ct);
-        var json = JsonSerializer.Serialize(stored, IntegrationSettings.Json);
-        var row = await db.Settings.FirstOrDefaultAsync(s => s.Key == Key(id), ct);
-        if (row is null)
-        {
-            db.Settings.Add(new Setting { Key = Key(id), Value = json });
-        }
-        else
-        {
-            row.Value = json;
-            row.UpdatedAt = DateTimeOffset.UtcNow;
-        }
-
-        await db.SaveChangesAsync(ct);
         _cache[id] = merged;
+        return await jobLock.WriteAsync(Key(id), async c =>
+        {
+            var stored = Clone(_cache[id]);
+            foreach (var f in integration.Fields.Where(f => f.Secret))
+            {
+                stored.Values[f.Key] = secrets.Protect(stored.GetString(f.Key));
+            }
+
+            await using var db = await dbf.CreateDbContextAsync(c);
+            var json = JsonSerializer.Serialize(stored, IntegrationSettings.Json);
+            var row = await db.Settings.FirstOrDefaultAsync(s => s.Key == Key(id), c);
+            if (row is null)
+            {
+                db.Settings.Add(new Setting { Key = Key(id), Value = json });
+            }
+            else
+            {
+                row.Value = json;
+                row.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+
+            await db.SaveChangesAsync(c);
+        }, ct);
     }
 
     public bool StartSync(string id)
@@ -147,8 +155,18 @@ public sealed class IntegrationHost(
             using var scope = log.BeginScope(new Dictionary<string, object> { ["Source"] = kind });
             log.LogInformation("{Integration} sync started", integration.Name);
             IntegrationSyncResult result;
+            IDisposable? held = null;
             try
             {
+                // One job at a time: a sync waits for a running scan, plan, AI run or another sync (they all write to the database).
+                if (jobLock.Holder is { } busy)
+                {
+                    log.LogInformation("{Integration} sync waits for {Holder} to finish", integration.Name, busy);
+                    board.Report(new JobProgress { Kind = kind, State = JobStates.Queued, Title = integration.Name + " sync", Message = $"Waiting for {busy}", StartedAt = started }, force: true);
+                }
+
+                held = await jobLock.AcquireAsync(kind, CancellationToken.None);
+                started = DateTimeOffset.UtcNow;
                 var settings = await LoadAsync(id, CancellationToken.None);
                 board.Report(new JobProgress { Kind = kind, State = JobStates.Running, Title = integration.Name + " sync", StartedAt = started }, force: true);
                 var progress = new Progress<IntegrationProgress>(p => board.Report(new JobProgress
@@ -161,6 +179,10 @@ public sealed class IntegrationHost(
             {
                 log.LogWarning(e, "{Integration} sync failed", integration.Name);
                 result = new IntegrationSyncResult(false, e.Message);
+            }
+            finally
+            {
+                held?.Dispose();
             }
 
             if (result.Ok)

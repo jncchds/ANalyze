@@ -202,6 +202,7 @@ public sealed class DockerPaths(IServiceProvider sp, DockerState state, RootRegi
     public IReadOnlyList<PathMapping> MappingsFor(DockerState.Snapshot snap, DockerClient.Container c) =>
         c.Id == snap.Self?.Id ? [] : MountMath.Mappings(c.Mounts, snap.SelfMounts)
             .Where(m => roots.All.Any(r => RootRegistry.IsUnder(r.Path, m.To) || RootRegistry.IsUnder(m.To, r.Path)))
+            .DistinctBy(m => m.From)
             .Select(m => new PathMapping(m.From, m.To))
             .ToList();
 
@@ -251,7 +252,7 @@ public sealed class DockerPaths(IServiceProvider sp, DockerState state, RootRegi
     }
 }
 
-/// <summary>Host paths of the folders ANalyze sees: its own container's bind mounts (destination → source).</summary>
+/// <summary>Host paths of the folders ANalyze sees: its own container's bind mounts (destination → source), including those mounted at the same path.</summary>
 public sealed class DockerHostPaths(IServiceProvider sp, DockerState state) : IHostPathSource
 {
     public async Task<IReadOnlyList<HostPath>> GetAsync(CancellationToken ct)
@@ -265,7 +266,7 @@ public sealed class DockerHostPaths(IServiceProvider sp, DockerState state) : IH
         var snap = await state.GetAsync(docker, ct);
         return snap.Self is null
             ? []
-            : snap.Self.Mounts.Where(m => m.Type is null or "bind" && m.Destination != m.Source)
+            : snap.Self.Mounts.Where(m => m.Type is null or "bind")
                 .Select(m => new HostPath(m.Destination, m.Source)).ToList();
     }
 }
@@ -276,10 +277,12 @@ public static class MountMath
     /// <summary>
     /// For each pair of mounts that overlap on the host, the prefix mapping from the other container's path to ours.
     /// Other "/movies" ← host "/mnt/media/movies"; ours "/library" ← host "/mnt/media" ⇒ "/movies" → "/library/movies".
+    /// A path we see through several of our mounts (host "/mnt/main" at "/mnt/main" and its dataset "/mnt/main/media" at
+    /// "/mnt/media") gives one candidate per mount, the most specific of ours first; callers keep the first that reaches a root.
     /// </summary>
     public static List<(string From, string To)> Mappings(IEnumerable<DockerClient.Mount> other, IEnumerable<DockerClient.Mount> self)
     {
-        var selfList = self.ToList();
+        var selfList = self.OrderByDescending(m => Trim(m.Source).Length).ToList();
         var result = new List<(string From, string To)>();
         foreach (var o in other)
         {
@@ -305,7 +308,7 @@ public static class MountMath
                     continue;
                 }
 
-                if (from != to && !result.Any(r => r.From == from))
+                if (from != to && !result.Contains((from, to)))
                 {
                     result.Add((from, to));
                 }

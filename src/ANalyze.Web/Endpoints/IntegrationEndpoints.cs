@@ -1,3 +1,7 @@
+using ANalyze.Infrastructure.Jobs;
+using ANalyze.Web.Api;
+using Microsoft.AspNetCore.Http.Json;
+using Microsoft.Extensions.Options;
 using ANalyze.Integrations;
 
 namespace ANalyze.Web.Endpoints;
@@ -30,15 +34,15 @@ public static class IntegrationEndpoints
             return list;
         });
 
-        g.MapPut("/{id}", async (string id, IntegrationSettings body, IntegrationHost h, CancellationToken ct) =>
+        g.MapPut("/{id}", async (string id, IntegrationSettings body, IntegrationHost h, JobLock jobLock, IOptions<JsonOptions> json, CancellationToken ct) =>
         {
             if (h.Get(id) is null)
             {
                 return Results.NotFound();
             }
 
-            await h.SaveAsync(id, body, ct);
-            return Results.Ok(await h.LoadMaskedAsync(id, ct));
+            var written = await h.SaveAsync(id, body, ct);
+            return SaveResult.Ok(await h.LoadMaskedAsync(id, ct), written, jobLock, json.Value);
         });
 
         g.MapPost("/{id}/test", async (string id, IntegrationSettings? body, IntegrationHost h, CancellationToken ct) =>

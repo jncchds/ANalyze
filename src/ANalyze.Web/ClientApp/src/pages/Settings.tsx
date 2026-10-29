@@ -4,7 +4,7 @@ import { api } from '../api/client'
 import { useConfig, useHostPaths, useRoots } from '../api/hooks'
 import type { HostPath } from '../api/types'
 import { PathText } from '../components/PathText'
-import { ErrorBox, Field, Loading, PageTitle, Section, Toggle } from '../components/ui'
+import { ErrorBox, Field, Loading, PageTitle, SavedLater, Section, Toggle } from '../components/ui'
 import { desktop } from '../lib/desktop'
 import { ago, bytes, dateTime, duration } from '../lib/format'
 
@@ -77,9 +77,11 @@ export default function Settings() {
   useEffect(() => {
     if (q.data && !dirty) setS(q.data)
   }, [q.data, dirty])
+  const [savedLater, setSavedLater] = useState<string | null>(null)
   const save = useMutation({
-    mutationFn: (v: AppSettings) => api<AppSettings>('/settings', { method: 'PUT', json: v }),
-    onSuccess: (v) => {
+    mutationFn: (v: AppSettings) => api<AppSettings & { savedLater?: string | null }>('/settings', { method: 'PUT', json: v }),
+    onSuccess: ({ savedLater, ...v }) => {
+      setSavedLater(savedLater ?? null)
       setS(v)
       setDirty(false)
       qc.invalidateQueries({ queryKey: ['config'] })
@@ -110,6 +112,7 @@ export default function Settings() {
         Settings
       </PageTitle>
       {save.error && <ErrorBox error={save.error} />}
+      {savedLater && !dirty && <SavedLater holder={savedLater} />}
       <div className="grid gap-4 lg:grid-cols-2">
         <Section
           title="Roots"
@@ -358,3 +361,4 @@ function HostPathsSection({ value, onChange }: { value: HostPath[]; onChange: (v
     </Section>
   )
 }
+
