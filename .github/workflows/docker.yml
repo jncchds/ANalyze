@@ -82,6 +82,22 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Docker Hub's description is the README with its links pointing to GitHub and a link to the repository.
+      - name: Prepare the Docker Hub description
+        if: github.ref == 'refs/heads/main'
+        run: node .github/scripts/dockerhub-readme.mjs README.md > "$RUNNER_TEMP/dockerhub-readme.md"
+
+      # Needs a Docker Hub access token with the "Read, Write, Delete" scope (a "Read & Write" token can push but not edit descriptions).
+      - name: Update the Docker Hub description
+        if: github.ref == 'refs/heads/main'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.IMAGE }}
+          short-description: "See what takes space on your drives, find duplicates and clean up safely: web UI, one container."
+          readme-filepath: ${{ runner.temp }}/dockerhub-readme.md
+
   # Electron desktop apps with the server bundled (self-contained .NET). Unsigned: macOS and Windows warn on first start.
   desktop:
     needs: test

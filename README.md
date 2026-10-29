@@ -1,34 +1,50 @@
-# ANalyze by CHDS
+<p align="center">
+  <img src="desktop/build/icon.png" alt="ANalyze logo" width="96" height="96">
+</p>
 
-See what takes space on your drives, find duplicates, and clean up safely. ANalyze runs as one Docker container: mount
-the folders to analyze, open the web UI, press **Scan now**.
+<h1 align="center">ANalyze</h1>
 
-- **Overview** — totals, size by category, type, extension, age and file size; largest files; "heaviest folders"
-  (by files directly inside, so parents don't drown out the real culprits).
-- **Browse** — folder tree as a sized list or a treemap; multi-select; integration labels (e.g. Plex titles) on files and folders.
-- **Search** — by name, path, category, type, extension, tag, size, age, folder name, duplicates, hard links, sparse files…
-  Every result set can become a cleanup plan.
-- **Duplicates** — same size → quick hash → full hash (xxHash128). Hard links are recognized and never counted.
-  "Similar folders" finds folder pairs that share many identical files (copied backups, extracted archives).
-- **Insights** — dependency folders (node_modules, venvs…), caches & temp files, incomplete downloads, OS/NAS junk,
-  files named like copies, huge/stale files, empty files and folders, broken symlinks, growth since the previous scan.
-- **Categories & rules** — ~35 built-in rules and 19 categories out of the box; edit them or add your own with a live
-  preview of matching files; import/export as JSON.
-- **AI** (optional, any OpenAI-compatible API: OpenAI, Ollama, LM Studio, vLLM, OpenRouter…) — classifies files no rule
-  recognizes and proposes new rules for you to accept.
-- **Preview** — images, video, audio, PDF, text/code (highlighted), Markdown (rendered), archive listings, embedded
-  metadata (EXIF, tags), and a hex viewer for everything else.
-- **Actions** — trash, move (with path templates like `Sorted/{category}/{mtime:yyyy}/{name}`), delete, or replace
-  duplicates with hard links. Every change is a **plan** you review first; trash and moves can be undone.
-- **Integrations** — plugins that cross-reference other apps: **Plex**, **Jellyfin**, **Emby**, **Sonarr**, **Radarr**,
-  **Lidarr**, **qBittorrent**, **Transmission**, **SABnzbd**, **Immich**, **PhotoPrism**, plus **Docker**, which works out the path
-  mappings between containers for all of them. **ANalyze parent** links two ANalyze instances when one NAS is backed up to another.
-- **Integrity** (optional) — hash every file and re-verify old hashes to catch bit rot: files whose content changed while size
-  and date stayed the same are flagged as *possibly corrupted*.
-- **Activity log** — what ANalyze is doing, step by step and live: scan phases with counts and times, folders it skipped and why,
-  files it could not read, integration syncs (mappings used, items not found and why), plans and AI runs. Hover a step name
-  in the sidebar (walking, detecting, hashing…) for a short explanation.
-- **Release notes** — what changed in each version, right in the UI (click the version next to the logo).
+<p align="center">
+  <b>See what takes space on your drives, find duplicates, and clean up safely.</b><br>
+  One Docker container (or a desktop app) with a web UI — nothing on disk changes until you approve a plan.
+</p>
+
+<p align="center">
+  <a href="https://hub.docker.com/r/jncchds/analyze"><img alt="Docker pulls" src="https://img.shields.io/docker/pulls/jncchds/analyze?logo=docker&logoColor=white&color=0f766e"></a>
+  <a href="https://hub.docker.com/r/jncchds/analyze/tags"><img alt="Image size" src="https://img.shields.io/docker/image-size/jncchds/analyze/latest?logo=docker&logoColor=white&color=0f766e"></a>
+  <a href="https://github.com/jncchds/ANalyze/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/jncchds/ANalyze?color=f5a524"></a>
+  <a href="https://github.com/jncchds/ANalyze/actions/workflows/docker.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/jncchds/ANalyze/docker.yml?branch=main"></a>
+  <a href="LICENSE"><img alt="License: GPL v3" src="https://img.shields.io/badge/license-GPL--3.0-blue"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#desktop-app">Desktop app</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#how-actions-stay-safe">Safety</a> ·
+  <a href="#integrations">Integrations</a> ·
+  <a href="#development">Development</a>
+</p>
+
+<!-- dockerhub:github-link -->
+
+## Features
+
+| | Feature | What it does |
+|:-:|---|---|
+| 📊 | **Overview** | Totals; size by category, type, extension, age and file size; largest files; "heaviest folders" (by files directly inside, so parents don't drown out the real culprits). |
+| 🗂️ | **Browse** | The folder tree as a sized list or a treemap, with multi-select and integration labels (e.g. Plex titles). Compares each folder with the disk, so files that aren't scanned yet show up too. |
+| 🔎 | **Search** | By name, path, category, type, extension, tag, size, age, folder name, duplicates, hard links, sparse files… Every result set can become a cleanup plan. |
+| 👯 | **Duplicates** | Same size → quick hash → full hash (xxHash128). Hard links are recognized and never counted. *Similar folders* finds folder pairs that share many identical files (copied backups, extracted archives). |
+| 💡 | **Insights** | Dependency folders (node_modules, venvs…), caches & temp files, incomplete downloads, OS/NAS junk, files named like copies, huge/stale files, empty files and folders, broken symlinks, growth since the previous scan. |
+| 🏷️ | **Categories & rules** | ~35 built-in rules and 19 categories out of the box; edit them or add your own with a live preview of matching files; import/export as JSON. |
+| ✨ | **AI** *(optional)* | Any OpenAI-compatible API (OpenAI, Ollama, LM Studio, vLLM, OpenRouter…) classifies files no rule recognizes and proposes new rules for you to accept. |
+| 👁️ | **Preview** | Images, video, audio, PDF, text/code (highlighted), Markdown (rendered), archive listings, embedded metadata (EXIF, tags), and a hex viewer for everything else. |
+| 🧹 | **Actions** | Trash, move (with path templates like `Sorted/{category}/{mtime:yyyy}/{name}`), delete, or replace duplicates with hard links. Every change is a **plan** you review first; trash and moves can be undone. |
+| 🔌 | **Integrations** | **Plex**, **Jellyfin**, **Emby**, **Sonarr**, **Radarr**, **Lidarr**, **qBittorrent**, **Transmission**, **SABnzbd**, **Immich**, **PhotoPrism**, plus **Docker** (works out the path mappings between containers) and **ANalyze parent** (checks a backup kept on another ANalyze instance). |
+| 🛡️ | **Integrity** *(optional)* | Hash every file and re-verify old hashes to catch bit rot: files whose content changed while size and date stayed the same are flagged as *possibly corrupted*. |
+| 📜 | **Activity log** | What ANalyze is doing, step by step and live: scan phases with counts and times, skipped folders and why, unreadable files, integration syncs, plans and AI runs. Hover a step name in the sidebar for a short explanation. |
+| 📝 | **Release notes** | What changed in each version, right in the UI (click the version next to the logo). |
 
 ## Quick start
 
@@ -50,43 +66,48 @@ volumes:
   analyze-data:
 ```
 
-Open <http://localhost:8080> and press **Scan now** in the sidebar (with several roots, pick one in the scope selector to
-get **Scan <root>** next to **Scan all**; Settings also has a scan button per root). The first scan reads every folder; later scans only
-look at what changed (size, mtime, inode), so they are much faster. Schedule automatic scans in **Settings**.
+Open <http://localhost:8080> and press **Scan now** in the sidebar. With several roots, pick one in the scope selector to
+get **Scan &lt;root&gt;** next to **Scan all**; Settings also has a scan button per root. The first scan reads every folder;
+later scans only look at what changed (size, mtime, inode), so they are much faster. Schedule automatic scans in **Settings**.
 
-Results are stored while the scan runs (at least every 2 seconds), so Browse, Search and the integrations see folders
-as soon as they are walked. Disks, shares, ZFS datasets or btrfs subvolumes mounted *below* a root are other filesystems:
-ANalyze enters them unless *Descend into other filesystems* is turned off in **Settings → Scanning**; then they are marked
-"not scanned" in Browse and listed in the activity log, and you choose the ones to enter under *Other filesystems to enter*
-(e.g. `/mnt/main/media`, which also covers the datasets below it) or with **Enter this filesystem** in Browse.
+> [!IMPORTANT]
+> The container runs as **root** so it can read — and, when allowed, move or delete — files of every user on the share.
+> Folders it creates (move targets, trash) take the owner of their parent folder. To guarantee nothing is ever changed,
+> mount roots with `:ro` or set `ANalyze__ReadOnly=true`.
 
-Skip folders with *Ignore* in Settings (names like `.snapshot`, paths from the root like `Media/Cache/**`, or full paths
-like `/mnt/main/backups`) or with **Ignore** in Browse. Browse also compares each folder with the disk: what is there but
-not scanned yet, or ignored, is listed under the folder with buttons to scan the folder or (stop) ignoring an item;
-folders in that list open, as deep as they go, read live from the disk.
+### Scanning
 
-The container runs as **root** so it can read — and, when allowed, move or delete — files of every user on the share.
-Folders it creates (move targets, trash) take the owner of their parent folder. To guarantee nothing is ever changed,
-mount roots with `:ro` or set `ANalyze__ReadOnly=true`.
+- **Live results** — results are stored while the scan runs (at least every 2 seconds), so Browse, Search and the
+  integrations see folders as soon as they are walked.
+- **Other filesystems** — disks, shares, ZFS datasets or btrfs subvolumes mounted *below* a root are entered unless
+  *Descend into other filesystems* is turned off in **Settings → Scanning**. Then they are marked "not scanned" in Browse
+  and listed in the activity log, and you choose the ones to enter under *Other filesystems to enter* (e.g.
+  `/mnt/main/media`, which also covers the datasets below it) or with **Enter this filesystem** in Browse.
+- **Ignoring** — skip folders with *Ignore* in Settings (names like `.snapshot`, paths from the root like
+  `Media/Cache/**`, or full paths like `/mnt/main/backups`) or with **Ignore** in Browse.
+- **Not scanned yet** — Browse compares each folder with the disk: what is there but not scanned yet, or ignored, is
+  listed under the folder with buttons to scan the folder or (stop) ignoring an item. Folders in that list open, as deep
+  as they go, read live from the disk.
 
 ## Desktop app
 
 ANalyze also runs as a desktop app for Windows, macOS and Linux: the same server and UI in a window, for analyzing the
 disks of the computer it runs on. Download it from the [GitHub releases](https://github.com/jncchds/ANalyze/releases)
-— each version that reaches `main` gets a release `v<VERSION>` automatically (no tags to push):
+— each version that reaches `main` gets a release `v<VERSION>` automatically.
 
 | OS | Files |
 |---|---|
-| Windows (x64) | `ANalyze-<version>-win-x64.exe` (installer) or `.zip` |
-| macOS (Apple Silicon / Intel) | `ANalyze-<version>-mac-arm64.dmg` / `-mac-x64.dmg`, or `.zip` |
-| Linux (x64 / arm64) | `ANalyze-<version>-linux-x86_64.AppImage` / `-arm64.AppImage`, or `.tar.gz` |
+| 🪟 Windows (x64) | `ANalyze-<version>-win-x64.exe` (installer) or `.zip` |
+| 🍎 macOS (Apple Silicon / Intel) | `ANalyze-<version>-mac-arm64.dmg` / `-mac-x64.dmg`, or `.zip` |
+| 🐧 Linux (x64 / arm64) | `ANalyze-<version>-linux-x86_64.AppImage` / `-arm64.AppImage`, or `.tar.gz` |
 
 On first start, pick the folders or drives to analyze; add or remove them later in **Settings → Roots** or with
 **File → Add folder…**. The app's data (index, thumbnails, logs) is in its user-data folder (**File → Open data folder**).
-Video thumbnails need `ffmpeg` on the `PATH` (on macOS, Homebrew's is found too).
+Video thumbnails need `ffmpeg` on the `PATH` (on macOS, Homebrew's is found too). Hard-link dedupe is only available on Linux.
 
-The apps are not code-signed: Windows SmartScreen asks to confirm ("More info → Run anyway"); on macOS, if the app is
-reported as damaged, run `xattr -cr /Applications/ANalyze.app`. Hard-link dedupe is only available on Linux.
+> [!NOTE]
+> The apps are not code-signed: Windows SmartScreen asks to confirm (*More info → Run anyway*); on macOS, if the app is
+> reported as damaged, run `xattr -cr /Applications/ANalyze.app`.
 
 The bundled server listens on `127.0.0.1` only and accepts only requests from the app's window (a random token per launch).
 
@@ -102,10 +123,11 @@ For development: `npm run server` once (publishes the server into `desktop/serve
 | `ANalyze__Password` | — | Protects the UI and API. **Set it** if the port is reachable by others. |
 | `ANalyze__ApiToken` | — | Token for scripts: `Authorization: Bearer <token>`. |
 | `ANalyze__DataDir` | `/data` | Database (`analyze.db`, SQLite), thumbnails, logs, encryption keys. Keep it on a volume. |
-| `ANalyze__Integrations__<id>__<field>` | — | Seeds an integration's settings until they are saved in the UI (see below). |
+| `ANalyze__Integrations__<id>__<field>` | — | Seeds an integration's settings until they are saved in the UI (see [Plex](#plex)). |
 | `TZ` | `UTC` | Time zone for schedules and dates. |
 
-Everything else (scan schedule, ignore patterns, duplicate search, hashing threads, hashing every file and re-verifying hashes, trash retention, AI) is set in **Settings**.
+Everything else (scan schedule, ignore patterns, duplicate search, hashing threads, hashing every file and re-verifying
+hashes, trash retention, AI) is set in **Settings**.
 
 Build without ffmpeg (no video thumbnails, smaller image): `docker build -f docker/Dockerfile --build-arg FFMPEG=false .`
 
@@ -136,7 +158,7 @@ wins; AI only fills gaps.
 
 ## AI
 
-Settings → AI: base URL, key and model of any OpenAI-compatible server (e.g. `http://ollama:11434/v1` with `qwen2.5`).
+**Settings → AI**: base URL, key and model of any OpenAI-compatible server (e.g. `http://ollama:11434/v1` with `qwen2.5`).
 By default only paths, names, sizes, types and dates are sent; optionally the first 2 KB of text files.
 
 - **Classify uncategorized** sends the largest unexplained files in batches. Answers above the confidence threshold are
@@ -146,9 +168,9 @@ By default only paths, names, sizes, types and dates are sent; optionally the fi
 
 ## Integrations
 
-Integrations are plugins (`IIntegration`) with their own settings form, sync job, API and page. They label
-files and folders, and the labels appear in Browse and Search. Click a label to open that integration's page at the title or folder it belongs to. Turn one on under **Integrations**: enabling it also
-adds its page to the sidebar, and disabling it hides it again.
+Integrations are plugins with their own settings form, sync job, API and page. They label files and folders, and the
+labels appear in Browse and Search; click a label to open that integration's page at the title or folder it belongs to.
+Turn one on under **Integrations**: enabling it also adds its page to the sidebar, and disabling it hides it again.
 
 | Integration | What it adds |
 |---|---|
@@ -161,12 +183,18 @@ adds its page to the sidebar, and disabling it hides it again.
 
 ### Path mappings
 
-Apps in other containers see the same files under other paths. Each integration tries, in order: mappings you
-entered, mappings from **Docker**, mappings detected from sample files (name + size), then file name + size per file.
+Apps in other containers see the same files under other paths. Each integration tries, in order:
+
+1. mappings you entered,
+2. mappings from **Docker**,
+3. mappings detected from sample files (name + size),
+4. file name + size per file.
+
 A mapping you entered covers everything below its prefix (Docker never overrides part of it); for the same prefix the
 last one in the list wins. When ANalyze sees one host folder under two paths (`/mnt/main` mounted at `/mnt/main`, and its
 dataset `/mnt/main/media` again at `/mnt/media`), a mapping that leads to the path that is not scanned is followed through
 ANalyze's own mounts to the one that is — so `/downloads → /mnt/main/media` works with only `/mnt/media` as a root.
+
 To use Docker, mount the socket read-only and enable **Integrations → Docker**:
 
 ```yaml
@@ -174,8 +202,10 @@ To use Docker, mount the socket read-only and enable **Integrations → Docker**
       - /var/run/docker.sock:/var/run/docker.sock:ro
 ```
 
-ANalyze only reads the container list (`/containers/json`). For tighter control, point it at a
-[docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) with `CONTAINERS=1` (`tcp://docker-proxy:2375`).
+> [!TIP]
+> ANalyze only reads the container list (`/containers/json`). For tighter control, point it at a
+> [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) with `CONTAINERS=1` (`tcp://docker-proxy:2375`).
+
 The app's container is found from the integration's URL (container name, compose service or IP), a published port, or
 its image name; name it explicitly under *Container per app* (`radarr=radarr-4k`) when several match.
 
@@ -186,27 +216,27 @@ are shown with their host path too; with the Docker integration on, ANalyze's ow
 
 ### Backups between two ANalyze instances
 
-When your NAS is backed up to another NAS and both run ANalyze, the instance being backed up (the *child*) can check its backup on the
-other one (the *parent*, the backup server):
+When your NAS is backed up to another NAS and both run ANalyze, the instance being backed up (the *child*) can check its
+backup on the other one (the *parent*, the backup server):
 
 1. On the **backup server**, set `ANalyze__ApiToken` (and `ANalyze__Password` if the port is reachable by others).
-2. On **both**, turn on **Settings → Integrity & backups → Hash every file** (and, to catch bit rot, *Re-verify hashes after N days*).
-   Without hashes, corrupted files are found by size only.
-3. On the **child**, open **Integrations → ANalyze parent**: the backup server's URL (`http://backup-nas:8080`), its token, and path mappings
-   when the backup lives under another path there (`/backup/nas1` → `/library`; leave empty to detect it from sample files, or press **Suggest**).
-   **Test**, enable, **Sync now**.
+2. On **both**, turn on **Settings → Integrity & backups → Hash every file** (and, to catch bit rot, *Re-verify hashes
+   after N days*). Without hashes, corrupted files are found by size only.
+3. On the **child**, open **Integrations → ANalyze parent**: the backup server's URL (`http://backup-nas:8080`), its token,
+   and path mappings when the backup lives under another path there (`/backup/nas1` → `/library`; leave empty to detect
+   it from sample files, or press **Suggest**). **Test**, enable, **Sync now**.
 
 How it decides:
 
 - a **file is synchronized** when the backup has a file at the same path;
-- a **folder is synchronized** when at least 80% of what is directly inside it (files and sub-folders, by count) is synchronized, or when it is
-  identical to the backup's folder (so an empty folder that exists empty on the backup counts too);
-- in a synchronized folder, a file is **corrupted** when the backup's copy has another size or content hash, and **missing** when the backup
-  does not have it. Files outside synchronized folders are just *not synchronized*.
+- a **folder is synchronized** when at least 80% of what is directly inside it (files and sub-folders, by count) is
+  synchronized, or when it is identical to the backup's folder (so an empty folder that exists empty on the backup counts too);
+- in a synchronized folder, a file is **corrupted** when the backup's copy has another size or content hash, and
+  **missing** when the backup does not have it. Files outside synchronized folders are just *not synchronized*.
 
-The **Backup** page shows how much is on the backup, corrupted and missing files, and a folder view with each folder's share; Browse labels every
-folder (*Synced*, *Not synced · 40%*) and each corrupted or missing file. The comparison runs after each scan of the child; the backup server only
-answers read-only requests.
+The **Backup** page shows how much is on the backup, corrupted and missing files, and a folder view with each folder's
+share; Browse labels every folder (*Synced*, *Not synced · 40%*) and each corrupted or missing file. The comparison runs
+after each scan of the child; the backup server only answers read-only requests.
 
 ### Plex
 
@@ -223,7 +253,7 @@ answers read-only requests.
 
 Environment seeding example (works the same for every integration id: `sonarr`, `qbittorrent`, `docker`, …):
 
-```
+```bash
 ANalyze__Integrations__plex__Enabled=true
 ANalyze__Integrations__plex__url=http://192.168.1.10:32400
 ANalyze__Integrations__plex__token=xxxxxxxx
@@ -240,10 +270,11 @@ docker compose -f docker-compose.dev.yml up --build
 ```
 
 Front-end hot reload: `npm run dev` in `ClientApp` proxies `/api` and `/hubs` to `http://127.0.0.1:5199`.
+The design and its rules are described in [AGENTS.md](AGENTS.md); changes per version are in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 ## Credits
 
-ANalyze by CHDS — created and maintained by [CHDS](https://github.com/jncchds), built together with
+**ANalyze by CHDS** — created and maintained by [CHDS](https://github.com/jncchds), built together with
 [Claude](https://claude.com/claude-code) by Anthropic.
 
-Licensed under the GNU GPL v3.
+Licensed under the [GNU GPL v3](LICENSE).

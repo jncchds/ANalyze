@@ -274,3 +274,7 @@ CI (`.github/workflows/docker.yml`, job `desktop`): Linux x64+arm64 (AppImage, t
 (NSIS installer, zip) on every non-PR build, uploaded as artifacts named `ANalyze-*` (the release job downloads only those: the run also
 holds Docker's build record, which is not a zip). Builds of `main` publish them as the GitHub release `v<VERSION>` (job `release`):
 created with its tag when a new version first reaches main (notes = that version's `RELEASE_NOTES.md` section), files replaced by later builds of the same version.
+Builds of `main` also set the Docker Hub description (job `docker`): `.github/scripts/dockerhub-readme.mjs` turns `README.md` into it (relative
+links and images → GitHub URLs, `#section` links → the README on GitHub, GitHub alerts → bold labels, a repository link at
+`<!-- dockerhub:github-link -->`, cut at 25,000 bytes) and `peter-evans/dockerhub-description` uploads it; `DOCKERHUB_TOKEN` needs the
+"Read, Write, Delete" scope. Keep README links relative (or absolute) and its images in the repository so both sites show them.
