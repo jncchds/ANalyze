@@ -28,6 +28,7 @@ internal sealed class Walker : IDisposable
     private readonly string _rootPath;
     private readonly bool _crossFs;
     private readonly IgnoreMatcher _ignore;
+    private readonly List<string> _enterFs;
     private SqliteTransaction _tx;
     private int _pending;
 
@@ -59,8 +60,10 @@ internal sealed class Walker : IDisposable
         public Agg Total { get; set; }
     }
 
-    public Walker(SqliteConnection db, ScanContext ctx, int rootId, string rootPath, bool crossFs, IgnoreMatcher ignore)
+    public Walker(SqliteConnection db, ScanContext ctx, int rootId, string rootPath, bool crossFs, IgnoreMatcher ignore, IReadOnlyList<string>? enterFilesystems = null)
     {
+        _enterFs = (enterFilesystems ?? []).Select(p => p.Trim()).Where(p => p.StartsWith('/') || Path.IsPathRooted(p))
+            .Select(p => p.Length > 1 ? p.TrimEnd('/', '\\') : p).ToList();
         _db = db;
         _ctx = ctx;
         _rootId = rootId;
@@ -153,6 +156,12 @@ internal sealed class Walker : IDisposable
         var agg = Walk(dirId, fullPath, relPath, depth, rootDev, fresh);
         var st = Native.LStat(fullPath);
         UpdateDir(dirId, agg, st);
+        if (relPath.Length > 0)
+        {
+            // The folder was walked, so it is no longer an unentered filesystem (a subtree scan started on one).
+            SetOtherFs(dirId, false);
+        }
+
         Commit();
         return agg;
     }
@@ -257,7 +266,7 @@ internal sealed class Walker : IDisposable
                 }
 
                 Agg sub;
-                if (!_crossFs && rootDev != 0 && st.Dev != rootDev)
+                if (!_crossFs && rootDev != 0 && st.Dev != rootDev && !_enterFs.Any(p => RootRegistry.IsUnder(p, childFull)))
                 {
                     // Another filesystem mounted below the root: listed, not descended into. Entries from an earlier scan that
                     // did descend (cross-filesystem setting on) would otherwise keep their sizes under a 0-byte folder.
@@ -269,7 +278,7 @@ internal sealed class Walker : IDisposable
 
                     SkippedMounts.Add(childRel);
                     _ctx.Problem("Not entering {Path}: another filesystem is mounted there (a separate disk, share, dataset or subvolume). " +
-                        "It shows as an empty folder; turn on \"Descend into other filesystems mounted inside a root\" in Settings to scan it.", childFull);
+                        "It shows as an empty folder; add it to \"Other filesystems to enter\" in Settings (or turn on \"Descend into other filesystems\") to scan it.", childFull);
                     if (!hadOld || !old.OtherFs)
                     {
                         SetOtherFs(id, true);
@@ -570,15 +579,25 @@ public sealed class IgnoreMatcher
 {
     private readonly List<Regex> _pathPatterns = [];
     private readonly List<Regex> _namePatterns = [];
+    private readonly List<Regex> _fullPatterns = [];
+    private readonly string? _rootPath;
 
-    public IgnoreMatcher(IEnumerable<string> patterns)
+    /// <param name="rootPath">The root being walked: patterns starting with '/' also match the full path ("/mnt/main/media").</param>
+    public IgnoreMatcher(IEnumerable<string> patterns, string? rootPath = null)
     {
+        _rootPath = rootPath is null ? null : rootPath.Length > 1 ? rootPath.TrimEnd('/') : rootPath;
         foreach (var raw in patterns)
         {
-            var p = raw.Trim().Trim('/');
+            var t = raw.Trim();
+            var p = t.Trim('/');
             if (p.Length == 0 || p.StartsWith('#'))
             {
                 continue;
+            }
+
+            if (t.StartsWith('/'))
+            {
+                _fullPatterns.Add(Domain.RuleEngine.GlobToRegex("/" + p));
             }
 
             (p.Contains('/') ? _pathPatterns : _namePatterns).Add(Domain.RuleEngine.GlobToRegex(p));
@@ -587,6 +606,18 @@ public sealed class IgnoreMatcher
 
     public bool IsIgnored(string relPath, string name, int depth)
     {
+        if (_rootPath is not null && _fullPatterns.Count > 0)
+        {
+            var full = _rootPath == "/" ? "/" + relPath : _rootPath + "/" + relPath;
+            foreach (var r in _fullPatterns)
+            {
+                if (r.IsMatch(full))
+                {
+                    return true;
+                }
+            }
+        }
+
         if (depth == 1 && (name == RootRegistry.TrashFolder || name.StartsWith(".analyze-probe-", StringComparison.Ordinal)))
         {
             return true;

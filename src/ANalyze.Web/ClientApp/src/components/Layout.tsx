@@ -271,7 +271,8 @@ function ScanWidget() {
   const scan = useJob('scan')
   const roots = useRoots()
   const { rootId } = useScope()
-  const start = useMutation({ mutationFn: () => api('/scan', { method: 'POST', json: { rootId } }) })
+  const start = useMutation({ mutationFn: (only?: number) => api('/scan', { method: 'POST', json: { rootId: only } }) })
+  const scoped = roots.data?.find((r) => r.id === rootId)
   const cancel = useMutation({ mutationFn: () => api('/scan/cancel', { method: 'POST' }) })
   const active = Object.values(jobs).filter(isActive)
   const lastScan = roots.data?.map((r) => r.lastScanAt).filter(Boolean).sort().at(-1)
@@ -312,9 +313,20 @@ function ScanWidget() {
               Cancel scan
             </button>
           ) : (
-            <button className="btn-primary px-2 py-1 text-xs" onClick={() => start.mutate()} disabled={start.isPending}>
-              Scan now
-            </button>
+            <>
+              {scoped && (roots.data?.length ?? 0) > 1 && (
+                <button className="btn-primary min-w-0 truncate px-2 py-1 text-xs" onClick={() => start.mutate(scoped.id)} disabled={start.isPending} title={`Scan only ${scoped.path}`}>
+                  Scan {scoped.name}
+                </button>
+              )}
+              <button
+                className={clsx(scoped && (roots.data?.length ?? 0) > 1 ? 'btn-secondary' : 'btn-primary', 'px-2 py-1 text-xs')}
+                onClick={() => start.mutate(undefined)}
+                disabled={start.isPending}
+              >
+                {(roots.data?.length ?? 0) > 1 ? 'Scan all' : 'Scan now'}
+              </button>
+            </>
           )}
           <Link to="/logs" className="btn-ghost px-2 py-1 text-xs no-underline" title="What ANalyze is doing, step by step">
             Log

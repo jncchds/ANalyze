@@ -213,7 +213,7 @@ public sealed class ScanService(
         }
 
         ctx.Log.LogInformation("Walking {Path}{Sub}: listing every folder and comparing it with the index", root.Path, string.IsNullOrEmpty(subPath) ? "" : "/" + subPath.Trim('/'));
-        using var walker = new Walker(conn, ctx, root.Id, root.Path, s.CrossFilesystems, new IgnoreMatcher(s.IgnorePatterns));
+        using var walker = new Walker(conn, ctx, root.Id, root.Path, s.CrossFilesystems, new IgnoreMatcher(s.IgnorePatterns, root.Path), s.EnterFilesystems);
         var rootEntryId = walker.EnsureRootEntry(rootStat);
         walker.Commit();
         if (root.RootEntryId != rootEntryId)

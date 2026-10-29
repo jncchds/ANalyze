@@ -50,13 +50,19 @@ volumes:
   analyze-data:
 ```
 
-Open <http://localhost:8080> and press **Scan now** in the sidebar. The first scan reads every folder; later scans only
+Open <http://localhost:8080> and press **Scan now** in the sidebar (with several roots, pick one in the scope selector to
+get **Scan <root>** next to **Scan all**; Settings also has a scan button per root). The first scan reads every folder; later scans only
 look at what changed (size, mtime, inode), so they are much faster. Schedule automatic scans in **Settings**.
 
 Results are stored while the scan runs (at least every 2 seconds), so Browse, Search and the integrations see folders
 as soon as they are walked. Disks, shares, ZFS datasets or btrfs subvolumes mounted *below* a root are other filesystems:
 ANalyze enters them unless *Descend into other filesystems* is turned off in **Settings → Scanning**; then they are marked
-"not scanned" in Browse and listed in the activity log.
+"not scanned" in Browse and listed in the activity log, and you choose the ones to enter under *Other filesystems to enter*
+(e.g. `/mnt/main/media`, which also covers the datasets below it) or with **Enter this filesystem** in Browse.
+
+Skip folders with *Ignore* in Settings (names like `.snapshot`, paths from the root like `Media/Cache/**`, or full paths
+like `/mnt/main/backups`) or with **Ignore** in Browse. Browse also compares each folder with the disk: what is there but
+not scanned yet, or ignored, is listed under the folder with buttons to scan the folder or (stop) ignoring an item.
 
 The container runs as **root** so it can read — and, when allowed, move or delete — files of every user on the share.
 Folders it creates (move targets, trash) take the owner of their parent folder. To guarantee nothing is ever changed,
@@ -156,6 +162,10 @@ adds its page to the sidebar, and disabling it hides it again.
 
 Apps in other containers see the same files under other paths. Each integration tries, in order: mappings you
 entered, mappings from **Docker**, mappings detected from sample files (name + size), then file name + size per file.
+A mapping you entered covers everything below its prefix (Docker never overrides part of it); for the same prefix the
+last one in the list wins. When ANalyze sees one host folder under two paths (`/mnt/main` mounted at `/mnt/main`, and its
+dataset `/mnt/main/media` again at `/mnt/media`), a mapping that leads to the path that is not scanned is followed through
+ANalyze's own mounts to the one that is — so `/downloads → /mnt/main/media` works with only `/mnt/media` as a root.
 To use Docker, mount the socket read-only and enable **Integrations → Docker**:
 
 ```yaml

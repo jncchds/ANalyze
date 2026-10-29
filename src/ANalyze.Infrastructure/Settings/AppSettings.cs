@@ -10,7 +10,10 @@ public sealed record AppSettings
 
     public bool ScanOnStartup { get; init; }
 
-    /// <summary>Globs matched against the path relative to the root (and the bare name when the glob has no '/').</summary>
+    /// <summary>
+    /// Globs matched against the path relative to the root (and the bare name when the glob has no '/'); a glob starting with '/'
+    /// also matches the full path ("/mnt/main/backups").
+    /// </summary>
     public List<string> IgnorePatterns { get; init; } = [];
 
     /// <summary>
@@ -18,6 +21,12 @@ public sealed record AppSettings
     /// is another filesystem, and skipping them leaves folders that look empty.
     /// </summary>
     public bool CrossFilesystems { get; init; } = true;
+
+    /// <summary>
+    /// With <see cref="CrossFilesystems"/> off: other filesystems that are entered anyway, as full paths ANalyze sees. A path
+    /// also allows the filesystems mounted below it ("/mnt/main/media" covers its child datasets).
+    /// </summary>
+    public List<string> EnterFilesystems { get; init; } = [];
 
     /// <summary>Read the first bytes of files whose extension is unknown to detect their type.</summary>
     public bool SniffUnknownFiles { get; init; } = true;
