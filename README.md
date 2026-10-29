@@ -62,7 +62,8 @@ ANalyze enters them unless *Descend into other filesystems* is turned off in **S
 
 Skip folders with *Ignore* in Settings (names like `.snapshot`, paths from the root like `Media/Cache/**`, or full paths
 like `/mnt/main/backups`) or with **Ignore** in Browse. Browse also compares each folder with the disk: what is there but
-not scanned yet, or ignored, is listed under the folder with buttons to scan the folder or (stop) ignoring an item.
+not scanned yet, or ignored, is listed under the folder with buttons to scan the folder or (stop) ignoring an item;
+folders in that list open, as deep as they go, read live from the disk.
 
 The container runs as **root** so it can read — and, when allowed, move or delete — files of every user on the share.
 Folders it creates (move targets, trash) take the owner of their parent folder. To guarantee nothing is ever changed,

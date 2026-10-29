@@ -3,6 +3,7 @@
 ## v0.1.8 — 2026-10-29
 
 - fix: scans no longer seem stuck on "categorizing" for many minutes on large libraries: the duplicate search (and "hash all files") now shows its step at once, finds files of equal size from an index instead of reading every file record in size order (one random disk read per file), and does that search once instead of twice; the database gets two new indexes on first start
+- feat: Browse opens folders that are not scanned yet (or ignored), as deep as they go: their files and subfolders are read live from the disk, with a path back up and Ignore on every item
 
 ## v0.1.7 — 2026-10-29
 

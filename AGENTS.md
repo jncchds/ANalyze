@@ -152,7 +152,8 @@ Front end: `ClientApp/src/integrations/registry.tsx` maps an id to a lazy page; 
 
 Labels are clickable: a badge links to `/integrations/{source}?entry={entryId}` (never to the external app; those links stay inside the pages).
 Browse also calls `GET /entries/{id}/disk` (the folder listed on disk now via `ResolveForRead`: names not in the index with lstat data and whether
-they are ignored, plus the count of indexed children gone from disk) and `POST /ignore {rootId, relPath, ignore}` / `POST /enter-filesystem`
+they are ignored, plus the count of indexed children gone from disk; `?sub=a/b` lists a folder further down that is not in the index,
+opened in place in Browse as `?disk=a/b`) and `POST /ignore {rootId, relPath, ignore}` / `POST /enter-filesystem`
 (adds the full path to `IgnorePatterns` / `EnterFilesystems`; the latter also queues a subtree scan). A page reads the entry with `hooks/useLocate.ts`, which calls the plugin's `GET /integrations/{id}/locate?entryId=` and opens what it returns:
 `ItemIntegration` and Plex return the title the entry belongs to (`key`, Plex also `type`) when the entry or folder holds exactly one, and the page
 opens it through `groups?key=` / `top?key=`; the backup page gets `{rootId, path}` and opens its folder view there. `Db.EntryScope` + `Db.InScope`
