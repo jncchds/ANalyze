@@ -1,6 +1,8 @@
 using ANalyze.Infrastructure;
 using ANalyze.Infrastructure.Roots;
+using ANalyze.Infrastructure.Logging;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Scanner;
 
@@ -12,6 +14,9 @@ namespace ANalyze.Scanner;
 internal sealed class ContentHasher(SqliteConnection read, SqliteConnection write, ScanContext ctx, IReadOnlyDictionary<int, string> rootPaths, int threads)
 {
     private const int Batch = 400;
+
+    /// <summary>A batch is also stored once it holds this much data, so hashes of big files are saved as they come.</summary>
+    private const long BatchBytes = 2L << 30;
 
     private sealed class Row
     {
@@ -37,8 +42,6 @@ internal sealed class ContentHasher(SqliteConnection read, SqliteConnection writ
 
     private async Task<long> RunAsync(string phase, string where, string order, (string, object)[] args, long maxBytes, bool verify)
     {
-        ctx.Phase = phase;
-        ctx.Done = 0;
         ctx.HashedBytes = 0;
         var filter = $"IsDir = 0 AND IsSymlink = 0 AND Size > 0 AND {where}";
         using (var c = read.CreateCommand())
@@ -51,11 +54,12 @@ internal sealed class ContentHasher(SqliteConnection read, SqliteConnection writ
 
             using var r = c.ExecuteReader();
             r.Read();
-            ctx.Total = r.GetInt64(0);
-            ctx.TotalBytes = maxBytes > 0 ? Math.Min(maxBytes, r.GetInt64(1)) : r.GetInt64(1);
+            ctx.StartPhase(phase, r.GetInt64(0), maxBytes > 0 ? Math.Min(maxBytes, r.GetInt64(1)) : r.GetInt64(1));
         }
 
-        ctx.Report(force: true);
+        ctx.Log.LogInformation(verify
+            ? "Verifying: re-reading {Count} files ({Size}) hashed long ago to catch content that changed silently"
+            : "Hashing: reading {Count} files ({Size}) that have no content hash yet", ctx.Total, Format.Bytes(ctx.TotalBytes));
         if (ctx.Total == 0)
         {
             return 0;
@@ -70,6 +74,7 @@ internal sealed class ContentHasher(SqliteConnection read, SqliteConnection writ
 
         long budget = 0;
         long changed = 0;
+        long batchBytes = 0;
         var batch = new List<Row>();
         using (var r = q.ExecuteReader())
         {
@@ -93,19 +98,31 @@ internal sealed class ContentHasher(SqliteConnection read, SqliteConnection writ
 
                 budget += row.Size;
                 // Keep hard-link siblings in one batch so they share one read.
-                if (batch.Count >= Batch && batch[^1].Identity != row.Identity)
+                if ((batch.Count >= Batch || batchBytes >= BatchBytes) && batch[^1].Identity != row.Identity)
                 {
                     changed += await ProcessAsync(batch, verify);
                     batch.Clear();
+                    batchBytes = 0;
+                    if (ctx.ProgressLineDue())
+                    {
+                        ctx.Log.LogInformation("{Phase}: {Done} of {Total} files, {Bytes} of {TotalBytes}", verify ? "Verifying" : "Hashing",
+                            ctx.Done, ctx.Total, Format.Bytes(ctx.HashedBytes), Format.Bytes(ctx.TotalBytes));
+                    }
                 }
 
                 batch.Add(row);
+                batchBytes += row.Size;
             }
         }
 
         if (batch.Count > 0)
         {
             changed += await ProcessAsync(batch, verify);
+        }
+
+        if (ctx.UnloggedProblems > 0)
+        {
+            ctx.Log.LogWarning("{Count} more files could not be read", ctx.UnloggedProblems);
         }
 
         return changed;
@@ -148,6 +165,7 @@ internal sealed class ContentHasher(SqliteConnection read, SqliteConnection writ
             {
                 row.Failed = true;
                 Interlocked.Increment(ref ctx.Errors);
+                ctx.Problem("Cannot read {Path}: {Error}", path, e.Message);
             }
 
             Interlocked.Increment(ref ctx.Done);
@@ -182,6 +200,7 @@ internal sealed class ContentHasher(SqliteConnection read, SqliteConnection writ
             if (bad)
             {
                 changed++;
+                ctx.Log.LogWarning("Possibly corrupted: {Path} has other content than when it was hashed, with the same size and modification time", row.RelPath);
             }
 
             upd.Parameters["$q"].Value = (object?)rep.Quick ?? DBNull.Value;

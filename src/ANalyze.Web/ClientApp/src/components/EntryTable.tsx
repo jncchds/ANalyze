@@ -109,6 +109,19 @@ export function EntryTable({
                       {e.name}
                     </span>
                     {e.isDir && <span className="shrink-0 text-xs muted">{e.files.toLocaleString()} files</span>}
+                    {e.otherFilesystem && (
+                      <span
+                        className="pill-amber shrink-0 cursor-help"
+                        title={'Another filesystem is mounted here (a separate disk, share, dataset or subvolume), so the scan did not go inside and it looks empty. Turn on "Descend into other filesystems mounted inside a root" in Settings and scan again.'}
+                      >
+                        not scanned: other filesystem
+                      </span>
+                    )}
+                    {e.isDir && e.error && !e.otherFilesystem && (
+                      <span className="pill-amber shrink-0 cursor-help" title="A folder in here could not be read during the last scan; see the activity log.">
+                        unreadable parts
+                      </span>
+                    )}
                     {e.nLink > 1 && !e.isDir && <span className="pill-muted shrink-0" title="Hard-linked">×{e.nLink}</span>}
                     <AnnotationBadges items={annotations?.[e.id]} />
                   </div>

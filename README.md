@@ -25,6 +25,9 @@ the folders to analyze, open the web UI, press **Scan now**.
   mappings between containers for all of them. **ANalyze parent** links two ANalyze instances when one NAS is backed up to another.
 - **Integrity** (optional) — hash every file and re-verify old hashes to catch bit rot: files whose content changed while size
   and date stayed the same are flagged as *possibly corrupted*.
+- **Activity log** — what ANalyze is doing, step by step and live: scan phases with counts and times, folders it skipped and why,
+  files it could not read, integration syncs (mappings used, items not found and why), plans and AI runs. Hover a step name
+  in the sidebar (walking, detecting, hashing…) for a short explanation.
 - **Release notes** — what changed in each version, right in the UI (click the version next to the logo).
 
 ## Quick start
@@ -49,6 +52,11 @@ volumes:
 
 Open <http://localhost:8080> and press **Scan now** in the sidebar. The first scan reads every folder; later scans only
 look at what changed (size, mtime, inode), so they are much faster. Schedule automatic scans in **Settings**.
+
+Results are stored while the scan runs (at least every 2 seconds), so Browse, Search and the integrations see folders
+as soon as they are walked. Disks, shares, ZFS datasets or btrfs subvolumes mounted *below* a root are other filesystems:
+ANalyze enters them unless *Descend into other filesystems* is turned off in **Settings → Scanning**; then they are marked
+"not scanned" in Browse and listed in the activity log.
 
 The container runs as **root** so it can read — and, when allowed, move or delete — files of every user on the share.
 Folders it creates (move targets, trash) take the owner of their parent folder. To guarantee nothing is ever changed,
@@ -159,6 +167,11 @@ ANalyze only reads the container list (`/containers/json`). For tighter control,
 [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) with `CONTAINERS=1` (`tcp://docker-proxy:2375`).
 The app's container is found from the integration's URL (container name, compose service or IP), a published port, or
 its image name; name it explicitly under *Container per app* (`radarr=radarr-4k`) when several match.
+
+The integration pages show each file three ways: the app's path, the path ANalyze looked at (after the mappings) and the
+file it found. Items not found are summed up in the activity log with the reason (e.g. inside a folder on another filesystem).
+**Settings → Host paths** (Docker only) tells ANalyze where its folders are on the host (`/library` → `/mnt/media`), so paths
+are shown with their host path too; with the Docker integration on, ANalyze's own mounts fill this in automatically.
 
 ### Backups between two ANalyze instances
 

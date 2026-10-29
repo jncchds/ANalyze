@@ -88,10 +88,18 @@ public sealed class PlexIntegration(IHttpClientFactory http, SqliteSetup sqlite,
 
         progress.Report(new IntegrationProgress("matching", 0, files.Count));
         using var conn = sqlite.Open();
-        var matcher = new PathMatcher(conn, roots, await paths.ForAsync(this, settings, ct));
+        var mappings = await paths.ForAsync(this, settings, ct);
+        log.LogInformation("Plex: {Files} media files read from {Sections} libraries; path mappings: {Mappings}", files.Count, sections.Count,
+            mappings.Count == 0 ? "none (paths are used as they are)" : string.Join(", ", mappings.Select(m => $"{m.From} → {m.To}")));
+        var matcher = new PathMatcher(conn, roots, mappings);
         matcher.Detect(files.Select(f => (f.File, f.Size)));
+        if (matcher.Detected.Count > 0)
+        {
+            log.LogInformation("Plex: mappings detected from sample files: {Mappings}", string.Join(", ", matcher.Detected.Select(m => $"{m.From} → {m.To}")));
+        }
+
         var stored = Store(conn, files, sections, matcher, baseUrl, machineId, progress);
-        log.LogInformation("Plex sync: {Files} files, {Matched} matched ({Detected})", files.Count, stored.Matched, string.Join(", ", matcher.Detected.Select(m => $"{m.From} → {m.To}")));
+        log.LogInformation("Plex sync: {Files} files, {Matched} found on disk", files.Count, stored.Matched);
         var extra = matcher.Detected.Count > 0 ? $"; detected mappings: {string.Join(", ", matcher.Detected.Select(m => $"{m.From} → {m.To}"))}" : "";
         return new IntegrationSyncResult(true, $"{files.Count} files from {sections.Count} libraries, {stored.Matched} found on disk{extra}", files.Count, stored.Matched);
     }
@@ -112,7 +120,11 @@ public sealed class PlexIntegration(IHttpClientFactory http, SqliteSetup sqlite,
         {
             foreach (var loc in s.Locations)
             {
-                if (matcher.FindDir(loc) is { } dirId)
+                if (matcher.FindDir(loc) is not { } dirId)
+                {
+                    log.LogInformation("Plex: library folder {Path} of {Library} (checked at {Local}) is not in the index", loc, s.Title, matcher.LocalPath(loc));
+                }
+                else
                 {
                     libraryDirs.Add(dirId);
                     Note(dirId, "library", $"Plex library: {s.Title}", s.Type);
@@ -121,6 +133,8 @@ public sealed class PlexIntegration(IHttpClientFactory http, SqliteSetup sqlite,
         }
 
         var matched = 0;
+        var why = new Dictionary<string, int>();
+        var examples = new List<string>();
         using var tx = conn.BeginTransaction();
         using (var del = conn.CreateCommand())
         {
@@ -133,10 +147,10 @@ public sealed class PlexIntegration(IHttpClientFactory http, SqliteSetup sqlite,
         ins.Transaction = tx;
         ins.CommandText = """
             INSERT INTO PlexItems (RatingKey, SectionKey, SectionTitle, Type, Title, ShowTitle, ParentTitle, Season, Episode, Year, ViewCount,
-                LastViewedAt, AddedAt, PlexPath, Size, Resolution, Versions, EntryId, MatchedBy, Url)
-            VALUES ($rk, $sk, $st, $type, $title, $show, $parent, $season, $ep, $year, $views, $last, $added, $path, $size, $res, $versions, $entry, $by, $url)
+                LastViewedAt, AddedAt, PlexPath, Size, Resolution, Versions, EntryId, MatchedBy, Url, CheckedPath)
+            VALUES ($rk, $sk, $st, $type, $title, $show, $parent, $season, $ep, $year, $views, $last, $added, $path, $size, $res, $versions, $entry, $by, $url, $checked)
             """;
-        foreach (var p in new[] { "$rk", "$sk", "$st", "$type", "$title", "$show", "$parent", "$season", "$ep", "$year", "$views", "$last", "$added", "$path", "$size", "$res", "$versions", "$entry", "$by", "$url" })
+        foreach (var p in new[] { "$rk", "$sk", "$st", "$type", "$title", "$show", "$parent", "$season", "$ep", "$year", "$views", "$last", "$added", "$path", "$size", "$res", "$versions", "$entry", "$by", "$url", "$checked" })
         {
             ins.Parameters.Add(new SqliteParameter(p, null));
         }
@@ -167,7 +181,18 @@ public sealed class PlexIntegration(IHttpClientFactory http, SqliteSetup sqlite,
             ins.Parameters["$entry"].Value = V(entryId);
             ins.Parameters["$by"].Value = V(by);
             ins.Parameters["$url"].Value = V(url);
+            var local = matcher.LocalPath(f.File);
+            ins.Parameters["$checked"].Value = local;
             ins.ExecuteNonQuery();
+            if (entryId is null)
+            {
+                var reason = matcher.WhyNotFound(local) ?? "no such file in the index";
+                why[reason] = why.GetValueOrDefault(reason) + 1;
+                if (examples.Count < 10)
+                {
+                    examples.Add($"{f.File} → {local}");
+                }
+            }
 
             if (entryId is { } id)
             {
@@ -221,6 +246,12 @@ public sealed class PlexIntegration(IHttpClientFactory http, SqliteSetup sqlite,
 
         tx.Commit();
         Annotations.Replace(conn, Id, notes.Values);
+        if (why.Count > 0)
+        {
+            log.LogWarning("Plex: {Count} files not found on disk ({Reasons}). For example: {Examples}", why.Values.Sum(),
+                string.Join("; ", why.OrderByDescending(w => w.Value).Take(8).Select(w => $"{w.Value} {w.Key}")), string.Join(", ", examples));
+        }
+
         return (matched, notes.Count);
     }
 

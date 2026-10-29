@@ -52,6 +52,8 @@ public sealed class Entry
     /// <summary>Unix seconds when a re-read found other content although size and mtime were unchanged (bit rot, or a program that restores timestamps).</summary>
     public long? CorruptAt { get; set; }
     public bool Error { get; set; }
+    /// <summary>Directories: another filesystem is mounted here and was listed but not entered (cross-filesystem scanning is off).</summary>
+    public bool OtherFilesystem { get; set; }
 
     public long TotalSize { get; set; }
     public long TotalAlloc { get; set; }
@@ -236,6 +238,8 @@ public sealed class PlexItem
     public long? LastViewedAt { get; set; }
     public long? AddedAt { get; set; }
     public required string PlexPath { get; set; }
+    /// <summary>Where ANalyze looked for <see cref="PlexPath"/>: the path after applying the path mappings.</summary>
+    public string? CheckedPath { get; set; }
     public long Size { get; set; }
     public string? Resolution { get; set; }
     /// <summary>How many media versions the Plex item has (e.g. 1080p + 4K).</summary>
@@ -267,6 +271,8 @@ public sealed class IntegrationItem
     public string? SubTitle { get; set; }
     public int? Year { get; set; }
     public required string ExternalPath { get; set; }
+    /// <summary>Where ANalyze looked for <see cref="ExternalPath"/>: the path after applying the path mappings.</summary>
+    public string? CheckedPath { get; set; }
     public long Size { get; set; }
     public bool IsDir { get; set; }
     /// <summary>App-specific state: monitored, seeding, completed, watched, favorite…</summary>
@@ -314,3 +320,4 @@ public sealed class Setting
     public required string Value { get; set; }
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
+

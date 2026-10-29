@@ -15,7 +15,7 @@ SQLite (WAL) in /data/analyze.db
 | Project | Purpose |
 |---|---|
 | `ANalyze.Domain` | Entities, enums, rule model + `RuleEngine`, `Builtins` (seeded categories, rules, templates). No dependencies. |
-| `ANalyze.Infrastructure` | `AnalyzeDbContext` + migrations, `SqliteSetup` (connection string + PRAGMAs), `SettingsStore`, `SecretProtector`, `RootRegistry` (roots, writability probe, safe paths), `Native` (statx, link, realpath, lchown), `JobBoard`/`JobLock`. |
+| `ANalyze.Infrastructure` | `AnalyzeDbContext` + migrations, `SqliteSetup` (connection string + PRAGMAs), `SettingsStore`, `SecretProtector`, `RootRegistry` (roots, writability probe, safe paths), `Native` (statx, link, realpath, lchown), `JobBoard`/`JobLock`, `Logging/ActivityLog` (in-memory activity log) + `Format`. |
 | `ANalyze.Scanner` | `Walker` (incremental tree mirror), `Detector` (type by extension/magic), `Categorizer` (rules), `DuplicateFinder` + `Hashing`, `ScanService` (pipeline), `ScanQueue`/`ScanWorker`/`ScanScheduler`, `EntryMaintenance`. |
 | `ANalyze.Preview` | Thumbnails (SkiaSharp, ffmpeg for video), paged text/hex reads, archive listing (SharpCompress), metadata (MetadataExtractor, TagLib). |
 | `ANalyze.Actions` | `PlanBuilder` (manual/template/dedupe plans), `PathTemplate`, `DedupeSelector`, `PlanExecutor` + `PlanQueue`, `TrashService` + janitor. |
@@ -37,7 +37,9 @@ SQLite (WAL) in /data/analyze.db
   (size, allocated size, mtime/atime/ctime, inode, device, link count), detection (`Ext`, `Mime`, `Kind`, `Detected`), category (`CategoryId`,
   `CategorySource` none/rule/ai/manual), rule tags (`|a|b|`), hashes (`QuickHash`, `FullHash`, `HashedAt` = when hashed or last verified, `CorruptAt` = when a re-read found other content with
   unchanged size and mtime; the walker clears all four when a file changes). Directories carry subtree aggregates
-  (`TotalSize`, `TotalAlloc`, `FileCount`, `DirCount`); files have `TotalSize = Size`, `FileCount = 1`.
+  (`TotalSize`, `TotalAlloc`, `FileCount`, `DirCount`); files have `TotalSize = Size`, `FileCount = 1`. `OtherFilesystem` marks a folder
+  where another filesystem is mounted that the walk listed but did not enter (cross-filesystem scanning off); `Error` marks folders with
+  an unreadable folder at or below them.
   - Subtree queries use the unique index `(RootId, RelPath)` with the range `RelPath >= 'p/' AND RelPath < 'p0'` (`'0'` follows `'/'`).
     Never use `LIKE 'p/%'` for this — it cannot use the index.
 - **DirSizeHistory** — `(ScanId, EntryId)` sizes of directories up to `HistoryDepth` after each full scan → growth view and pinned deltas.
@@ -45,9 +47,9 @@ SQLite (WAL) in /data/analyze.db
 - **ActionPlans** / **ActionItems** — every change to disk. Items remember what they expect (size, mtime, hash) and where things went (`UndoPath`).
 - **AiResults** (cache by content hash or path+size+mtime; unapplied rows = review queue), **AiRuleSuggestions**.
 - **Annotations** — integration labels per entry (`Source`, `Kind`, `Label`, `State`, `Url`). Integrations replace their own rows on each sync.
-- **PlexItems** — Plex media parts with the matched `EntryId`.
+- **PlexItems** — Plex media parts with the matched `EntryId` and `CheckedPath` (the Plex path after the path mappings: where ANalyze looked).
 - **IntegrationItems** — files/folders known to every `ItemIntegration` plugin (`Source`, `Kind`, `ExternalId`, `Title`, `GroupKey`/`GroupTitle`,
-  `ExternalPath`, `Size`, `IsDir`, `State`, `Detail`, `AddedAt`/`LastUsedAt`, `PlayCount`, `Url`, matched `EntryId` + `MatchedBy`). A plugin replaces
+  `ExternalPath`, `CheckedPath` (after the path mappings), `Size`, `IsDir`, `State`, `Detail`, `AddedAt`/`LastUsedAt`, `PlayCount`, `Url`, matched `EntryId` + `MatchedBy`). A plugin replaces
   its own rows on each sync.
 - **BackupFiles** — written by the `parent` integration (the parent is this instance's backup server): one row per local file and folder inside
   the backed-up folders (`State`: files synced/corrupt/missing/unsynced, folders synced/unsynced; `IsDir`, `EntryId`, `LocalRootId`/`LocalRelPath`,
@@ -66,9 +68,11 @@ One scan at a time (`ScanQueue` → `ScanWorker`, guarded by `JobLock` with plan
    inserts new rows, updates changed files (size/mtime/inode/type) and resets their detection and hashes, deletes vanished subtrees,
    and writes directory aggregates on the way back up. New files get `Kind`/`Mime` from the extension at insert (detection refines them).
    Directories with no known size (first scan) get running totals at every commit, from the walker's stack of open folders; rescans keep the
-   previous complete size until the folder is done. Symlinks are recorded, never followed; other filesystems below a root are listed
-   but not entered unless enabled (entries below such a folder left from an earlier scan are deleted). Unreadable directories keep their
-   previous contents. Writes are batched (5000 per transaction). A cancelled or failed scan ends with `RollupDirectories` (every folder of the
+   previous complete size until the folder is done. Symlinks are recorded, never followed; other filesystems below a root are entered
+   unless `CrossFilesystems` is off (default on); when off they are listed, flagged `OtherFilesystem` and logged (entries below such a
+   folder left from an earlier scan are deleted). Unreadable directories keep their previous contents and are logged. Writes are batched:
+   a commit every 5000 writes or 2 seconds, whichever comes first (the transaction also spans the disk I/O, so this bounds how long
+   other writers wait and how stale readers' view is — WAL readers never block). A cancelled or failed scan ends with `RollupDirectories` (every folder of the
    scanned roots recomputed from its children, deepest first).
    Subtree scans (`ScanRequest.SubPath`) start at the deepest existing directory, create missing directory entries (`EnsureDirChain`) and
    then recompute the ancestors (`RecomputeAncestors`).
@@ -86,7 +90,24 @@ One scan at a time (`ScanQueue` → `ScanWorker`, guarded by `JobLock` with plan
    `DELETE /files/{id}/corrupt` accepts the new content). Files whose size/mtime differ from the index are skipped (the next walk resets them).
 7. **History** snapshot (full scans), `PRAGMA optimize`.
 
-Progress is reported to `JobBoard` (kind `scan`), throttled, and pushed through SignalR (`progress` events). On completion `ScanService.Completed`
+Hash batches (`ContentHasher`, `DuplicateFinder`) are also stored once they hold 2 GB / 8 GB of files, so big files' hashes are saved as
+they come. Phase names (`walking`, `detecting`, `categorizing`, `hashing`, `duplicates`, `verifying`, `finishing`) are explained in the UI by
+`ClientApp/src/lib/phases.ts` — keep it in sync when adding a phase.
+
+Progress is reported to `JobBoard` (kind `scan`), throttled, and pushed through SignalR (`progress` events). The UI refetches what is on
+screen when a job changes phase and every 10 s while a scan runs; server caches (`Caches`) are dropped on phase changes too.
+
+## Activity log
+
+`ActivityLog` (Infrastructure) is an in-memory ring buffer of the last 20,000 lines (`LogLine`: id, time, level, source, message, detail) —
+not stored in the database; the Serilog files in `<DataDir>/logs` keep the history. `ActivityLogSink` (Web, a Serilog sink) copies every
+`ANalyze.*` log line plus warnings/errors from anything into it; the source is a `Source` log property (a logging scope, e.g.
+`IntegrationHost` sets `integration:<id>` around a sync) or else the namespace (`scan`, `integrations`, `actions`, `ai`, `preview`, `system`).
+`LogPusher` sends new lines to the UI as SignalR `logs` events (batched twice a second); `GET /api/v1/logs?before=&level=&source=&q=&limit=`
+pages back, newest first; `GET /logs/sources`. Page: `pages/Logs.tsx`.
+
+Verbosity: phases, per-top-level-folder results, a progress line about every 30 s, skipped/unreadable folders, and per-file problems up to
+50 per phase (`ScanContext.Problem`; the rest are counted) — never one line per file. Scanner classes log through `ScanContext.Log`. On completion `ScanService.Completed`
 fires: AI auto-classification and integration auto-sync subscribe to it.
 
 ## Actions
@@ -129,6 +150,14 @@ give the "this entry or anything inside it" condition. A plugin without `locate`
 
 To add one: new project `src/ANalyze.Integrations.<Name>` referencing `ANalyze.Integrations`, implement `IIntegration`, register with
 `services.AddIntegration<T>()` in `Program.cs`, add the project to the Dockerfile restore list and the solution, optionally add a UI page to the registry.
+
+Syncs record for every item where ANalyze looked (`PathMatcher.LocalPath`) and log a summary of the items not found with the reason
+(`PathMatcher.WhyNotFound`: outside every root, or inside an `OtherFilesystem` folder). The item endpoints return `checkedPath` and the found
+entry's full `localPath`.
+
+Host paths (display only): `AppSettings.HostPaths` (ANalyze path → host path) followed by every `IHostPathSource` (the Docker plugin's
+`DockerHostPaths`: ANalyze's own bind mounts), served at `GET /api/v1/host-paths`; the UI maps paths with `useToHostPath` / `<PathText>`.
+The desktop app does not use them (it sees host paths).
 
 `IIntegration.DockerHints` (image/name words) and `UrlField` let the Docker plugin find an app's container. `IntegrationPaths.ForAsync` returns the
 configured `mappings` followed by automatic ones from every `IPathMappingSource` (a configured mapping wins for the same prefix); failures there are
@@ -227,5 +256,6 @@ Platform notes: paths stay `/`-separated in `Entries.RelPath` on every OS; `Root
 Windows). Hard links remain Linux-only; elsewhere `Native` falls back to managed APIs (no inode/device, so duplicate identity uses row ids).
 
 CI (`.github/workflows/docker.yml`, job `desktop`): Linux x64+arm64 (AppImage, tar.gz), macOS x64+arm64 (dmg, zip, ad-hoc signed), Windows x64
-(NSIS installer, zip) on every non-PR build, uploaded as artifacts. Builds of `main` publish them as the GitHub release `v<VERSION>` (job `release`):
+(NSIS installer, zip) on every non-PR build, uploaded as artifacts named `ANalyze-*` (the release job downloads only those: the run also
+holds Docker's build record, which is not a zip). Builds of `main` publish them as the GitHub release `v<VERSION>` (job `release`):
 created with its tag when a new version first reaches main (notes = that version's `RELEASE_NOTES.md` section), files replaced by later builds of the same version.

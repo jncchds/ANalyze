@@ -8,6 +8,7 @@ import { EntryDrawer } from '../../components/EntryDrawer'
 import { PlanDialog } from '../../components/PlanDialog'
 import { Empty, ErrorBox, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../../components/ui'
 import { ago, bytes, count, date, pct } from '../../lib/format'
+import { PathText } from '../../components/PathText'
 import { useLocate } from '../../hooks/useLocate'
 
 type TitleType = 'movie' | 'show' | 'artist'
@@ -43,6 +44,8 @@ interface TitleFile {
   viewCount: number
   lastViewedAt?: number
   plexPath: string
+  checkedPath?: string
+  localPath?: string
   size: number
   resolution?: string
   entryId?: number
@@ -277,9 +280,12 @@ function TitleDialog({ type, row, onClose }: { type: TitleType; row: TitleRow; o
                   {f.title}
                   {f.resolution && <span className="ml-2 pill-muted">{f.resolution}</span>}
                 </div>
-                <div className="truncate text-xs muted" title={f.plexPath}>
-                  {f.relPath ?? <span className="text-danger">not found: {f.plexPath}</span>}
-                </div>
+                <PathText path={f.plexPath} label="Plex:" className="muted" />
+                {f.localPath ? (
+                  <PathText path={f.localPath} label="ANalyze:" className="muted" />
+                ) : (
+                  <PathText path={f.checkedPath ?? f.plexPath} label="Not found at" className="text-danger" />
+                )}
               </div>
               <span className="text-xs muted">{f.viewCount > 0 ? `✓ ${f.lastViewedAt ? ago(f.lastViewedAt) : 'watched'}` : 'unwatched'}</span>
               <span className="w-20 text-right tabular">{bytes(f.size)}</span>
@@ -326,7 +332,7 @@ function NotInPlex() {
 }
 
 function Unmatched() {
-  const q = useQuery({ queryKey: ['plex-unmatched'], queryFn: () => api<{ section: string; title: string; show?: string; plexPath: string; size: number }[]>('/integrations/plex/unmatched') })
+  const q = useQuery({ queryKey: ['plex-unmatched'], queryFn: () => api<{ section: string; title: string; show?: string; plexPath: string; size: number; checkedPath?: string }[]>('/integrations/plex/unmatched') })
   if (q.isLoading) return <Loading />
   if (!q.data?.length) return <Empty>Every Plex file was found on disk.</Empty>
   return (
@@ -339,7 +345,8 @@ function Unmatched() {
           <div key={f.plexPath} className="flex items-center gap-3 px-3 py-1.5 text-sm">
             <div className="min-w-0 flex-1">
               <div className="truncate">{f.show ? `${f.show} · ${f.title}` : f.title}</div>
-              <div className="truncate font-mono text-xs muted">{f.plexPath}</div>
+              <PathText path={f.plexPath} label="Plex:" className="muted" />
+              <PathText path={f.checkedPath ?? f.plexPath} label="Looked for at" className="muted" />
             </div>
             <span className="text-xs muted">{f.section}</span>
             <span className="w-20 text-right tabular">{bytes(f.size)}</span>

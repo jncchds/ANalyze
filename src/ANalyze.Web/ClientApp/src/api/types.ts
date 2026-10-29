@@ -37,6 +37,26 @@ export interface Entry {
   corruptAt?: number
   nLink: number
   error: boolean
+  /** Folder on another filesystem that the scan listed but did not enter. */
+  otherFilesystem?: boolean
+}
+
+export type LogLevel = 'debug' | 'information' | 'warning' | 'error'
+
+export interface LogLine {
+  id: number
+  at: string
+  level: LogLevel
+  /** scan, integration:<id>, integrations, actions, ai, preview, system */
+  source: string
+  message: string
+  detail?: string
+}
+
+/** A folder as ANalyze sees it and the same folder on the host machine. */
+export interface HostPath {
+  path: string
+  host: string
 }
 
 export interface Annotation {

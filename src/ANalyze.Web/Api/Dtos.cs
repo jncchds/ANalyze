@@ -27,12 +27,13 @@ public sealed record EntryDto(
     int NLink,
     bool Error,
     long? HashedAt = null,
-    long? CorruptAt = null)
+    long? CorruptAt = null,
+    bool OtherFilesystem = false)
 {
     public static EntryDto From(Entry e) => new(
         e.Id, e.RootId, e.ParentId, e.Name, e.RelPath, e.IsDir, e.IsSymlink, e.BrokenLink,
         e.IsDir ? e.TotalSize : e.Size, e.IsDir ? e.TotalAlloc : e.AllocSize, e.FileCount, e.DirCount,
-        e.MTime, e.ATime, KindOf(e), e.Mime ?? (e.Detected ? null : ANalyze.Scanner.FileTypes.FromExtension(e.Ext)?.Mime), e.Ext, e.CategoryId, e.CategorySource, SplitTags(e.Tags), e.FullHash, e.NLink, e.Error, e.HashedAt, e.CorruptAt);
+        e.MTime, e.ATime, KindOf(e), e.Mime ?? (e.Detected ? null : ANalyze.Scanner.FileTypes.FromExtension(e.Ext)?.Mime), e.Ext, e.CategoryId, e.CategorySource, SplitTags(e.Tags), e.FullHash, e.NLink, e.Error, e.HashedAt, e.CorruptAt, e.OtherFilesystem);
 
     /// <summary>Files not yet through detection (scan still running or stopped early) get their type from the extension.</summary>
     private static FileKind KindOf(Entry e) =>

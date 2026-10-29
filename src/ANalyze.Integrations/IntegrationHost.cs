@@ -143,6 +143,9 @@ public sealed class IntegrationHost(
         {
             var started = DateTimeOffset.UtcNow;
             var kind = "integration:" + id;
+            // Lines logged during the sync are filed under this integration in the activity log.
+            using var scope = log.BeginScope(new Dictionary<string, object> { ["Source"] = kind });
+            log.LogInformation("{Integration} sync started", integration.Name);
             IntegrationSyncResult result;
             try
             {
@@ -158,6 +161,11 @@ public sealed class IntegrationHost(
             {
                 log.LogWarning(e, "{Integration} sync failed", integration.Name);
                 result = new IntegrationSyncResult(false, e.Message);
+            }
+
+            if (result.Ok)
+            {
+                log.LogInformation("{Integration} sync finished in {Seconds:0.#} s: {Message}", integration.Name, (DateTimeOffset.UtcNow - started).TotalSeconds, result.Message);
             }
 
             _status[id] = new IntegrationStatus(false, DateTimeOffset.UtcNow, result);

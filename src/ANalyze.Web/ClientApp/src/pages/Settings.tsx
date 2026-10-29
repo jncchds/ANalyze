@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
-import { useConfig, useRoots } from '../api/hooks'
+import { useConfig, useHostPaths, useRoots } from '../api/hooks'
+import type { HostPath } from '../api/types'
+import { PathText } from '../components/PathText'
 import { ErrorBox, Field, Loading, PageTitle, Section, Toggle } from '../components/ui'
 import { desktop } from '../lib/desktop'
 import { ago, bytes, dateTime, duration } from '../lib/format'
@@ -38,6 +40,7 @@ interface AppSettings {
   verifyHashBeforeDelete: boolean
   historyDepth: number
   pinnedFolders: number[]
+  hostPaths: HostPath[]
   ai: AiSettings
 }
 
@@ -81,6 +84,7 @@ export default function Settings() {
       setDirty(false)
       qc.invalidateQueries({ queryKey: ['config'] })
       qc.invalidateQueries({ queryKey: ['ai-status'] })
+      qc.invalidateQueries({ queryKey: ['host-paths'] })
     },
   })
   const test = useMutation({ mutationFn: () => api<{ ok: boolean; reply?: string; milliseconds: number; error?: string }>('/ai/test', { method: 'POST', json: s?.ai }) })
@@ -132,7 +136,7 @@ export default function Settings() {
             {roots.data?.map((r) => (
               <li key={r.id} className="flex items-center gap-2">
                 <span>{r.missing ? '⚠️' : r.readOnly ? '🔒' : '💾'}</span>
-                <span className="min-w-0 flex-1 truncate font-mono text-xs">{r.path}</span>
+                <PathText path={r.path} className="flex-1" />
                 <span className="text-xs muted">{r.missing ? 'not mounted' : r.readOnly ? 'read-only' : 'read-write'}</span>
                 <span className="text-xs muted">{r.lastScanAt ? `scanned ${ago(r.lastScanAt)}` : 'never scanned'}</span>
                 {desktop && (
@@ -162,7 +166,12 @@ export default function Settings() {
               </div>
             </Field>
             <Toggle checked={s.scanOnStartup} onChange={(v) => set({ scanOnStartup: v })} label="Scan when the container starts" />
-            <Toggle checked={s.crossFilesystems} onChange={(v) => set({ crossFilesystems: v })} label="Descend into other filesystems mounted inside a root" />
+            <Toggle
+              checked={s.crossFilesystems}
+              onChange={(v) => set({ crossFilesystems: v })}
+              label="Descend into other filesystems mounted inside a root"
+              hint="Separate disks, shares, ZFS datasets and btrfs subvolumes below a root. When off they are listed but look empty, and integrations cannot find files in them."
+            />
             <Toggle checked={s.sniffUnknownFiles} onChange={(v) => set({ sniffUnknownFiles: v })} label="Read file headers to detect unknown types" hint="One small read per file with an unknown extension" />
             <Field label="Ignore (one glob per line)" hint="Without '/' a pattern matches a name anywhere (e.g. .snapshot); with '/' it matches the path from the root (e.g. Media/Cache/**).">
               <textarea className="input font-mono" rows={4} value={s.ignorePatterns.join('\n')} onChange={(e) => set({ ignorePatterns: e.target.value.split('\n') })} />
@@ -172,6 +181,8 @@ export default function Settings() {
             </Field>
           </div>
         </Section>
+
+        {!desktop && <HostPathsSection value={s.hostPaths ?? []} onChange={(hostPaths) => set({ hostPaths })} />}
 
         <Section title="Duplicates & safety">
           <div className="space-y-3">
@@ -304,5 +315,46 @@ export default function Settings() {
         </Section>
       </div>
     </>
+  )
+}
+
+/** Where the folders ANalyze sees are on the host machine: display only (integration pages, file details, roots). */
+function HostPathsSection({ value, onChange }: { value: HostPath[]; onChange: (v: HostPath[]) => void }) {
+  const auto = useHostPaths().data?.auto ?? []
+  const update = (i: number, patch: Partial<HostPath>) => onChange(value.map((h, j) => (j === i ? { ...h, ...patch } : h)))
+  return (
+    <Section title="Host paths">
+      <p className="mb-3 text-xs muted">
+        Where the folders ANalyze sees are on the host, e.g. <span className="font-mono">/library</span> → <span className="font-mono">/mnt/media</span>. Only for
+        display: paths are shown with their host path too. With the Docker integration on, ANalyze's own mounts are used automatically.
+      </p>
+      <div className="space-y-2">
+        {value.map((h, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <input className="input font-mono" value={h.path} onChange={(e) => update(i, { path: e.target.value })} placeholder="/library" aria-label="Path in ANalyze" />
+            <span className="muted">→</span>
+            <input className="input font-mono" value={h.host} onChange={(e) => update(i, { host: e.target.value })} placeholder="/mnt/media" aria-label="Path on the host" />
+            <button className="btn-ghost px-2 py-1 text-xs" onClick={() => onChange(value.filter((_, j) => j !== i))} aria-label="Remove">
+              ✕
+            </button>
+          </div>
+        ))}
+        <button className="btn-secondary px-2 py-1 text-xs" onClick={() => onChange([...value, { path: '', host: '' }])}>
+          Add host path
+        </button>
+      </div>
+      {auto.length > 0 && (
+        <div className="mt-3 text-xs">
+          <div className="muted">From Docker (ANalyze's own mounts):</div>
+          <ul className="mt-1 space-y-0.5 font-mono">
+            {auto.map((a) => (
+              <li key={a.path}>
+                {a.path} <span className="muted">→</span> {a.host}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Section>
   )
 }

@@ -1,7 +1,7 @@
 {
   "name": "analyze-desktop",
   "productName": "ANalyze",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "ANalyze by CHDS — storage analysis and cleanup, as a desktop app",
   "author": "CHDS",
   "license": "SEE LICENSE IN ../LICENSE",

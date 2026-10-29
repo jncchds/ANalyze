@@ -5,6 +5,7 @@ import clsx from 'clsx'
 import { api } from '../../api/client'
 import { BarList } from '../../components/charts'
 import { EntryDrawer } from '../../components/EntryDrawer'
+import { PathText } from '../../components/PathText'
 import { Empty, ErrorBox, Loading, PageTitle, Section, ShareBar, Stat, Tabs } from '../../components/ui'
 import { useLocate } from '../../hooks/useLocate'
 import { ago, bytes, count, pct } from '../../lib/format'
@@ -176,6 +177,7 @@ export default function BackupPage() {
                 <div className="font-mono text-xs">
                   {t.localPath} <span className="muted">→</span> {snap.parentName}:{t.parentPath}
                 </div>
+                <PathText path={t.localPath} label="ANalyze checks" className="muted" />
                 {t.entryId ? (
                   <Link to={`/browse/${t.entryId}`} className="link text-xs">
                     Open in Browse

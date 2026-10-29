@@ -1,5 +1,7 @@
 using ANalyze.Infrastructure.Roots;
+using ANalyze.Infrastructure.Logging;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Scanner;
 
@@ -11,6 +13,9 @@ namespace ANalyze.Scanner;
 internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection write, ScanContext ctx, IReadOnlyDictionary<int, string> rootPaths, long minSize, int threads)
 {
     private const int BatchFiles = 400;
+
+    /// <summary>A batch is also stored once its files hold this much data.</summary>
+    private const long BatchBytes = 8L << 30;
 
     /// <summary>Hard links share one identity; on platforms without inodes every file is its own identity.</summary>
     internal const string IdentitySql = "CASE WHEN Inode = 0 THEN 'i' || Id ELSE Dev || ':' || Inode END";
@@ -32,10 +37,9 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
         public bool Failed;
     }
 
-    public async Task RunAsync()
+    /// <summary>Hashes the candidates; returns the number of sets of identical files (all roots).</summary>
+    public async Task<long> RunAsync()
     {
-        ctx.Phase = "hashing";
-        ctx.Done = 0;
         ctx.HashedBytes = 0;
         using (var c = read.CreateCommand())
         {
@@ -43,11 +47,12 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
             c.Parameters.AddWithValue("$min", minSize);
             using var r = c.ExecuteReader();
             r.Read();
-            ctx.Total = r.GetInt64(0);
-            ctx.TotalBytes = r.GetInt64(1);
+            ctx.StartPhase("duplicates", r.GetInt64(0), r.GetInt64(1));
         }
 
-        ctx.Report(force: true);
+        ctx.Log.LogInformation(
+            "Finding duplicates: {Count} files ({Size}) share their size with another file and have no hash yet; a quick hash of 3×64 KB comes first, the full hash only when that matches",
+            ctx.Total, Format.Bytes(ctx.TotalBytes));
 
         using var q = read.CreateCommand();
         q.CommandText = $"""
@@ -59,6 +64,7 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
 
         var batch = new List<List<Row>>();
         var batchCount = 0;
+        long batchBytes = 0;
         List<Row>? group = null;
         using (var r = q.ExecuteReader())
         {
@@ -81,11 +87,17 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
                     {
                         batch.Add(group);
                         batchCount += group.Count;
-                        if (batchCount >= BatchFiles)
+                        batchBytes += group.Count * group[0].Size;
+                        if (batchCount >= BatchFiles || batchBytes >= BatchBytes)
                         {
                             await ProcessAsync(batch);
                             batch.Clear();
                             batchCount = 0;
+                            batchBytes = 0;
+                            if (ctx.ProgressLineDue())
+                            {
+                                ctx.Log.LogInformation("Finding duplicates: {Done} of {Total} files hashed, {Bytes} read", ctx.Done, ctx.Total, Format.Bytes(ctx.HashedBytes));
+                            }
                         }
                     }
 
@@ -105,6 +117,18 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
         {
             await ProcessAsync(batch);
         }
+
+        if (ctx.UnloggedProblems > 0)
+        {
+            ctx.Log.LogWarning("{Count} more files could not be read", ctx.UnloggedProblems);
+        }
+
+        using var groups = read.CreateCommand();
+        groups.CommandText = $"""
+            SELECT COUNT(*) FROM (SELECT FullHash FROM Entries WHERE FullHash IS NOT NULL AND IsDir = 0 AND IsSymlink = 0
+            GROUP BY FullHash HAVING COUNT(DISTINCT {IdentitySql}) > 1)
+            """;
+        return (long)groups.ExecuteScalar()!;
     }
 
     private async Task ProcessAsync(List<List<Row>> groups)
@@ -195,6 +219,7 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
             {
                 row.Failed = true;
                 Interlocked.Increment(ref ctx.Errors);
+                ctx.Problem("Cannot read {Path}: {Error}", path, e.Message);
             }
 
             ctx.Report();

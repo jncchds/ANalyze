@@ -1,7 +1,10 @@
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 using ANalyze.Infrastructure;
 using ANalyze.Infrastructure.Roots;
 using Microsoft.Data.Sqlite;
+using ANalyze.Infrastructure.Logging;
+using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Scanner;
 
@@ -13,6 +16,11 @@ namespace ANalyze.Scanner;
 internal sealed class Walker : IDisposable
 {
     private const int CommitEvery = 5000;
+
+    /// <summary>Commit at least this often, so the UI and integrations see the walk's results while it runs.</summary>
+    private static readonly TimeSpan CommitAfter = TimeSpan.FromSeconds(2);
+
+    private readonly Stopwatch _sinceCommit = Stopwatch.StartNew();
 
     private readonly SqliteConnection _db;
     private readonly ScanContext _ctx;
@@ -31,6 +39,12 @@ internal sealed class Walker : IDisposable
     private readonly SqliteCommand _deleteOne;
     private readonly SqliteCommand _deleteTree;
     private readonly SqliteCommand _updatePartial;
+    private readonly SqliteCommand _setOtherFs;
+
+    /// <summary>Folders on another filesystem that were not entered, and unreadable folders (for the end-of-walk summary).</summary>
+    public List<string> SkippedMounts { get; } = [];
+
+    public List<string> Unreadable { get; } = [];
 
     /// <summary>Directories being walked, outermost first (for running totals while a scan is in progress).</summary>
     private readonly List<Frame> _frames = [];
@@ -55,7 +69,7 @@ internal sealed class Walker : IDisposable
         _ignore = ignore;
         _tx = db.BeginTransaction();
 
-        _selChildren = Cmd("SELECT Id, Name, IsDir, IsSymlink, Size, MTime, Inode, ATime, TotalSize, TotalAlloc, FileCount, DirCount FROM Entries WHERE ParentId = $p",
+        _selChildren = Cmd("SELECT Id, Name, IsDir, IsSymlink, Size, MTime, Inode, ATime, TotalSize, TotalAlloc, FileCount, DirCount, OtherFilesystem FROM Entries WHERE ParentId = $p",
             "$p");
         _insert = Cmd("""
             INSERT INTO Entries (RootId, ParentId, Name, RelPath, Depth, IsDir, IsSymlink, LinkTarget, BrokenLink, Size, AllocSize, MTime, ATime, CTime,
@@ -80,11 +94,12 @@ internal sealed class Walker : IDisposable
         _deleteTree = Cmd("DELETE FROM Entries WHERE RootId=$root AND RelPath >= $from AND RelPath < $to", "$root", "$from", "$to");
         _updatePartial = Cmd("UPDATE Entries SET TotalSize=$size, TotalAlloc=$alloc, FileCount=$files, DirCount=$dirs WHERE Id=$id",
             "$size", "$alloc", "$files", "$dirs", "$id");
+        _setOtherFs = Cmd("UPDATE Entries SET OtherFilesystem=$v WHERE Id=$id", "$v", "$id");
     }
 
     public readonly record struct Agg(long Size, long Alloc, long Files, long Dirs, bool Error);
 
-    private readonly record struct Existing(long Id, bool IsDir, bool IsSymlink, long Size, long MTime, long Inode, long ATime, Agg Agg);
+    private readonly record struct Existing(long Id, bool IsDir, bool IsSymlink, long Size, long MTime, long Inode, long ATime, Agg Agg, bool OtherFs);
 
     /// <summary>Creates the root directory entry if needed; returns its id.</summary>
     public long EnsureRootEntry(FileStat st)
@@ -163,6 +178,16 @@ internal sealed class Walker : IDisposable
         _ctx.DirsSeen++;
         _ctx.Current = relPath.Length == 0 ? "/" : relPath;
         _ctx.Report();
+        if (_sinceCommit.Elapsed > CommitAfter)
+        {
+            Commit();
+        }
+
+        if (_ctx.ProgressLineDue())
+        {
+            _ctx.Log.LogInformation("Walking {Root}: {Dirs} folders and {Files} files ({Size}) so far; now in /{Path}",
+                _rootPath, _ctx.DirsSeen, _ctx.FilesSeen, Format.Bytes(_ctx.BytesSeen), relPath);
+        }
 
         var existing = LoadChildren(dirId);
         IEnumerable<string> names;
@@ -180,6 +205,9 @@ internal sealed class Walker : IDisposable
         {
             // Unreadable directory: keep what we knew about it instead of deleting its contents.
             _ctx.Errors++;
+            Unreadable.Add(relPath);
+            _ctx.Problem("Cannot read folder {Path}: {Error}. Its contents from the last scan are kept ({Count} entries).",
+                RootRegistry.Combine(_rootPath, relPath), e.Message, existing.Count);
             var kept = new Agg(0, 0, 0, 0, true);
             foreach (var c in existing.Values)
             {
@@ -238,10 +266,29 @@ internal sealed class Walker : IDisposable
                     {
                         DeleteBelow(childRel);
                     }
+
+                    SkippedMounts.Add(childRel);
+                    _ctx.Problem("Not entering {Path}: another filesystem is mounted there (a separate disk, share, dataset or subvolume). " +
+                        "It shows as an empty folder; turn on \"Descend into other filesystems mounted inside a root\" in Settings to scan it.", childFull);
+                    if (!hadOld || !old.OtherFs)
+                    {
+                        SetOtherFs(id, true);
+                    }
                 }
                 else
                 {
+                    if (hadOld && old.OtherFs)
+                    {
+                        SetOtherFs(id, false);
+                    }
+
+                    var started = depth == 0 ? Stopwatch.GetTimestamp() : 0;
                     sub = Walk(id, childFull, childRel, depth + 1, rootDev, fresh: !hadOld || old.Agg.Files == 0);
+                    if (depth == 0)
+                    {
+                        _ctx.Log.LogInformation("Walked {Path}: {Files} files in {Dirs} folders, {Size} ({Seconds:0.#} s)",
+                            childFull, sub.Files, sub.Dirs, Format.Bytes(sub.Size), Stopwatch.GetElapsedTime(started).TotalSeconds);
+                    }
                 }
 
                 if (!hadOld || old.Agg != sub || old.MTime != st.MTime)
@@ -330,7 +377,7 @@ internal sealed class Walker : IDisposable
         {
             d[r.GetString(1)] = new Existing(
                 r.GetInt64(0), r.GetBoolean(2), r.GetBoolean(3), r.GetInt64(4), r.GetInt64(5), r.GetInt64(6), r.GetInt64(7),
-                new Agg(r.GetInt64(8), r.GetInt64(9), r.GetInt64(10), r.GetInt64(11), false));
+                new Agg(r.GetInt64(8), r.GetInt64(9), r.GetInt64(10), r.GetInt64(11), false), r.GetBoolean(12));
         }
 
         return d;
@@ -409,6 +456,13 @@ internal sealed class Walker : IDisposable
         Exec(_updateDir);
     }
 
+    private void SetOtherFs(long id, bool value)
+    {
+        _setOtherFs.Parameters["$v"].Value = value;
+        _setOtherFs.Parameters["$id"].Value = id;
+        Exec(_setOtherFs);
+    }
+
     private void DeleteOne(long id)
     {
         _deleteOne.Parameters["$id"].Value = id;
@@ -440,7 +494,7 @@ internal sealed class Walker : IDisposable
 
     private void Tick()
     {
-        if (++_pending >= CommitEvery)
+        if (++_pending >= CommitEvery || _sinceCommit.Elapsed > CommitAfter)
         {
             Commit();
         }
@@ -452,12 +506,13 @@ internal sealed class Walker : IDisposable
         _tx.Commit();
         _tx.Dispose();
         _tx = _db.BeginTransaction();
-        foreach (var c in new[] { _selChildren, _insert, _updateFile, _updateATime, _updateDir, _deleteOne, _deleteTree, _updatePartial })
+        foreach (var c in new[] { _selChildren, _insert, _updateFile, _updateATime, _updateDir, _deleteOne, _deleteTree, _updatePartial, _setOtherFs })
         {
             c.Transaction = _tx;
         }
 
         _pending = 0;
+        _sinceCommit.Restart();
     }
 
     /// <summary>
@@ -503,7 +558,7 @@ internal sealed class Walker : IDisposable
     {
         _tx.Commit();
         _tx.Dispose();
-        foreach (var c in new[] { _selChildren, _insert, _updateFile, _updateATime, _updateDir, _deleteOne, _deleteTree, _updatePartial })
+        foreach (var c in new[] { _selChildren, _insert, _updateFile, _updateATime, _updateDir, _deleteOne, _deleteTree, _updatePartial, _setOtherFs })
         {
             c.Dispose();
         }

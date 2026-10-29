@@ -13,8 +13,11 @@ public sealed record AppSettings
     /// <summary>Globs matched against the path relative to the root (and the bare name when the glob has no '/').</summary>
     public List<string> IgnorePatterns { get; init; } = [];
 
-    /// <summary>Descend into other filesystems mounted below a root.</summary>
-    public bool CrossFilesystems { get; init; }
+    /// <summary>
+    /// Descend into other filesystems mounted below a root. On by default: in Docker every disk, dataset or subvolume below the library
+    /// is another filesystem, and skipping them leaves folders that look empty.
+    /// </summary>
+    public bool CrossFilesystems { get; init; } = true;
 
     /// <summary>Read the first bytes of files whose extension is unknown to detect their type.</summary>
     public bool SniffUnknownFiles { get; init; } = true;
@@ -46,7 +49,22 @@ public sealed record AppSettings
     /// <summary>Folders pinned to the sidebar, as entry ids.</summary>
     public List<long> PinnedFolders { get; init; } = [];
 
+    /// <summary>
+    /// Where folders ANalyze sees are on the host (Docker bind mounts), for display only: "/library" → "/mnt/media".
+    /// Mounts read from Docker fill the gaps.
+    /// </summary>
+    public List<HostPath> HostPaths { get; init; } = [];
+
     public AiSettings Ai { get; init; } = new();
+}
+
+/// <summary>A folder as ANalyze sees it (<see cref="Path"/>) and the same folder on the host machine.</summary>
+public sealed record HostPath(string Path, string Host);
+
+/// <summary>Host paths found automatically (the Docker integration reads ANalyze's own container mounts).</summary>
+public interface IHostPathSource
+{
+    Task<IReadOnlyList<HostPath>> GetAsync(CancellationToken ct);
 }
 
 public sealed record AiSettings

@@ -249,3 +249,52 @@ public class ReleaseNotesTests
     [Fact]
     public void Embedded_file_is_present() => Assert.NotEmpty(ANalyze.Web.Infrastructure.ReleaseNotes.All);
 }
+
+public class ActivityLogTests
+{
+    [Fact]
+    public void Query_filters_newest_first_and_pages_back()
+    {
+        var log = new ANalyze.Infrastructure.Logging.ActivityLog(TimeProvider.System);
+        log.Write(LogSeverity.Information, "scan", "Walking /library");
+        log.Write(LogSeverity.Warning, "scan", "Not entering /library/disk2");
+        log.Write(LogSeverity.Information, "integration:plex", "Plex sync started");
+        log.Write(LogSeverity.Debug, "system", "noise");
+
+        var all = log.Query(null, LogSeverity.Debug, null, null, 10);
+        Assert.Equal(["noise", "Plex sync started", "Not entering /library/disk2", "Walking /library"], all.Select(l => l.Message));
+        Assert.Equal(["Not entering /library/disk2"], log.Query(null, LogSeverity.Warning, null, null, 10).Select(l => l.Message));
+        Assert.Equal(["Plex sync started"], log.Query(null, LogSeverity.Debug, "integration", null, 10).Select(l => l.Message));
+        Assert.Equal(["Walking /library"], log.Query(all[1].Id, LogSeverity.Information, "scan", "walking", 10).Select(l => l.Message));
+    }
+
+    [Fact]
+    public void Keeps_only_the_newest_lines()
+    {
+        var log = new ANalyze.Infrastructure.Logging.ActivityLog(TimeProvider.System);
+        for (var i = 0; i < ANalyze.Infrastructure.Logging.ActivityLog.Capacity + 5; i++)
+        {
+            log.Write(LogSeverity.Information, "scan", "line " + i);
+        }
+
+        var lines = log.Query(null, LogSeverity.Debug, null, null, int.MaxValue);
+        Assert.Equal(ANalyze.Infrastructure.Logging.ActivityLog.Capacity, lines.Count);
+        Assert.Equal("line 5", lines[^1].Message);
+    }
+
+    [Fact]
+    public void Sink_maps_namespaces_to_areas()
+    {
+        Assert.Equal("scan", ANalyze.Web.Infrastructure.ActivityLogSink.SourceOf("ANalyze.Scanner.ScanService"));
+        Assert.Equal("integrations", ANalyze.Web.Infrastructure.ActivityLogSink.SourceOf("ANalyze.Integrations.Arr.RadarrIntegration"));
+        Assert.Equal("system", ANalyze.Web.Infrastructure.ActivityLogSink.SourceOf("Microsoft.Hosting.Lifetime"));
+    }
+
+    [Fact]
+    public void Formats_sizes_for_log_lines()
+    {
+        Assert.Equal("512 B", ANalyze.Infrastructure.Logging.Format.Bytes(512));
+        Assert.Equal("1.5 KB", ANalyze.Infrastructure.Logging.Format.Bytes(1536));
+        Assert.Equal("10 GB", ANalyze.Infrastructure.Logging.Format.Bytes(10L << 30));
+    }
+}

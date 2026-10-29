@@ -2,6 +2,7 @@ using ANalyze.Domain;
 using ANalyze.Infrastructure;
 using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Jobs;
+using ANalyze.Infrastructure.Logging;
 using ANalyze.Infrastructure.Roots;
 using ANalyze.Infrastructure.Settings;
 using Microsoft.Data.Sqlite;
@@ -40,8 +41,16 @@ public sealed class ScanService(
             await db.SaveChangesAsync(ct);
         }
 
-        var ctx = new ScanContext(board, run.Id, title ?? "Scan", run.StartedAt, ct);
+        var ctx = new ScanContext(board, run.Id, title ?? "Scan", run.StartedAt, ct, log);
         ctx.Report(force: true);
+        log.LogInformation("Scan {Id} started: {Title}{Reason}. Roots: {Roots}", run.Id, title ?? "Scan",
+            req.Reason is null ? "" : $" ({req.Reason})", string.Join(", ", targets.Select(t => t.Path)));
+        foreach (var missing in roots.All.Where(r => r.Missing && (req.RootId is null || r.Id == req.RootId)))
+        {
+            log.LogWarning("Root {Path} is not mounted (or not readable); it is skipped", missing.Path);
+        }
+
+        var phaseClock = System.Diagnostics.Stopwatch.StartNew();
         var status = ScanStatus.Completed;
         string? message = null;
         try
@@ -53,19 +62,24 @@ public sealed class ScanService(
                 WalkRoot(conn, ctx, root, req.SubPath, s);
             }
 
+            log.LogInformation("Walk finished in {Time}: {Files} files in {Dirs} folders ({Size}); {Added} new, {Changed} changed, {Removed} removed, {Errors} errors",
+                Format.Duration(phaseClock.Elapsed), ctx.FilesSeen, ctx.DirsSeen, Format.Bytes(ctx.BytesSeen), ctx.Added, ctx.Changed, ctx.Removed, ctx.Errors);
+
             var scope = targets.Count == 1 ? new Scope(targets[0].Id, req.SubPath) : Scope.Everything;
+            phaseClock.Restart();
             Detector.Run(conn, ctx, rootPaths, scope, s.SniffUnknownFiles);
 
-            ctx.Phase = "categorizing";
-            ctx.Done = 0;
-            ctx.Report(force: true);
+            phaseClock.Restart();
+            ctx.StartPhase("categorizing");
             var engine = await categorizer.LoadEngineAsync(ct);
+            log.LogInformation("Categorizing: applying {Rules} rules to the files in scope", engine.Count);
             ctx.Categorized = Categorizer.Run(conn, engine, scope, (done, total) =>
             {
                 ctx.Done = done;
                 ctx.Total = total;
                 ctx.Report();
             }, ct);
+            log.LogInformation("Categorizing finished in {Time}: {Changed} files got another category or tags", Format.Duration(phaseClock.Elapsed), ctx.Categorized);
 
             if (!req.SkipHashing && (s.HashAllFiles || s.FindDuplicates || s.VerifyAfterDays > 0))
             {
@@ -73,19 +87,26 @@ public sealed class ScanService(
                 var hasher = new ContentHasher(conn, write, ctx, rootPaths, s.HashThreads);
                 if (s.HashAllFiles)
                 {
+                    phaseClock.Restart();
+                    var before = ctx.Hashed;
                     await hasher.HashMissingAsync();
+                    log.LogInformation("Hashing finished in {Time}: {Count} files hashed", Format.Duration(phaseClock.Elapsed), ctx.Hashed - before);
                 }
 
                 if (s.FindDuplicates)
                 {
-                    await new DuplicateFinder(conn, write, ctx, rootPaths, Math.Max(1, s.MinDuplicateSize), s.HashThreads).RunAsync();
+                    phaseClock.Restart();
+                    var groups = await new DuplicateFinder(conn, write, ctx, rootPaths, Math.Max(1, s.MinDuplicateSize), s.HashThreads).RunAsync();
+                    log.LogInformation("Duplicate search finished in {Time}: {Groups} sets of identical files", Format.Duration(phaseClock.Elapsed), groups);
                 }
 
                 // Verification re-reads a lot of data: only during full scans.
                 if (s.VerifyAfterDays > 0 && full)
                 {
                     var cutoff = DateTimeOffset.UtcNow.AddDays(-s.VerifyAfterDays).ToUnixTimeSeconds();
+                    phaseClock.Restart();
                     var changed = await hasher.VerifyAsync(cutoff, Math.Max(0, s.VerifyMaxGb) * (1L << 30));
+                    log.LogInformation("Verification finished in {Time}: {Files} files re-read", Format.Duration(phaseClock.Elapsed), ctx.Done);
                     if (changed > 0)
                     {
                         log.LogWarning("Scan {Id}: {Count} files changed content without a new size or modification time (possible corruption)", run.Id, changed);
@@ -93,8 +114,13 @@ public sealed class ScanService(
                 }
             }
 
-            ctx.Phase = "finishing";
-            ctx.Report(force: true);
+            else if (req.SkipHashing)
+            {
+                log.LogInformation("Hashing skipped for this scan");
+            }
+
+            ctx.StartPhase("finishing");
+            log.LogInformation("Finishing: saving folder size history and optimizing the database");
             if (full)
             {
                 foreach (var root in targets)
@@ -122,6 +148,7 @@ public sealed class ScanService(
             // A walk that stopped half-way leaves the folders above the last finished one with old or running totals.
             try
             {
+                log.LogInformation("Recomputing folder sizes after the {Status} scan", status.ToString().ToLowerInvariant());
                 using var conn = sqlite.Open();
                 foreach (var root in targets)
                 {
@@ -181,9 +208,11 @@ public sealed class ScanService(
         var rootStat = Native.LStat(root.Path);
         if (!rootStat.Exists)
         {
+            ctx.Log.LogWarning("Root {Path} does not exist; skipped", root.Path);
             return;
         }
 
+        ctx.Log.LogInformation("Walking {Path}{Sub}: listing every folder and comparing it with the index", root.Path, string.IsNullOrEmpty(subPath) ? "" : "/" + subPath.Trim('/'));
         using var walker = new Walker(conn, ctx, root.Id, root.Path, s.CrossFilesystems, new IgnoreMatcher(s.IgnorePatterns));
         var rootEntryId = walker.EnsureRootEntry(rootStat);
         walker.Commit();
@@ -230,6 +259,18 @@ public sealed class ScanService(
         if (startRel.Length > 0)
         {
             RecomputeAncestors(conn, startId);
+        }
+
+        if (walker.SkippedMounts.Count > 0)
+        {
+            ctx.Log.LogWarning("{Root}: {Count} folders are other filesystems and were not entered, so they look empty: {Paths}", root.Path,
+                walker.SkippedMounts.Count, string.Join(", ", walker.SkippedMounts.Take(20)) + (walker.SkippedMounts.Count > 20 ? ", …" : ""));
+        }
+
+        if (walker.Unreadable.Count > 0)
+        {
+            ctx.Log.LogWarning("{Root}: {Count} folders could not be read: {Paths}", root.Path,
+                walker.Unreadable.Count, string.Join(", ", walker.Unreadable.Take(20)) + (walker.Unreadable.Count > 20 ? ", …" : ""));
         }
     }
 

@@ -125,3 +125,12 @@ public enum AiPrivacy
     /// <summary>Also the first few KB of text files.</summary>
     TextSnippet,
 }
+
+/// <summary>Activity log levels (same order as Microsoft.Extensions.Logging).</summary>
+public enum LogSeverity
+{
+    Debug = 1,
+    Information = 2,
+    Warning = 3,
+    Error = 4,
+}

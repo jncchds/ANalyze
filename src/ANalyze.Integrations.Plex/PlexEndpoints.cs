@@ -1,3 +1,4 @@
+using ANalyze.Infrastructure.Roots;
 using ANalyze.Domain;
 using ANalyze.Infrastructure.Data;
 using ANalyze.Integrations.Items;
@@ -111,13 +112,13 @@ internal static class PlexEndpoints
         });
 
         // Files of one title: versions of a movie, episodes of a show, tracks of an artist.
-        g.MapGet("/title", (string type, string key, SqliteSetup sqlite) =>
+        g.MapGet("/title", (string type, string key, SqliteSetup sqlite, RootRegistry roots) =>
         {
             using var c = sqlite.Open();
             var where = type == "movie" ? "p.RatingKey = $key" : "p.SectionKey || ':' || p.ShowTitle = $key";
             return Query(c, $"""
                 SELECT p.Id, p.Title, p.ParentTitle, p.Season, p.Episode, p.ViewCount, p.LastViewedAt, p.AddedAt, p.PlexPath, COALESCE(e.Size, p.Size),
-                       p.Resolution, p.EntryId, e.RelPath, e.RootId, p.Url, p.MatchedBy
+                       p.Resolution, p.EntryId, e.RelPath, e.RootId, p.Url, p.MatchedBy, p.CheckedPath
                 FROM PlexItems p LEFT JOIN Entries e ON e.Id = p.EntryId
                 WHERE {where} ORDER BY p.Season, p.ParentTitle, p.Episode, p.Title
                 """, r => new
@@ -128,7 +129,8 @@ internal static class PlexEndpoints
                 plexPath = r.GetString(8), size = r.GetInt64(9), resolution = r.IsDBNull(10) ? null : r.GetString(10),
                 entryId = r.IsDBNull(11) ? (long?)null : r.GetInt64(11), relPath = r.IsDBNull(12) ? null : r.GetString(12),
                 rootId = r.IsDBNull(13) ? (int?)null : r.GetInt32(13), url = r.IsDBNull(14) ? null : r.GetString(14),
-                matchedBy = r.IsDBNull(15) ? null : r.GetString(15),
+                matchedBy = r.IsDBNull(15) ? null : r.GetString(15), checkedPath = r.IsDBNull(16) ? null : r.GetString(16),
+                localPath = r.IsDBNull(13) ? null : roots.Get(r.GetInt32(13)) is { } root ? RootRegistry.Combine(root.Path, r.GetString(12)) : null,
             }, ("$key", key));
         });
 
@@ -159,8 +161,8 @@ internal static class PlexEndpoints
         g.MapGet("/unmatched", (int? limit, SqliteSetup sqlite) =>
         {
             using var c = sqlite.Open();
-            return Query(c, $"SELECT SectionTitle, Title, ShowTitle, PlexPath, Size FROM PlexItems WHERE EntryId IS NULL ORDER BY Size DESC LIMIT {Math.Clamp(limit ?? 100, 1, 1000)}",
-                r => new { section = r.GetString(0), title = r.GetString(1), show = r.IsDBNull(2) ? null : r.GetString(2), plexPath = r.GetString(3), size = r.GetInt64(4) });
+            return Query(c, $"SELECT SectionTitle, Title, ShowTitle, PlexPath, Size, CheckedPath FROM PlexItems WHERE EntryId IS NULL ORDER BY Size DESC LIMIT {Math.Clamp(limit ?? 100, 1, 1000)}",
+                r => new { section = r.GetString(0), title = r.GetString(1), show = r.IsDBNull(2) ? null : r.GetString(2), plexPath = r.GetString(3), size = r.GetInt64(4), checkedPath = r.IsDBNull(5) ? null : r.GetString(5) });
         });
 
         // Proposes path mappings by locating sample Plex files on disk (does not save anything).

@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { api, fileUrl } from '../api/client'
-import { useCategories, useCategoryMap, useSummary } from '../api/hooks'
+import { useCategories, useCategoryMap, useSummary, useToHostPath } from '../api/hooks'
 import type { Annotation, Entry } from '../api/types'
 import { bytes, date, kindLabel } from '../lib/format'
 import { PlanDialog } from './PlanDialog'
@@ -49,6 +49,7 @@ export function EntryDrawer({ id, onClose }: { id: number | null; onClose: () =>
   const summary = useSummary()
   const [tab, setTab] = useState('preview')
   const [plan, setPlan] = useState(false)
+  const hostPath = useToHostPath()
   const q = useQuery({ queryKey: ['entry', id], queryFn: () => api<EntryDetail>(`/entries/${id}`), enabled: id !== null })
 
   useEffect(() => setTab('preview'), [id])
@@ -120,6 +121,7 @@ export function EntryDrawer({ id, onClose }: { id: number | null; onClose: () =>
 
               <div className="space-y-2 text-sm">
                 <div className="break-all font-mono text-xs muted">{d.fullPath}</div>
+                {hostPath(d.fullPath) && <div className="break-all font-mono text-xs muted">On the host: {hostPath(d.fullPath)}</div>}
                 {d.linkTarget && <div className="text-xs">🔗 → {d.linkTarget}{e.brokenLink && <span className="text-danger"> (broken)</span>}</div>}
                 <div className="flex flex-wrap items-center gap-2">
                   {!e.isDir && <CategoryPill category={cat} source={e.categorySource} />}

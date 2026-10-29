@@ -1,5 +1,6 @@
 using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Jobs;
+using ANalyze.Infrastructure.Logging;
 using ANalyze.Infrastructure.Roots;
 using ANalyze.Infrastructure.Settings;
 using Microsoft.EntityFrameworkCore;
@@ -23,6 +24,7 @@ public static class DependencyInjection
         services.AddSingleton<JobLock>();
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton<JobBoard>();
+        services.AddSingleton<ActivityLog>();
         services.AddScoped<DatabaseInitializer>();
         return services;
     }

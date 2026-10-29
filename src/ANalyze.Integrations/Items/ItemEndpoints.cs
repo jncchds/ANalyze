@@ -1,3 +1,4 @@
+using ANalyze.Infrastructure.Roots;
 using ANalyze.Infrastructure.Data;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -107,12 +108,12 @@ internal static class ItemEndpoints
         });
 
         // Files of one title.
-        g.MapGet("/group", (string key, SqliteSetup sqlite) =>
+        g.MapGet("/group", (string key, SqliteSetup sqlite, RootRegistry roots) =>
         {
             using var c = sqlite.Open();
             return Db.Query(c, $"""
                 SELECT i.Id, i.Title, i.SubTitle, i.Kind, i.State, i.Detail, i.PlayCount, i.LastUsedAt, i.AddedAt, i.ExternalPath, {SizeExpr},
-                       i.EntryId, e.RelPath, i.Url, i.MatchedBy, i.IsDir
+                       i.EntryId, e.RelPath, i.Url, i.MatchedBy, i.IsDir, i.CheckedPath, e.RootId
                 FROM IntegrationItems i LEFT JOIN Entries e ON e.Id = i.EntryId
                 WHERE i.Source = $s AND COALESCE(i.GroupKey, i.ExternalId) = $key ORDER BY i.SubTitle, i.Title
                 """, r => new
@@ -123,6 +124,8 @@ internal static class ItemEndpoints
                 externalPath = r.GetString(9), size = r.GetInt64(10), entryId = r.IsDBNull(11) ? (long?)null : r.GetInt64(11),
                 relPath = r.IsDBNull(12) ? null : r.GetString(12), url = r.IsDBNull(13) ? null : r.GetString(13),
                 matchedBy = r.IsDBNull(14) ? null : r.GetString(14), isDir = r.GetBoolean(15),
+                checkedPath = r.IsDBNull(16) ? null : r.GetString(16),
+                localPath = r.IsDBNull(17) ? null : roots.Get(r.GetInt32(17)) is { } root ? RootRegistry.Combine(root.Path, r.GetString(12)) : null,
             }, ("$s", src), ("$key", key));
         });
 
@@ -130,8 +133,8 @@ internal static class ItemEndpoints
         g.MapGet("/unmatched", (int? limit, SqliteSetup sqlite) =>
         {
             using var c = sqlite.Open();
-            return Db.Query(c, $"SELECT Kind, Title, GroupTitle, ExternalPath, Size, State FROM IntegrationItems WHERE Source = $s AND EntryId IS NULL ORDER BY Size DESC LIMIT {Math.Clamp(limit ?? 100, 1, 1000)}",
-                r => new { kind = r.GetString(0), title = r.GetString(1), group = r.IsDBNull(2) ? null : r.GetString(2), externalPath = r.GetString(3), size = r.GetInt64(4), state = r.IsDBNull(5) ? null : r.GetString(5) },
+            return Db.Query(c, $"SELECT Kind, Title, GroupTitle, ExternalPath, Size, State, CheckedPath FROM IntegrationItems WHERE Source = $s AND EntryId IS NULL ORDER BY Size DESC LIMIT {Math.Clamp(limit ?? 100, 1, 1000)}",
+                r => new { kind = r.GetString(0), title = r.GetString(1), group = r.IsDBNull(2) ? null : r.GetString(2), externalPath = r.GetString(3), size = r.GetInt64(4), state = r.IsDBNull(5) ? null : r.GetString(5), checkedPath = r.IsDBNull(6) ? null : r.GetString(6) },
                 ("$s", src));
         });
 
