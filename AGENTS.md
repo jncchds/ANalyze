@@ -88,7 +88,11 @@ endpoints return `savedLater` (the holder) so the UI can say so.
    another file with the same hash and a different identity (`SearchFilter.Duplicates`, `PlanBuilder.CreateDedupeAsync`), never just `FullHash != null`.
 5. **Duplicates** (`DuplicateFinder`, all roots): sizes with ≥ 2 distinct identities (`dev:inode`, or the row id where inodes are unavailable)
    → quick hash (XxHash3 of 3×64 KB + size) → full hash (XxHash128) only on quick-hash collisions; files ≤ 192 KB get the full hash directly.
-   Hard-link siblings share one hash computation.
+   Hard-link siblings share one hash computation. The candidate sizes go into a temp table (`DupSizes`) once; the size search reads only the
+   covering index `(IsDir, Size, IsSymlink, Inode, Dev)`, and the "not hashed yet" counts here and in step 4 read only the partial index
+   `IX_Entries_Unhashed` (`Size` where `IsDir = 0 AND IsSymlink = 0 AND FullHash IS NULL`, named with `INDEXED BY`). Never add a scan-wide
+   query that reads `Entries` rows in size order: on a disk-backed database that is one random read per file (tens of minutes for millions).
+   Hashing and duplicate phases are reported before their first query.
 6. **Verify** (full scans with `VerifyAfterDays > 0`, `ContentHasher.VerifyAsync`): re-reads files with `HashedAt` older than that, oldest first, up to
    `VerifyMaxGb`; a different hash with unchanged size and mtime sets `CorruptAt` (insight "Possibly corrupted files", search `corrupt=true`;
    `DELETE /files/{id}/corrupt` accepts the new content). Files whose size/mtime differ from the index are skipped (the next walk resets them).

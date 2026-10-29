@@ -9,6 +9,9 @@ namespace ANalyze.Infrastructure.Data;
 
 public sealed class AnalyzeDbContext(DbContextOptions<AnalyzeDbContext> options) : DbContext(options)
 {
+    /// <summary>Partial index of files without a content hash, by size.</summary>
+    public const string UnhashedIndex = "IX_Entries_Unhashed";
+
     public DbSet<Root> Roots => Set<Root>();
     public DbSet<Entry> Entries => Set<Entry>();
     public DbSet<ScanRun> Scans => Set<ScanRun>();
@@ -44,7 +47,10 @@ public sealed class AnalyzeDbContext(DbContextOptions<AnalyzeDbContext> options)
         {
             e.HasIndex(x => new { x.RootId, x.RelPath }).IsUnique();
             e.HasIndex(x => x.ParentId);
-            e.HasIndex(x => new { x.IsDir, x.Size });
+            // Covers the duplicate size search (size + hard-link identity) without reading the table.
+            e.HasIndex(x => new { x.IsDir, x.Size, x.IsSymlink, x.Inode, x.Dev });
+            // Files with no content hash yet, by size: the hashing and duplicate counts read only this (named in their SQL).
+            e.HasIndex(x => x.Size).HasDatabaseName(AnalyzeDbContext.UnhashedIndex).HasFilter("IsDir = 0 AND IsSymlink = 0 AND FullHash IS NULL");
             e.HasIndex(x => new { x.IsDir, x.TotalSize });
             e.HasIndex(x => x.FullHash);
             e.HasIndex(x => x.CategoryId);
