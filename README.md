@@ -107,8 +107,8 @@ disks of the computer it runs on. Download it from the [GitHub releases](https:/
 
 | OS | Files |
 |---|---|
-| 🪟 Windows (x64) | `ANalyze-<version>-win-x64.exe` (installer) or `.zip` |
-| 🍎 macOS (Apple Silicon / Intel) | `ANalyze-<version>-mac-arm64.dmg` / `-mac-x64.dmg`, or `.zip` |
+| 🪟 Windows (x64 / arm64) | `ANalyze-<version>-win-x64.exe` / `-win-arm64.exe` (installer), or `.zip` |
+| 🍎 macOS (Apple Silicon) | `ANalyze-<version>-mac-arm64.dmg`, or `.zip` |
 | 🐧 Linux (x64 / arm64) | `ANalyze-<version>-linux-x86_64.AppImage` / `-arm64.AppImage`, or `.tar.gz` |
 
 On first start, pick the folders or drives to analyze; add or remove them later in **Settings → Roots** or with

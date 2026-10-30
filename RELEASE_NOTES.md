@@ -6,6 +6,7 @@
 - feat: backup comparison no longer waits for hashes: the parent's hashes are kept, files hashed here are checked against the backup batch by batch, and every 15 minutes the child reads the hashes the backup server computed since the last sync (new hash feed `GET /backup/hashes`)
 - feat: background priority also watches the disks: while other work keeps the roots' disks more than half busy, hashing and the other background work wait
 - fix: lowering thread priority no longer reports a failure when a thread ends meanwhile
+- feat: desktop app for Windows on ARM (`win-arm64` installer and zip); the macOS app is Apple Silicon only (no more Intel build)
 
 ## v0.1.9 — 2026-10-29
 

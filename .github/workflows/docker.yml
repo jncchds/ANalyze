@@ -109,12 +109,17 @@ jobs:
           - os: ubuntu-latest
             name: linux
             arch: x64,arm64
+          # Apple Silicon only.
           - os: macos-latest
             name: mac
-            arch: x64,arm64
+            arch: arm64
+          # One job per arch: electron-builder would otherwise pack both into one NSIS installer.
           - os: windows-latest
-            name: windows
+            name: windows-x64
             arch: x64
+          - os: windows-latest
+            name: windows-arm64
+            arch: arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

@@ -336,8 +336,8 @@ server (asks first when a job is running). Links to other origins open in the de
 Platform notes: paths stay `/`-separated in `Entries.RelPath` on every OS; `RootRegistry.IsUnder` uses the platform separator (case-insensitive on
 Windows). Hard links remain Linux-only; elsewhere `Native` falls back to managed APIs (no inode/device, so duplicate identity uses row ids).
 
-CI (`.github/workflows/docker.yml`, job `desktop`): Linux x64+arm64 (AppImage, tar.gz), macOS x64+arm64 (dmg, zip, ad-hoc signed), Windows x64
-(NSIS installer, zip) on every non-PR build, uploaded as artifacts named `ANalyze-*` (the release job downloads only those: the run also
+CI (`.github/workflows/docker.yml`, job `desktop`): Linux x64+arm64 (AppImage, tar.gz), macOS arm64 (dmg, zip, ad-hoc signed), Windows x64 and
+arm64 (one job each, so each gets its own NSIS installer and zip; arm64 is cross-built on the x64 runner) on every non-PR build, uploaded as artifacts named `ANalyze-*` (the release job downloads only those: the run also
 holds Docker's build record, which is not a zip). Builds of `main` publish them as the GitHub release `v<VERSION>` (job `release`):
 created with its tag when a new version first reaches main (notes = that version's `RELEASE_NOTES.md` section), files replaced by later builds of the same version.
 Builds of `main` also set the Docker Hub description (job `docker`): `.github/scripts/dockerhub-readme.mjs` turns `README.md` into it (relative
