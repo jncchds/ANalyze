@@ -1,5 +1,12 @@
 # Release Notes
 
+## v0.1.10 — 2026-10-30
+
+- feat: scans hold the index to themselves only while they walk the folders: file types, categories, archives, hashing, duplicates and re-verification follow in the background ("Processing"), next to integration syncs, rule apply and the AI, and step aside between batches whenever the next scan, a plan or ignored-folder pruning needs the index, then carry on; integrations re-sync right after the walk, the AI runs once types are known, and unfinished hashing resumes after a restart
+- feat: backup comparison no longer waits for hashes: the parent's hashes are kept, files hashed here are checked against the backup batch by batch, and every 15 minutes the child reads the hashes the backup server computed since the last sync (new hash feed `GET /backup/hashes`)
+- feat: background priority also watches the disks: while other work keeps the roots' disks more than half busy, hashing and the other background work wait
+- fix: lowering thread priority no longer reports a failure when a thread ends meanwhile
+
 ## v0.1.9 — 2026-10-29
 
 - feat: extracted archives: scans list zip, rar and 7z archives (and, when enabled, tar/tar.gz/.gz/.xz/.zst by decompressing them once) and find, on all roots, the folders that hold their files — with the same paths and sizes, even when the archive's top folder was dropped and when the folder holds other files too. Duplicates → Extracted archives shows complete and partial extractions (missing files, files cut short), checks the extracted files against the CRC32s stored in the archive without reading the archive, and creates plans to remove the archive or the extracted copy; insights and the search filter "extracted" list them

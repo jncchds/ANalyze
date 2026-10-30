@@ -26,7 +26,7 @@ public sealed class Categorizer(SqliteSetup sqlite, IDbContextFactory<AnalyzeDbC
         return Run(db, engine, scope, progress, ct);
     }
 
-    internal static long Run(SqliteConnection db, RuleEngine engine, Scope scope, Action<long, long>? progress, CancellationToken ct)
+    internal static long Run(SqliteConnection db, RuleEngine engine, Scope scope, Action<long, long>? progress, CancellationToken ct, Action? betweenPages = null)
     {
         long total;
         using (var c = db.CreateCommand())
@@ -112,6 +112,7 @@ public sealed class Categorizer(SqliteSetup sqlite, IDbContextFactory<AnalyzeDbC
             tx.Commit();
             done += rows.Count;
             progress?.Invoke(done, total);
+            betweenPages?.Invoke();
         }
 
         return changed;

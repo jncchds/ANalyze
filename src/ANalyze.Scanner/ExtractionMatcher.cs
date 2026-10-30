@@ -79,6 +79,7 @@ public static class ExtractionMatcher
             {
                 Store(read, write, pending);
                 pending.Clear();
+                ctx.CheckYield();
             }
 
             if (ctx.ProgressLineDue())

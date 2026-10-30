@@ -269,6 +269,8 @@ export function Layout({ onLogout }: { onLogout?: () => void }) {
 function ScanWidget() {
   const jobs = useJobs()
   const scan = useJob('scan')
+  // Types, categories, hashes and duplicates follow the walk in the background; Cancel stops both.
+  const processing = useJob('processing')
   const roots = useRoots()
   const { rootId } = useScope()
   const start = useMutation({ mutationFn: (only?: number) => api('/scan', { method: 'POST', json: { rootId: only } }) })
@@ -327,6 +329,11 @@ function ScanWidget() {
                 {(roots.data?.length ?? 0) > 1 ? 'Scan all' : 'Scan now'}
               </button>
             </>
+          )}
+          {!isActive(scan) && isActive(processing) && (
+            <button className="btn-secondary px-2 py-1 text-xs" onClick={() => cancel.mutate()} title="Stop detecting types and hashing in the background; the next scan picks it up again">
+              Stop
+            </button>
           )}
           <Link to="/logs" className="btn-ghost px-2 py-1 text-xs no-underline" title="What ANalyze is doing, step by step">
             Log

@@ -62,7 +62,8 @@ public sealed class ScanQueue(JobBoard board)
     }
 }
 
-internal sealed class ScanWorker(ScanQueue queue, ScanService scanner, JobLock jobLock, ILogger<ScanWorker> log) : BackgroundService
+/// <summary>Runs queued scans one after the other; <see cref="ScanService"/> takes the job lock itself (alone for the walk).</summary>
+internal sealed class ScanWorker(ScanQueue queue, ScanService scanner, ILogger<ScanWorker> log) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -71,7 +72,6 @@ internal sealed class ScanWorker(ScanQueue queue, ScanService scanner, JobLock j
             var ct = queue.Begin(stoppingToken);
             try
             {
-                using var _ = await jobLock.AcquireAsync("scan", ct);
                 await scanner.RunAsync(req, ct);
             }
             catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)

@@ -11,7 +11,8 @@ namespace ANalyze.Integrations.Backup;
 
 /// <summary>What a parent tells a backup instance about itself.</summary>
 /// <param name="HashAlgorithm">Content hash used in <see cref="ExportFile.H"/>; a child only compares hashes of the same kind.</param>
-public sealed record ExportInfo(string App, string? Version, string Host, string HashAlgorithm, bool HashAllFiles, int VerifyAfterDays, IReadOnlyList<ExportRoot> Roots);
+/// <param name="Now">The parent's clock (unix seconds) when answering: where a child starts reading the hash feed after a sync. Null from older parents.</param>
+public sealed record ExportInfo(string App, string? Version, string Host, string HashAlgorithm, bool HashAllFiles, int VerifyAfterDays, IReadOnlyList<ExportRoot> Roots, long? Now = null);
 
 public sealed record ExportRoot(int Id, string Path, string Name, long Files, long Size, long Hashed, DateTimeOffset? LastScanAt);
 
@@ -27,9 +28,15 @@ public sealed record ExportFile(string P, long S, long M, string? H = null, long
 /// <param name="Next">Pass as <c>after</c> for the next page; null on the last page.</param>
 public sealed record ExportPage(IReadOnlyList<ExportFile> Items, string? Next);
 
+/// <summary>Files hashed (or re-verified) after a point of the hash feed.</summary>
+/// <param name="Next">Pass as <c>after</c> for the next page; null on the last page.</param>
+/// <param name="Cursor">Where this page ends: pass it as <c>after</c> next time to get only newer hashes.</param>
+public sealed record HashPage(IReadOnlyList<ExportFile> Items, string? Next, string Cursor);
+
 /// <summary>
-/// Read-only API another ANalyze uses to compare its backup with this instance (the parent): <c>GET /api/v1/backup/info</c> and
-/// <c>GET /api/v1/backup/files?rootId=&amp;after=&amp;limit=</c> (files and folders of one root in path order, paged by path).
+/// Read-only API another ANalyze uses to compare its backup with this instance (the parent): <c>GET /api/v1/backup/info</c>,
+/// <c>GET /api/v1/backup/files?rootId=&amp;after=&amp;limit=</c> (files and folders of one root in path order, paged by path) and
+/// <c>GET /api/v1/backup/hashes?rootId=&amp;after=&amp;limit=</c> (files of one root hashed after a cursor "hashedAt:id", oldest first).
 /// Protected like the rest of the API; a child authenticates with <c>ANalyze__ApiToken</c>.
 /// </summary>
 public static class BackupExport
@@ -52,7 +59,28 @@ public static class BackupExport
                 {
                     var n = counts.GetValueOrDefault(r.Id);
                     return new ExportRoot(r.Id, r.Path, r.Name, n.Files, n.Size, n.Hashed, r.LastScanAt);
-                }).ToList());
+                }).ToList(), DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        });
+
+        // Keyset paging on the (RootId, HashedAt) index; the cursor is "hashedAt:id" of the last file returned.
+        g.MapGet("/hashes", (int rootId, string? after, int? limit, SqliteSetup sqlite, RootRegistry roots) =>
+        {
+            if (roots.Get(rootId) is null)
+            {
+                return Results.NotFound();
+            }
+
+            var (at, id) = ParseCursor(after);
+            var take = Math.Clamp(limit ?? 5000, 1, MaxPage);
+            using var c = sqlite.Open();
+            var rows = Db.Query(c, $"""
+                SELECT RelPath, Size, MTime, FullHash, CorruptAt, HashedAt, Id FROM Entries
+                WHERE RootId = $r AND (HashedAt > $at OR (HashedAt = $at AND Id > $id)) AND IsDir = 0 AND IsSymlink = 0 AND FullHash IS NOT NULL
+                ORDER BY HashedAt, Id LIMIT {take}
+                """, r => (File: new ExportFile(r.GetString(0), r.GetInt64(1), r.GetInt64(2), r.GetString(3), r.IsDBNull(4) ? null : r.GetInt64(4)), At: r.GetInt64(5), Id: r.GetInt64(6)),
+                ("$r", rootId), ("$at", at), ("$id", id));
+            var cursor = rows.Count > 0 ? $"{rows[^1].At}:{rows[^1].Id}" : $"{at}:{id}";
+            return Results.Ok(new HashPage(rows.Select(x => x.File).ToList(), rows.Count == take ? cursor : null, cursor));
         });
 
         g.MapGet("/files", (int rootId, string? after, int? limit, SqliteSetup sqlite, RootRegistry roots) =>
@@ -73,6 +101,13 @@ public static class BackupExport
                 ("$r", rootId), ("$after", after ?? ""));
             return Results.Ok(new ExportPage(items, items.Count == take ? items[^1].P : null));
         });
+    }
+
+    /// <summary>"hashedAt:id" → parts; anything else is the start of the feed.</summary>
+    internal static (long At, long Id) ParseCursor(string? cursor)
+    {
+        var parts = (cursor ?? "").Split(':');
+        return parts.Length == 2 && long.TryParse(parts[0], out var at) && long.TryParse(parts[1], out var id) ? (at, id) : (0, 0);
     }
 
     internal static string? Version() =>

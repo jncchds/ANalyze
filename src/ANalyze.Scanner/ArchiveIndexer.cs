@@ -100,6 +100,8 @@ internal static class ArchiveIndexer
             {
                 ctx.Log.LogInformation("Archives: {Done} of {Total} listed", ctx.Done, ctx.Total);
             }
+
+            ctx.CheckYield();
         }
 
         if (todo.Count > 0 || removed > 0)

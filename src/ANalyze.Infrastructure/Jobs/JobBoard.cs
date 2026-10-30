@@ -7,6 +7,9 @@ public static class JobKinds
     public const string Scan = "scan";
     public const string Apply = "apply";
     public const string Ai = "ai";
+
+    /// <summary>What follows a scan's walk in the background: types, categories, archives, hashes, duplicates, verification.</summary>
+    public const string Processing = "processing";
 }
 
 public static class JobStates

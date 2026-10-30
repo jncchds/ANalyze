@@ -63,11 +63,29 @@ public sealed class TestApp : WebApplicationFactory<Program>
 
             if (scans.GetArrayLength() > 0 && scans[0].GetProperty("id").GetInt64() > before && scans[0].GetProperty("status").GetString() is "completed")
             {
+                await WaitIdleAsync(http);
                 return;
             }
         }
 
         throw new TimeoutException("Scan did not finish");
+    }
+
+    /// <summary>Waits until no scan walks and the background processing after it (types, hashes, duplicates…) is done.</summary>
+    public static async Task WaitIdleAsync(HttpClient http)
+    {
+        for (var i = 0; i < 600; i++)
+        {
+            var s = await http.GetFromJsonAsync<JsonElement>("/api/v1/scan/status");
+            if (!s.GetProperty("scanning").GetBoolean() && !s.GetProperty("processing").GetBoolean())
+            {
+                return;
+            }
+
+            await Task.Delay(100);
+        }
+
+        throw new TimeoutException("Background processing did not finish");
     }
 
     private static async Task<long> LastScanId(HttpClient http)
@@ -84,8 +102,9 @@ public sealed class TestApp : WebApplicationFactory<Program>
             var p = await http.GetFromJsonAsync<JsonElement>($"/api/v1/plans/{id}");
             if (states.Contains(p.GetProperty("plan").GetProperty("status").GetString()))
             {
-                // Rescans triggered by the plan run right after; give them a moment.
+                // Rescans triggered by the plan run right after; give them a moment, then wait for their background processing.
                 await Task.Delay(500);
+                await WaitIdleAsync(http);
                 return await http.GetFromJsonAsync<JsonElement>($"/api/v1/plans/{id}");
             }
         }

@@ -103,7 +103,15 @@ public static class SystemEndpoints
             return Results.Accepted();
         });
 
-        api.MapPost("/scan/cancel", (ScanQueue queue) => queue.Cancel() ? Results.NoContent() : Results.NotFound());
+        // Whether a scan walks (or waits to) and whether its background processing (types, hashes…) still runs.
+        api.MapGet("/scan/status", (ScanQueue queue, ScanProcessor processor) => new
+        {
+            scanning = queue.IsRunning || queue.Queued > 0,
+            processing = !processor.IsIdle,
+        });
+
+        // Stops the walk and the background processing after it.
+        api.MapPost("/scan/cancel", (ScanQueue queue, ScanProcessor processor) => queue.Cancel() | processor.Cancel() ? Results.NoContent() : Results.NotFound());
 
         api.MapGet("/scans", async (int? limit, AnalyzeDbContext db, CancellationToken ct) =>
             await db.Scans.AsNoTracking().OrderByDescending(s => s.Id).Take(Math.Clamp(limit ?? 20, 1, 200)).ToListAsync(ct));

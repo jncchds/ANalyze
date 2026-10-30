@@ -177,7 +177,7 @@ public static class RuleEndpoints
             _ = Task.Run(async () =>
             {
                 var started = DateTimeOffset.UtcNow;
-                using var _ = await jobLock.AcquireAsync("rules", CancellationToken.None);
+                using var _ = await jobLock.AcquireSharedAsync("rules", CancellationToken.None);
                 board.Report(new JobProgress { Kind = JobKinds.Scan, State = JobStates.Running, Phase = "categorizing", Title = "Applying rules", StartedAt = started }, force: true);
                 try
                 {

@@ -407,6 +407,9 @@ namespace ANalyze.Infrastructure.Data.Migrations
                     b.Property<int>("LocalRootId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("ParentHash")
+                        .HasColumnType("TEXT");
+
                     b.Property<long?>("ParentSize")
                         .HasColumnType("INTEGER");
 
@@ -627,6 +630,8 @@ namespace ANalyze.Infrastructure.Data.Migrations
                         .HasFilter("IsDir = 0 AND IsSymlink = 0 AND FullHash IS NULL");
 
                     b.HasIndex("IsDir", "TotalSize");
+
+                    b.HasIndex("RootId", "HashedAt");
 
                     b.HasIndex("RootId", "RelPath")
                         .IsUnique();

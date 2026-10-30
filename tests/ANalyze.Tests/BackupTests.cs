@@ -203,6 +203,64 @@ public class BackupSyncTests
     }
 
     [Fact]
+    public async Task Hashes_that_arrive_later_recheck_files_without_a_new_sync()
+    {
+        await using var app = new TestApp();
+        using var http = app.CreateClient();
+        var settings = app.Services.GetRequiredService<SettingsStore>();
+        await settings.SaveAsync(settings.Current with { HashAllFiles = false, FindDuplicates = false });
+        Write(app.Library, "home/docs/a.txt", "doc a");
+        Write(app.Library, "home/docs/b.txt", "doc b");
+        Write(app.Library, "home/docs/c.txt", "doc c");
+        await app.ScanAsync(http);
+
+        // The parent has the same sizes; c has other content there.
+        async Task<string> Hash(string content)
+        {
+            var p = Path.Combine(app.Library, "..", "h-" + Guid.NewGuid().ToString("N"));
+            await File.WriteAllTextAsync(p, content);
+            return await ANalyze.Scanner.Hashing.FullHashAsync(p, null, CancellationToken.None);
+        }
+
+        var files = new List<ExportFile>
+        {
+            new("docs", 15, 0, D: true),
+            new("docs/a.txt", 5, 0, await Hash("doc a")),
+            new("docs/b.txt", 5, 0, await Hash("doc b")),
+            new("docs/c.txt", 5, 0, await Hash("DOC C")),
+        };
+        var info = new ExportInfo("ANalyze", "test", "nas1", BackupExport.HashAlgorithm, true, 0, [new ExportRoot(1, "/backup", "backup", 3, 15, 3, null)]);
+        var sqlite = app.Services.GetRequiredService<SqliteSetup>();
+        using (var conn = sqlite.Open())
+        {
+            var result = await new BackupSync(conn, app.Services.GetRequiredService<RootRegistry>()).RunAsync(info, [new PathMapping("/backup", app.Library + "/home")],
+                (_, _, _) => Task.FromResult(new ExportPage(files, null)), new Progress<IntegrationProgress>(), CancellationToken.None);
+            // No hashes here yet: sizes only, so c looks fine.
+            Assert.Equal(3, result.Files[BackupStates.Synced]);
+        }
+
+        // Hashing every file now: each stored batch re-checks those files at once.
+        await settings.SaveAsync(settings.Current with { HashAllFiles = true });
+        await app.ScanAsync(http);
+        using (var conn = sqlite.Open())
+        {
+            var rows = Db.Query(conn, "SELECT LocalRelPath, State, Verified FROM BackupFiles WHERE IsDir = 0", r => (r.GetString(0), r.GetString(1), r.GetBoolean(2)))
+                .ToDictionary(x => x.Item1);
+            Assert.Equal(("home/docs/a.txt", BackupStates.Synced, true), rows["home/docs/a.txt"]);
+            Assert.Equal(("home/docs/c.txt", BackupStates.Corrupt, false), rows["home/docs/c.txt"]);
+            var labels = Db.Query(conn, "SELECT e.RelPath, a.Label FROM Annotations a JOIN Entries e ON e.Id = a.EntryId WHERE a.Source = 'parent' AND a.Kind = 'backup'",
+                r => (Path: r.GetString(0), Label: r.GetString(1)));
+            Assert.Contains(labels, l => l.Path == "home/docs/c.txt" && l.Label == BackupAnnotations.CorruptLabel);
+        }
+
+        // The parent's hash feed: everything hashed after a cursor, oldest first.
+        var feed = await http.GetFromJsonAsync<HashPage>("/api/v1/backup/hashes?rootId=1&after=0:0", TestApp.Json);
+        Assert.Contains(feed!.Items, f => f.P == "home/docs/c.txt" && f.H is not null);
+        var later = await http.GetFromJsonAsync<HashPage>($"/api/v1/backup/hashes?rootId=1&after={feed.Cursor}", TestApp.Json);
+        Assert.Empty(later!.Items);
+    }
+
+    [Fact]
     public async Task Mapping_is_detected_from_sample_files()
     {
         await using var app = new TestApp();

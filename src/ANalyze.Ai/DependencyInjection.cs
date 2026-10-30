@@ -16,22 +16,22 @@ public static class DependencyInjection
     }
 }
 
-/// <summary>Classifies new uncategorized files after each scan when enabled in settings.</summary>
-internal sealed class AiAutoRun(ScanService scanner, AiService ai, SettingsStore settings) : IHostedService
+/// <summary>Classifies new uncategorized files after each scan when enabled in settings (once their types and categories are known).</summary>
+internal sealed class AiAutoRun(ScanProcessor processor, AiService ai, SettingsStore settings) : IHostedService
 {
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        scanner.Completed += OnScanCompleted;
+        processor.Processed += OnProcessed;
         return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
-        scanner.Completed -= OnScanCompleted;
+        processor.Processed -= OnProcessed;
         return Task.CompletedTask;
     }
 
-    private void OnScanCompleted(long scanId)
+    private void OnProcessed()
     {
         var s = settings.Current.Ai;
         if (s.Enabled && s.AutoClassifyAfterScan)

@@ -158,14 +158,15 @@ public sealed class IntegrationHost(
             IDisposable? held = null;
             try
             {
-                // One job at a time: a sync waits for a running scan, plan, AI run or another sync (they all write to the database).
-                if (jobLock.Holder is { } busy)
+                // Shared with the background processing and other syncs; only waits for a walk, a plan or ignored-folder pruning.
+                if (jobLock.ExclusiveWanted)
                 {
+                    var busy = jobLock.Holder ?? "a scan";
                     log.LogInformation("{Integration} sync waits for {Holder} to finish", integration.Name, busy);
                     board.Report(new JobProgress { Kind = kind, State = JobStates.Queued, Title = integration.Name + " sync", Message = $"Waiting for {busy}", StartedAt = started }, force: true);
                 }
 
-                held = await jobLock.AcquireAsync(kind, CancellationToken.None);
+                held = await jobLock.AcquireSharedAsync(kind, CancellationToken.None);
                 started = DateTimeOffset.UtcNow;
                 var settings = await LoadAsync(id, CancellationToken.None);
                 board.Report(new JobProgress { Kind = kind, State = JobStates.Running, Title = integration.Name + " sync", StartedAt = started }, force: true);
@@ -311,24 +312,33 @@ public static class DependencyInjection
     }
 }
 
-/// <summary>Re-syncs enabled integrations after each completed full scan so matches follow renames and moves.</summary>
-internal sealed class IntegrationAutoSync(ScanService scanner, IntegrationHost host) : IHostedService
+/// <summary>
+/// Re-syncs enabled integrations right after each completed scan walk so matches follow renames and moves, and those that use
+/// content hashes (<see cref="IIntegration.SyncAfterProcessing"/>) again once the background processing has hashed the new files.
+/// </summary>
+internal sealed class IntegrationAutoSync(ScanService scanner, ScanProcessor processor, IntegrationHost host) : IHostedService
 {
     public Task StartAsync(CancellationToken cancellationToken)
     {
         scanner.Completed += OnScan;
+        processor.Processed += OnProcessed;
         return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
         scanner.Completed -= OnScan;
+        processor.Processed -= OnProcessed;
         return Task.CompletedTask;
     }
 
-    private void OnScan(long scanId) => _ = Task.Run(async () =>
+    private void OnScan(long scanId) => SyncAll(_ => true);
+
+    private void OnProcessed() => SyncAll(i => i.SyncAfterProcessing);
+
+    private void SyncAll(Func<IIntegration, bool> which) => _ = Task.Run(async () =>
     {
-        foreach (var i in host.All)
+        foreach (var i in host.All.Where(which))
         {
             var s = await host.LoadAsync(i.Id, CancellationToken.None);
             if (s.Enabled && s.SyncAfterScan)

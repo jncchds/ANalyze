@@ -8,8 +8,10 @@ public static class DependencyInjection
     {
         services.AddSingleton<Categorizer>();
         services.AddSingleton<ScanService>();
+        services.AddSingleton<ScanProcessor>();
         services.AddSingleton<ScanQueue>();
         services.AddHostedService<ScanWorker>();
+        services.AddHostedService<ScanProcessorWorker>();
         services.AddHostedService<ScanScheduler>();
         services.AddHostedService<PriorityApplier>();
         return services;

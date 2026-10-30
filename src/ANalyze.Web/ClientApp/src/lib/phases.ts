@@ -32,7 +32,7 @@ const other: Record<string, string> = {
 /** Tooltip for a job's phase; integration phases starting with "reading" are fetches from the app. */
 export function phaseHint(kind: string, phase?: string): string | undefined {
   if (!phase) return undefined
-  if (kind === 'scan' && scan[phase]) return scan[phase]
+  if ((kind === 'scan' || kind === 'processing') && scan[phase]) return scan[phase]
   if (other[phase]) return other[phase]
   if (phase.startsWith('reading')) return `Fetching the list from the app (${phase.slice(8) || 'items'}).`
   return scan[phase]

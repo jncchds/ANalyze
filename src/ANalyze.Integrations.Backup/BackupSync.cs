@@ -74,6 +74,7 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots)
         public bool Differs;
         public bool Verified;
         public long? ParentSize;
+        public string? ParentHash;
         public int ParentChildren;
         public int Children;
         public int SyncedChildren;
@@ -211,6 +212,7 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots)
                     Depth = r.GetInt32(3),
                     OnParent = onParent,
                     ParentSize = onParent ? pSize : null,
+                    ParentHash = isDir ? null : pHash,
                     Differs = onParent && !isDir && Differs(size, hash, pSize, pHash),
                     Verified = onParent && !isDir && hash is not null && hash == pHash,
                     ParentChildren = r.GetInt32(9),
@@ -253,16 +255,17 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots)
 
         // 3. Replace the table.
         Exec("DROP TABLE IF EXISTS temp.BackupResult");
-        Exec("CREATE TEMP TABLE BackupResult (Id INTEGER PRIMARY KEY, State TEXT NOT NULL, ParentSize INTEGER, Verified INTEGER NOT NULL, Children INTEGER NOT NULL, Synced INTEGER NOT NULL)");
+        Exec("CREATE TEMP TABLE BackupResult (Id INTEGER PRIMARY KEY, State TEXT NOT NULL, ParentSize INTEGER, ParentHash TEXT, Verified INTEGER NOT NULL, Children INTEGER NOT NULL, Synced INTEGER NOT NULL)");
         using (var tx = conn.BeginTransaction())
         {
-            using var res = Cmd("INSERT INTO BackupResult VALUES ($id, $state, $psize, $v, $c, $s)", "$id", "$state", "$psize", "$v", "$c", "$s");
+            using var res = Cmd("INSERT INTO BackupResult VALUES ($id, $state, $psize, $phash, $v, $c, $s)", "$id", "$state", "$psize", "$phash", "$v", "$c", "$s");
             res.Transaction = tx;
             foreach (var n in nodes.Values)
             {
                 res.Parameters["$id"].Value = n.Id;
                 res.Parameters["$state"].Value = n.State;
                 res.Parameters["$psize"].Value = (object?)n.ParentSize ?? DBNull.Value;
+                res.Parameters["$phash"].Value = (object?)n.ParentHash ?? DBNull.Value;
                 res.Parameters["$v"].Value = n.Verified;
                 res.Parameters["$c"].Value = n.Children;
                 res.Parameters["$s"].Value = n.SyncedChildren;
@@ -271,8 +274,8 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots)
 
             Exec("DELETE FROM BackupFiles", tx);
             Exec("""
-                INSERT INTO BackupFiles (State, IsDir, EntryId, LocalRootId, LocalRelPath, Size, ParentSize, Verified, Children, SyncedChildren)
-                SELECT b.State, e.IsDir, e.Id, e.RootId, e.RelPath, CASE WHEN e.IsDir = 1 THEN e.TotalSize ELSE e.Size END, b.ParentSize, b.Verified, b.Children, b.Synced
+                INSERT INTO BackupFiles (State, IsDir, EntryId, LocalRootId, LocalRelPath, Size, ParentSize, ParentHash, Verified, Children, SyncedChildren)
+                SELECT b.State, e.IsDir, e.Id, e.RootId, e.RelPath, CASE WHEN e.IsDir = 1 THEN e.TotalSize ELSE e.Size END, b.ParentSize, b.ParentHash, b.Verified, b.Children, b.Synced
                 FROM BackupResult b JOIN Entries e ON e.Id = b.Id
                 """, tx);
             tx.Commit();
@@ -302,8 +305,10 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots)
         return n;
     }
 
-    /// <summary>Local root and relative path for an absolute path, by the longest root that contains it.</summary>
-    private (int? Root, string? Rel) Resolve(string path)
+    private (int? Root, string? Rel) Resolve(string path) => Resolve(roots, path);
+
+    /// <summary>Local root and relative path for an absolute path, by the longest root that contains it (never the trash).</summary>
+    internal static (int? Root, string? Rel) Resolve(RootRegistry roots, string path)
     {
         path = path.Length > 1 ? path.TrimEnd('/') : path;
         var root = roots.All.Where(r => !r.Missing && RootRegistry.IsUnder(r.Path, path)).OrderByDescending(r => r.Path.Length).FirstOrDefault();

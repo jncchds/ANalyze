@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using ANalyze.Domain;
 using ANalyze.Infrastructure.Data;
+using ANalyze.Infrastructure.Jobs;
 using ANalyze.Infrastructure.Roots;
 using ANalyze.Infrastructure.Settings;
 using ANalyze.Integrations.Items;
@@ -24,7 +25,8 @@ public sealed record BackupSnapshot(
     IReadOnlyList<PathMapping> Mappings,
     IReadOnlyList<PathMapping> Detected,
     long Unmapped,
-    bool HashesCompared);
+    bool HashesCompared,
+    IReadOnlyDictionary<string, string>? HashCursors = null);
 
 /// <summary>
 /// Parent–child link between two ANalyze instances: the parent is the backup server of this instance (the child). A sync reads the
@@ -41,8 +43,12 @@ public sealed class ParentIntegration(
     ILogger<ParentIntegration> log) : IIntegration
 {
     public const string SnapshotKey = "backup:parent";
+    public const string IntegrationId = "parent";
 
-    public string Id => "parent";
+    public string Id => IntegrationId;
+
+    // New hashes here are re-checked batch by batch (BackupHashListener); the sync after processing also catches up on folders.
+    public bool SyncAfterProcessing => true;
 
     public string Name => "ANalyze parent";
 
@@ -130,7 +136,9 @@ public sealed class ParentIntegration(
         progress.Report(new IntegrationProgress("labels", 0, 0));
         BackupAnnotations.Write(conn, Id, name, result.Targets);
 
-        await SaveSnapshotAsync(new BackupSnapshot(DateTimeOffset.UtcNow, name, settings.GetString("url") ?? "", info, result.Targets, result.Mappings, result.Detected, result.Unmapped, compareHashes), ct);
+        // The parent's hash feed is read from the moment this sync asked for its info (BackupHashRefresh).
+        var cursors = compareHashes && info.Now is { } now ? info.Roots.ToDictionary(r => r.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), _ => $"{now}:0") : null;
+        await SaveSnapshotAsync(new BackupSnapshot(DateTimeOffset.UtcNow, name, settings.GetString("url") ?? "", info, result.Targets, result.Mappings, result.Detected, result.Unmapped, compareHashes, cursors), ct);
 
         var f = result.Files;
         var all = f.Values.Sum();
@@ -159,6 +167,100 @@ public sealed class ParentIntegration(
 
         log.LogInformation("Backup comparison with {Parent}: {Summary}", name, string.Join("; ", parts));
         return new IntegrationSyncResult(true, string.Join(" · ", parts), all, f[BackupStates.Synced] + f[BackupStates.Corrupt]);
+    }
+
+    /// <summary>
+    /// Reads the hashes the parent computed since the last sync or refresh (its hash feed), stores them in <c>BackupFiles</c> and
+    /// re-checks those files. Returns how many files were checked, or null when there is nothing to do (no snapshot, sizes only, an
+    /// older parent).
+    /// </summary>
+    internal async Task<(int Checked, int Corrupt)?> RefreshHashesAsync(IntegrationSettings settings, JobLock jobLock, CancellationToken ct)
+    {
+        var snap = await LoadSnapshotAsync(ct);
+        if (snap?.HashCursors is not { Count: > 0 } cursors || !snap.HashesCompared)
+        {
+            return null;
+        }
+
+        var client = Client(settings);
+        var next = new Dictionary<string, string>(cursors);
+        var found = new List<(int Root, string Rel, long Size, string Hash)>();
+        foreach (var root in snap.Info.Roots)
+        {
+            var key = root.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!cursors.TryGetValue(key, out var after))
+            {
+                continue;
+            }
+
+            var prefix = root.Path.TrimEnd('/');
+            while (true)
+            {
+                var page = await client.HashesAsync(root.Id, after, ct);
+                if (page is null)
+                {
+                    return null;
+                }
+
+                foreach (var f in page.Items)
+                {
+                    if (f.H is { } h && BackupSync.Resolve(roots, IntegrationSettings.MapPath(prefix + "/" + f.P, snap.Mappings)) is ({ } r, { } rel))
+                    {
+                        found.Add((r, rel, f.S, h));
+                    }
+                }
+
+                after = page.Cursor;
+                if (page.Next is null)
+                {
+                    break;
+                }
+            }
+
+            next[key] = after;
+        }
+
+        var (checkedCount, corrupt) = (0, 0);
+        if (found.Count > 0)
+        {
+            using var lease = await jobLock.AcquireSharedAsync("integration:" + Id, ct);
+            using var conn = sqlite.Open();
+            var ids = new List<long>();
+            using (var tx = conn.BeginTransaction())
+            {
+                using var upd = conn.CreateCommand();
+                upd.Transaction = tx;
+                upd.CommandText = """
+                    UPDATE BackupFiles SET ParentHash = $h, ParentSize = $s
+                    WHERE LocalRootId = $r AND LocalRelPath = $p AND IsDir = 0 AND ParentSize IS NOT NULL
+                    RETURNING EntryId
+                    """;
+                foreach (var n in new[] { "$h", "$s", "$r", "$p" })
+                {
+                    upd.Parameters.Add(new Microsoft.Data.Sqlite.SqliteParameter(n, null));
+                }
+
+                foreach (var (r, rel, size, hash) in found)
+                {
+                    upd.Parameters["$h"].Value = hash;
+                    upd.Parameters["$s"].Value = size;
+                    upd.Parameters["$r"].Value = r;
+                    upd.Parameters["$p"].Value = rel;
+                    if (upd.ExecuteScalar() is long id)
+                    {
+                        ids.Add(id);
+                    }
+                }
+
+                tx.Commit();
+            }
+
+            corrupt = BackupRecheck.Run(conn, ids);
+            checkedCount = ids.Count;
+        }
+
+        await SaveSnapshotAsync(snap with { HashCursors = next }, ct);
+        return (checkedCount, corrupt);
     }
 
     private async Task SaveSnapshotAsync(BackupSnapshot snap, CancellationToken ct)
@@ -212,5 +314,45 @@ public sealed class ParentIntegration(
 
 public static class BackupDependencyInjection
 {
-    public static IServiceCollection AddBackupIntegration(this IServiceCollection services) => services.AddIntegration<ParentIntegration>();
+    public static IServiceCollection AddBackupIntegration(this IServiceCollection services)
+    {
+        services.AddSingleton<ANalyze.Scanner.IHashListener, BackupHashListener>();
+        services.AddHostedService<BackupHashRefresh>();
+        return services.AddIntegration<ParentIntegration>();
+    }
+}
+
+/// <summary>
+/// Every 15 minutes, while the parent integration is enabled, reads the hashes the parent computed since the last look and re-checks
+/// those files, so a backup is verified as the parent's hashing goes on instead of at the next full sync.
+/// </summary>
+internal sealed class BackupHashRefresh(IntegrationHost host, ParentIntegration parent, JobLock jobLock, TimeProvider time, ILogger<BackupHashRefresh> log)
+    : Microsoft.Extensions.Hosting.BackgroundService
+{
+    private static readonly TimeSpan Interval = TimeSpan.FromMinutes(15);
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            await Task.Delay(Interval, time, stoppingToken);
+            try
+            {
+                var settings = await host.LoadAsync(parent.Id, stoppingToken);
+                if (!settings.Enabled || host.Status(parent.Id).Running)
+                {
+                    continue;
+                }
+
+                if (await parent.RefreshHashesAsync(settings, jobLock, stoppingToken) is { Checked: > 0 } r)
+                {
+                    log.LogInformation("Backup: {Checked} files re-checked with hashes the parent computed since the last look; {Corrupt} differ", r.Checked, r.Corrupt);
+                }
+            }
+            catch (Exception e) when (e is HttpRequestException or InvalidOperationException or TaskCanceledException or JsonException or Microsoft.Data.Sqlite.SqliteException)
+            {
+                log.LogDebug(e, "Backup hash refresh failed");
+            }
+        }
+    }
 }

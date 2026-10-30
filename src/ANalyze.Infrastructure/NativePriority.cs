@@ -70,8 +70,13 @@ public static partial class Native
 
                 if (!ok)
                 {
-                    failed++;
-                    errno = Marshal.GetLastPInvokeError();
+                    var e = Marshal.GetLastPInvokeError();
+                    // ESRCH: the thread ended meanwhile; nothing to change.
+                    if (e != 3)
+                    {
+                        failed++;
+                        errno = e;
+                    }
                 }
             }
         }

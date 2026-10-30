@@ -307,6 +307,8 @@ public sealed class BackupFile
     public long Size { get; set; }
     /// <summary>Size on the parent; null when the parent has nothing at that path.</summary>
     public long? ParentSize { get; set; }
+    /// <summary>The parent's content hash of the file (same algorithm as here), kept so later hashes on either side are compared at once.</summary>
+    public string? ParentHash { get; set; }
     /// <summary>Files: both content hashes exist and are equal.</summary>
     public bool Verified { get; set; }
     /// <summary>Folders: direct files and sub-folders here, and how many of them are synchronized.</summary>

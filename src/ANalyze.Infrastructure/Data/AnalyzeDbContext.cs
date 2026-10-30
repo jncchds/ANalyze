@@ -59,6 +59,8 @@ public sealed class AnalyzeDbContext(DbContextOptions<AnalyzeDbContext> options)
             e.HasIndex(x => x.CategoryId);
             e.HasIndex(x => x.Ext);
             e.HasIndex(x => x.MTime);
+            // Files hashed since a point in time, per root: the backup export's hash feed for children.
+            e.HasIndex(x => new { x.RootId, x.HashedAt });
             e.Property(x => x.Name).UseCollation("NOCASE");
         });
 

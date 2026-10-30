@@ -39,6 +39,12 @@ public interface IIntegration
 
     /// <summary>Settings key holding the app's URL, used to find its container. Null when the app has no URL.</summary>
     string? UrlField => Fields.Any(f => f.Key == "url") ? "url" : null;
+
+    /// <summary>
+    /// Also sync (with "sync after scan") once the background processing after a scan has finished, not only right after the walk:
+    /// for integrations that use content hashes.
+    /// </summary>
+    bool SyncAfterProcessing => false;
 }
 
 /// <summary>Supplies path mappings found automatically (e.g. from Docker mounts) for an integration.</summary>

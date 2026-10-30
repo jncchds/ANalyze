@@ -29,6 +29,19 @@ internal sealed class ParentClient(HttpClient http, string url, string? token)
     public Task<ExportPage> FilesAsync(int rootId, string? after, CancellationToken ct) =>
         GetAsync<ExportPage>($"/backup/files?rootId={rootId}&limit=5000{(after is null ? "" : "&after=" + Uri.EscapeDataString(after))}", ct);
 
+    /// <summary>The hash feed after <paramref name="after"/>; null when the parent is too old to have one.</summary>
+    public async Task<HashPage?> HashesAsync(int rootId, string after, CancellationToken ct)
+    {
+        try
+        {
+            return await GetAsync<HashPage>($"/backup/hashes?rootId={rootId}&limit=5000&after={Uri.EscapeDataString(after)}", ct);
+        }
+        catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+    }
+
     private async Task<T> GetAsync<T>(string path, CancellationToken ct)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, _base + path);

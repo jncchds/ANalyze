@@ -99,6 +99,8 @@ internal static class Detector
             {
                 ctx.Log.LogInformation("Detecting file types: {Done} of {Total} done", ctx.Done, ctx.Total);
             }
+
+            ctx.CheckYield();
         }
 
         if (ctx.Done > 0)

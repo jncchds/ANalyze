@@ -32,6 +32,7 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
         public int RootId;
         public required string RelPath;
         public long Size;
+        public long MTime;
         public required string Identity;
         public long? Quick;
         public string? Full;
@@ -76,7 +77,7 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
 
         using var q = read.CreateCommand();
         q.CommandText = $"""
-            SELECT Id, RootId, RelPath, Size, {IdentitySql}, QuickHash, FullHash FROM Entries
+            SELECT Id, RootId, RelPath, Size, {IdentitySql}, QuickHash, FullHash, MTime FROM Entries
             WHERE IsDir = 0 AND IsSymlink = 0 AND Size IN (SELECT Size FROM DupSizes)
             ORDER BY Size DESC, Id
             """;
@@ -99,6 +100,7 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
                     Identity = r.GetString(4),
                     Quick = r.IsDBNull(5) ? null : r.GetInt64(5),
                     Full = r.IsDBNull(6) ? null : r.GetString(6),
+                    MTime = r.GetInt64(7),
                 };
                 if (group is null || group[0].Size != row.Size)
                 {
@@ -117,6 +119,8 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
                             {
                                 ctx.Log.LogInformation("Finding duplicates: {Done} of {Total} files hashed, {Bytes} read", ctx.Done, ctx.Total, Format.Bytes(ctx.HashedBytes));
                             }
+
+                            ctx.CheckYield();
                         }
                     }
 
@@ -176,12 +180,15 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
         upd.CommandText = """
             UPDATE Entries SET QuickHash = $q, FullHash = $f,
                 HashedAt = CASE WHEN $f IS NOT NULL AND (FullHash IS NULL OR HashedAt IS NULL) THEN $now ELSE HashedAt END
-            WHERE Id = $id
+            WHERE Id = $id AND Size = $size AND MTime = $mtime
             """;
         upd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
         upd.Parameters.Add(new SqliteParameter("$q", null));
         upd.Parameters.Add(new SqliteParameter("$f", null));
         upd.Parameters.Add(new SqliteParameter("$id", null));
+        upd.Parameters.Add(new SqliteParameter("$size", null));
+        upd.Parameters.Add(new SqliteParameter("$mtime", null));
+        var stored = new List<long>();
         foreach (var g in groups)
         {
             var byIdentity = g.GroupBy(r => r.Identity).ToDictionary(x => x.Key, x => x.First());
@@ -196,11 +203,21 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
                 upd.Parameters["$q"].Value = (object?)rep.Quick ?? DBNull.Value;
                 upd.Parameters["$f"].Value = (object?)rep.Full ?? DBNull.Value;
                 upd.Parameters["$id"].Value = row.Id;
-                upd.ExecuteNonQuery();
+                upd.Parameters["$size"].Value = row.Size;
+                upd.Parameters["$mtime"].Value = row.MTime;
+                if (upd.ExecuteNonQuery() > 0 && rep.Full is not null)
+                {
+                    stored.Add(row.Id);
+                }
             }
         }
 
         tx.Commit();
+        if (stored.Count > 0)
+        {
+            ctx.OnHashed?.Invoke(write, stored);
+        }
+
         ctx.Report();
     }
 

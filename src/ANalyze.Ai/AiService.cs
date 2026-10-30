@@ -98,7 +98,7 @@ public sealed class AiService(
         {
             try
             {
-                using var _ = await jobLock.AcquireAsync("ai", cts.Token);
+                // The model is asked without holding the job lock; each answer is stored under a short shared hold (StoreAsync).
                 await ClassifyAsync(limit, rootId, cts.Token);
             }
             catch (OperationCanceledException)
@@ -336,7 +336,14 @@ public sealed class AiService(
     private async Task<bool> StoreAsync(Candidate c, string category, List<string> tags, double confidence, string? reason, string model,
         List<Category> categories, AiSettings s, CancellationToken ct)
     {
+        // Shared hold: a walk or plan cannot remove the entry while the answer is stored; one may have done so while the model was asked.
+        using var lease = await jobLock.AcquireSharedAsync("ai", ct);
         await using var db = await dbf.CreateDbContextAsync(ct);
+        if (!await db.Entries.AnyAsync(e => e.Id == c.Id, ct))
+        {
+            return false;
+        }
+
         var name = category.StartsWith("new:", StringComparison.OrdinalIgnoreCase) ? category[4..].Trim() : category;
         var existing = await db.AiResults.FirstOrDefaultAsync(r => r.EntryId == c.Id && !r.Applied, ct);
         var row = existing ?? new AiResult { CacheKey = c.CacheKey, EntryId = c.Id, Model = model, Category = name, CreatedAt = DateTimeOffset.UtcNow };

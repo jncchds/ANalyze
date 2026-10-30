@@ -334,6 +334,52 @@ public class JobLockTests
         Assert.Equal(["a1", "a3"], written);
         Assert.Empty(jobLock.PendingWrites);
     }
+
+    [Fact]
+    public async Task Shared_work_runs_together_and_steps_aside_for_an_exclusive_job()
+    {
+        var jobLock = new ANalyze.Infrastructure.Jobs.JobLock();
+        var hashing = await jobLock.AcquireSharedAsync("processing", CancellationToken.None);
+        var sync = await jobLock.AcquireSharedAsync("integration", CancellationToken.None);
+        Assert.Equal(2, jobLock.SharedHolders.Count);
+        Assert.False(await hashing.YieldAsync(CancellationToken.None)); // nobody waits
+
+        // A walk waits for the shared holders; once it waits, new shared work waits too.
+        var walk = jobLock.AcquireAsync("scan", CancellationToken.None);
+        await Task.Delay(50);
+        Assert.False(walk.IsCompleted);
+        Assert.True(hashing.YieldWanted);
+        var late = jobLock.AcquireSharedAsync("ai", CancellationToken.None);
+        sync.Dispose();
+
+        // The processor gives way between batches; the walk runs, then everyone continues.
+        var resumed = hashing.YieldAsync(CancellationToken.None);
+        var held = await walk.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("scan", jobLock.Holder);
+        await Task.Delay(50);
+        Assert.False(resumed.IsCompleted);
+        Assert.False(late.IsCompleted);
+        held.Dispose();
+        Assert.True(await resumed.WaitAsync(TimeSpan.FromSeconds(5)));
+        (await late.WaitAsync(TimeSpan.FromSeconds(5))).Dispose();
+        hashing.Dispose();
+        Assert.Empty(jobLock.SharedHolders);
+        Assert.False(jobLock.ExclusiveWanted);
+    }
+
+    [Fact]
+    public void Merged_processing_covers_both_scans()
+    {
+        var a = new ANalyze.Scanner.ProcessRequest(new ANalyze.Scanner.Scope(1, "a/b"), Full: false, SkipHashing: true, Changed: false, ScanId: 1);
+        var b = new ANalyze.Scanner.ProcessRequest(new ANalyze.Scanner.Scope(1, "a"), Full: false, SkipHashing: false, Changed: true, ScanId: 2);
+        var m = ANalyze.Scanner.ProcessRequest.Merge(a, b);
+        Assert.Equal(new ANalyze.Scanner.Scope(1, "a"), m.Scope);
+        Assert.False(m.SkipHashing);
+        Assert.True(m.Changed);
+        Assert.Equal(2, m.ScanId);
+        Assert.Equal(new ANalyze.Scanner.Scope(1, null), ANalyze.Scanner.ProcessRequest.MergeScope(new(1, "x"), new(1, "y")));
+        Assert.Equal(ANalyze.Scanner.Scope.Everything, ANalyze.Scanner.ProcessRequest.MergeScope(new(1, "x"), new(2, null)));
+    }
 }
 
 public class PriorityTests
@@ -350,7 +396,21 @@ public class PriorityTests
         try
         {
             static int Nice(string tid) => int.Parse(File.ReadAllText($"/proc/self/task/{tid}/stat").Split(')')[1].Split(' ', StringSplitOptions.RemoveEmptyEntries)[16]);
-            Assert.All(Directory.GetDirectories("/proc/self/task").Select(Path.GetFileName), t => Assert.Equal(10, Nice(t!)));
+
+            // Threads of other tests come and go meanwhile: one that ended has no priority to check.
+            static int? NiceIfAlive(string tid)
+            {
+                try
+                {
+                    return Nice(tid);
+                }
+                catch (Exception e) when (e is IOException or DirectoryNotFoundException)
+                {
+                    return null;
+                }
+            }
+
+            Assert.All(Directory.GetDirectories("/proc/self/task").Select(Path.GetFileName), t => Assert.True(NiceIfAlive(t!) is null or 10));
             var child = 0;
             var thread = new Thread(() => child = Nice(File.ReadAllText("/proc/thread-self/stat").Split(' ')[0]));
             thread.Start();

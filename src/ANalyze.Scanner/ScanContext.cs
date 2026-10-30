@@ -1,11 +1,12 @@
 using System.Diagnostics;
 using ANalyze.Infrastructure.Jobs;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Scanner;
 
 /// <summary>Mutable counters for a running scan; snapshots are reported to the <see cref="JobBoard"/>.</summary>
-internal sealed class ScanContext(JobBoard board, long scanId, string title, DateTimeOffset startedAt, CancellationToken ct, ILogger? log = null)
+internal sealed class ScanContext(JobBoard board, long scanId, string title, DateTimeOffset startedAt, CancellationToken ct, ILogger? log = null, string kind = JobKinds.Scan)
 {
     /// <summary>Per-item problems logged one by one per phase; beyond that only counted (and summed up at the end of the phase).</summary>
     public const int ProblemLines = 50;
@@ -33,10 +34,33 @@ internal sealed class ScanContext(JobBoard board, long scanId, string title, Dat
     public long TotalBytes;
     public string? Current;
 
+    /// <summary>The shared hold of background processing; null for work that runs alone (the walk).</summary>
+    public SharedLease? Lease { get; init; }
+
+    /// <summary>Called with the ids of files whose content hash was just stored (after the batch is committed).</summary>
+    public Action<SqliteConnection, IReadOnlyList<long>>? OnHashed { get; init; }
+
+    /// <summary>Called between batches before anything else: waits while the disks are busy with other work (background priority).</summary>
+    public Action? Pace { get; init; }
+
+    /// <summary>
+    /// Call between batches, after the batch is stored: when an exclusive job (a walk, a plan) waits, stops the phase with
+    /// <see cref="YieldException"/> so the processor can step aside and start over from fresh data.
+    /// </summary>
+    public void CheckYield()
+    {
+        Ct.ThrowIfCancellationRequested();
+        Pace?.Invoke();
+        if (Lease?.YieldWanted == true)
+        {
+            throw new YieldException();
+        }
+    }
+
     public void Report(string state = JobStates.Running, string? message = null, bool force = false) =>
         board.Report(new JobProgress
         {
-            Kind = JobKinds.Scan,
+            Kind = kind,
             State = state,
             Phase = Phase,
             Title = title,
@@ -103,3 +127,6 @@ internal sealed class ScanContext(JobBoard board, long scanId, string title, Dat
         return true;
     }
 }
+
+/// <summary>Thrown by <see cref="ScanContext.CheckYield"/>: background processing steps aside for an exclusive job.</summary>
+internal sealed class YieldException() : Exception("An exclusive job is waiting");

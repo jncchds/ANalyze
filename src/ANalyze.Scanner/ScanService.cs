@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging;
 namespace ANalyze.Scanner;
 
 /// <summary>
-/// What to scan: everything, one root, or a folder inside a root. Two lighter jobs share the scan queue (one writer at a time,
+/// What to scan: everything, one root, or a folder inside a root. Two lighter jobs share the scan queue (one at a time,
 /// same progress and cancel button): <see cref="PruneIgnored"/> only removes newly ignored entries from the index, and
 /// <see cref="VerifyExtractions"/> only checks those extracted archives against their archives' CRC32s.
 /// </summary>
@@ -24,27 +24,80 @@ public sealed record ScanRequest(int? RootId = null, string? SubPath = null, boo
 }
 
 /// <summary>
-/// Runs a scan: walk → detect → categorize → list archives and find their extractions → hash (all files, if enabled) → hash
-/// duplicates → verify old hashes → history snapshot.
+/// Runs a scan: the walk (and the folder size history) holds the <see cref="JobLock"/> alone; everything after it (detect,
+/// categorize, archives, hashing, duplicates, verification) is handed to <see cref="ScanProcessor"/>, which runs in the
+/// background next to other shared work and steps aside for the next walk.
 /// </summary>
 public sealed class ScanService(
     SqliteSetup sqlite,
     IDbContextFactory<AnalyzeDbContext> dbf,
     RootRegistry roots,
     SettingsStore settings,
-    Categorizer categorizer,
     JobBoard board,
+    JobLock jobLock,
+    ScanProcessor processor,
     ILogger<ScanService> log)
 {
+    /// <summary>Raised when a scan's walk completed (the tree is current; types, hashes etc. follow in the background).</summary>
     public event Action<long>? Completed;
 
-    public async Task RunAsync(ScanRequest req, CancellationToken ct)
+    /// <param name="lockHeld">The caller already holds the job lock alone (a plan rescanning the folders it changed).</param>
+    public async Task RunAsync(ScanRequest req, CancellationToken ct, bool lockHeld = false)
     {
-        if (req.PruneIgnored || req.VerifyExtractions is not null)
+        if (lockHeld && !req.PruneIgnored && req.VerifyExtractions is null)
         {
-            await RunLightAsync(req, ct);
+            var (id, after) = await WalkAsync(req, ct);
+            if (after is not null)
+            {
+                processor.Request(after);
+                Completed?.Invoke(id);
+            }
+
             return;
         }
+
+        if (req.PruneIgnored)
+        {
+            using (await jobLock.AcquireAsync("scan", ct))
+            {
+                await RunLightAsync(req, ct);
+            }
+
+            return;
+        }
+
+        if (req.VerifyExtractions is not null)
+        {
+            using (await jobLock.AcquireSharedAsync("checking extractions", ct))
+            {
+                await RunLightAsync(req, ct);
+            }
+
+            return;
+        }
+
+        if (jobLock.Holder is { } busy)
+        {
+            log.LogInformation("Scan waits for {Holder} to finish", busy);
+        }
+
+        ProcessRequest? next;
+        long scanId;
+        using (await jobLock.AcquireAsync("scan", ct))
+        {
+            (scanId, next) = await WalkAsync(req, ct);
+        }
+
+        if (next is not null)
+        {
+            processor.Request(next);
+            Completed?.Invoke(scanId);
+        }
+    }
+
+    /// <summary>The exclusive part of a scan; returns what the processor should do next (null when the walk did not complete).</summary>
+    private async Task<(long ScanId, ProcessRequest? Next)> WalkAsync(ScanRequest req, CancellationToken ct)
+    {
 
         var s = settings.Current;
         var targets = roots.All.Where(r => !r.Missing && (req.RootId is null || r.Id == req.RootId)).ToList();
@@ -73,7 +126,6 @@ public sealed class ScanService(
         string? message = null;
         try
         {
-            var rootPaths = roots.All.ToDictionary(r => r.Id, r => r.Path);
             using var conn = sqlite.Open();
             foreach (var root in targets)
             {
@@ -83,85 +135,15 @@ public sealed class ScanService(
             log.LogInformation("Walk finished in {Time}: {Files} files in {Dirs} folders ({Size}); {Added} new, {Changed} changed, {Removed} removed, {Errors} errors",
                 Format.Duration(phaseClock.Elapsed), ctx.FilesSeen, ctx.DirsSeen, Format.Bytes(ctx.BytesSeen), ctx.Added, ctx.Changed, ctx.Removed, ctx.Errors);
 
-            var scope = targets.Count == 1 ? new Scope(targets[0].Id, req.SubPath) : Scope.Everything;
-            phaseClock.Restart();
-            Detector.Run(conn, ctx, rootPaths, scope, s.SniffUnknownFiles);
-
-            phaseClock.Restart();
-            ctx.StartPhase("categorizing");
-            var engine = await categorizer.LoadEngineAsync(ct);
-            log.LogInformation("Categorizing: applying {Rules} rules to the files in scope", engine.Count);
-            ctx.Categorized = Categorizer.Run(conn, engine, scope, (done, total) =>
-            {
-                ctx.Done = done;
-                ctx.Total = total;
-                ctx.Report();
-            }, ct);
-            log.LogInformation("Categorizing finished in {Time}: {Changed} files got another category or tags", Format.Duration(phaseClock.Elapsed), ctx.Categorized);
-
-            if (s.FindExtractedArchives)
-            {
-                phaseClock.Restart();
-                using var write = sqlite.Open();
-                var listed = ArchiveIndexer.Run(conn, write, ctx, rootPaths, scope, s);
-                // Extractions can be on any root: look again after full scans and whenever something changed.
-                if (full || listed > 0 || ctx.Added + ctx.Changed + ctx.Removed > 0)
-                {
-                    ExtractionMatcher.Run(conn, write, ctx);
-                }
-
-                log.LogInformation("Archive phases finished in {Time}", Format.Duration(phaseClock.Elapsed));
-            }
-
-            if (!req.SkipHashing && (s.HashAllFiles || s.FindDuplicates || s.VerifyAfterDays > 0))
-            {
-                using var write = sqlite.Open();
-                var hasher = new ContentHasher(conn, write, ctx, rootPaths, s.WorkerThreads());
-                if (s.HashAllFiles)
-                {
-                    phaseClock.Restart();
-                    var before = ctx.Hashed;
-                    await hasher.HashMissingAsync();
-                    log.LogInformation("Hashing finished in {Time}: {Count} files hashed", Format.Duration(phaseClock.Elapsed), ctx.Hashed - before);
-                }
-
-                if (s.FindDuplicates)
-                {
-                    phaseClock.Restart();
-                    var groups = await new DuplicateFinder(conn, write, ctx, rootPaths, Math.Max(1, s.MinDuplicateSize), s.WorkerThreads()).RunAsync();
-                    log.LogInformation("Duplicate search finished in {Time}: {Groups} sets of identical files", Format.Duration(phaseClock.Elapsed), groups);
-                }
-
-                // Verification re-reads a lot of data: only during full scans.
-                if (s.VerifyAfterDays > 0 && full)
-                {
-                    var cutoff = DateTimeOffset.UtcNow.AddDays(-s.VerifyAfterDays).ToUnixTimeSeconds();
-                    phaseClock.Restart();
-                    var changed = await hasher.VerifyAsync(cutoff, Math.Max(0, s.VerifyMaxGb) * (1L << 30));
-                    log.LogInformation("Verification finished in {Time}: {Files} files re-read", Format.Duration(phaseClock.Elapsed), ctx.Done);
-                    if (changed > 0)
-                    {
-                        log.LogWarning("Scan {Id}: {Count} files changed content without a new size or modification time (possible corruption)", run.Id, changed);
-                    }
-                }
-            }
-
-            else if (req.SkipHashing)
-            {
-                log.LogInformation("Hashing skipped for this scan");
-            }
-
-            ctx.StartPhase("finishing");
-            log.LogInformation("Finishing: saving folder size history and optimizing the database");
             if (full)
             {
+                ctx.StartPhase("finishing");
+                log.LogInformation("Finishing: saving the folder size history");
                 foreach (var root in targets)
                 {
                     Snapshot(conn, run.Id, root.Id, s.HistoryDepth);
                 }
             }
-
-            Optimize(conn);
         }
         catch (OperationCanceledException)
         {
@@ -203,7 +185,6 @@ public sealed class ScanService(
             row.Added = ctx.Added;
             row.Changed = ctx.Changed;
             row.Removed = ctx.Removed;
-            row.Hashed = ctx.Hashed;
             row.Errors = ctx.Errors;
             row.TotalSize = ctx.BytesSeen;
             row.Message = message ?? row.Message;
@@ -227,12 +208,16 @@ public sealed class ScanService(
             ScanStatus.Cancelled => JobStates.Cancelled,
             _ => JobStates.Failed,
         }, message, force: true);
-        log.LogInformation("Scan {Id} {Status}: {Files} files, +{Added} ~{Changed} -{Removed}, {Hashed} hashed, {Errors} errors",
-            run.Id, status, ctx.FilesSeen, ctx.Added, ctx.Changed, ctx.Removed, ctx.Hashed, ctx.Errors);
-        if (status == ScanStatus.Completed)
+        log.LogInformation("Scan {Id} {Status}: {Files} files, +{Added} ~{Changed} -{Removed}, {Errors} errors{Next}",
+            run.Id, status, ctx.FilesSeen, ctx.Added, ctx.Changed, ctx.Removed, ctx.Errors,
+            status == ScanStatus.Completed ? "; types, categories and hashes follow in the background" : "");
+        if (status != ScanStatus.Completed)
         {
-            Completed?.Invoke(run.Id);
+            return (run.Id, null);
         }
+
+        var scope = targets.Count == 1 ? new Scope(targets[0].Id, req.SubPath) : Scope.Everything;
+        return (run.Id, new ProcessRequest(scope, full, req.SkipHashing, ctx.Added + ctx.Changed + ctx.Removed > 0, run.Id));
     }
 
     /// <summary>Prunes ignored entries or checks extractions: no walk, no scan history row, no "scan completed" event.</summary>
@@ -431,7 +416,7 @@ public sealed class ScanService(
         cmd.ExecuteNonQuery();
     }
 
-    private static void Optimize(SqliteConnection conn)
+    internal static void Optimize(SqliteConnection conn)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "PRAGMA optimize;";

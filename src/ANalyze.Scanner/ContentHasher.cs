@@ -112,6 +112,8 @@ internal sealed class ContentHasher(SqliteConnection read, SqliteConnection writ
                         ctx.Log.LogInformation("{Phase}: {Done} of {Total} files, {Bytes} of {TotalBytes}", verify ? "Verifying" : "Hashing",
                             ctx.Done, ctx.Total, Format.Bytes(ctx.HashedBytes), Format.Bytes(ctx.TotalBytes));
                     }
+
+                    ctx.CheckYield();
                 }
 
                 batch.Add(row);
@@ -192,6 +194,7 @@ internal sealed class ContentHasher(SqliteConnection read, SqliteConnection writ
 
         upd.Parameters.AddWithValue("$now", now);
         var byIdentity = reps.ToDictionary(r => verify ? "#" + r.Id : r.Identity);
+        var stored = new List<long>(rows.Count);
         foreach (var row in rows)
         {
             var rep = byIdentity[verify ? "#" + row.Id : row.Identity];
@@ -213,10 +216,18 @@ internal sealed class ContentHasher(SqliteConnection read, SqliteConnection writ
             upd.Parameters["$id"].Value = row.Id;
             upd.Parameters["$size"].Value = row.Size;
             upd.Parameters["$mtime"].Value = row.MTime;
-            upd.ExecuteNonQuery();
+            if (upd.ExecuteNonQuery() > 0)
+            {
+                stored.Add(row.Id);
+            }
         }
 
         tx.Commit();
+        if (stored.Count > 0)
+        {
+            ctx.OnHashed?.Invoke(write, stored);
+        }
+
         ctx.Report();
         return changed;
     }

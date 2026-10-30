@@ -79,6 +79,10 @@ later scans only look at what changed (size, mtime, inode), so they are much fas
 
 - **Live results** — results are stored while the scan runs (at least every 2 seconds), so Browse, Search and the
   integrations see folders as soon as they are walked.
+- **Walk first, the rest in the background** — a scan only holds the index to itself while it walks the folders. File
+  types, categories, archives, hashes, duplicates and re-verification then run in the background (*Processing* in the
+  sidebar), next to integration syncs and the AI, and step aside whenever the next scan or a plan needs the index;
+  they carry on afterwards where they were. **Stop** in the sidebar stops them; the next scan picks the work up again.
 - **Other filesystems** — disks, shares, ZFS datasets or btrfs subvolumes mounted *below* a root are entered unless
   *Descend into other filesystems* is turned off in **Settings → Scanning**. Then they are marked "not scanned" in Browse
   and listed in the activity log, and you choose the ones to enter under *Other filesystems to enter* (e.g.
@@ -89,7 +93,8 @@ later scans only look at what changed (size, mtime, inode), so they are much fas
   scan its folder to bring it back).
 - **Priority** — **Settings → Scanning → Priority**: *Full speed*, or *Background*: ANalyze runs at low CPU priority and
   gets disk time only when nothing else wants it, with one worker thread, so the server's other services stay
-  responsive while it scans and hashes (it takes longer).
+  responsive while it scans and hashes (it takes longer). In background mode the hashing and the other background work
+  also check how busy the disks are: while something else keeps them more than half busy, they wait.
 - **Not scanned yet** — Browse compares each folder with the disk: what is there but not scanned yet, or ignored, is
   listed under the folder with buttons to scan the folder or (stop) ignoring an item. Folders in that list open, as deep
   as they go, read live from the disk.
@@ -258,6 +263,11 @@ How it decides:
 The **Backup** page shows how much is on the backup, corrupted and missing files, and a folder view with each folder's
 share; Browse labels every folder (*Synced*, *Not synced · 40%*) and each corrupted or missing file. The comparison runs
 after each scan of the child; the backup server only answers read-only requests.
+
+Hashing a large library takes a long time, so the comparison doesn't wait for it: it compares sizes where a hash is
+still missing and uses each hash as soon as it exists. Files hashed on the child are checked against the backup batch
+by batch, and every 15 minutes the child fetches the hashes the backup server computed since then (backup server
+0.1.10 or newer).
 
 ### Plex
 

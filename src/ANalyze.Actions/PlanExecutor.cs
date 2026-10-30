@@ -178,7 +178,8 @@ public sealed class PlanExecutor(
         {
             try
             {
-                await scanner.RunAsync(new ScanRequest(root, dir, Reason: $"After plan #{plan.Id}"), CancellationToken.None);
+                // PlanWorker holds the job lock alone already.
+                await scanner.RunAsync(new ScanRequest(root, dir, Reason: $"After plan #{plan.Id}"), CancellationToken.None, lockHeld: true);
             }
             catch (Exception e) when (e is not OutOfMemoryException)
             {

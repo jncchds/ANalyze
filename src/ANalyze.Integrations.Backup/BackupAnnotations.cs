@@ -12,6 +12,10 @@ internal static class BackupAnnotations
     public const string Kind = "backup";
     public const string RootKind = "backup-root";
     private const int MaxFileLabels = 50_000;
+    public const string CorruptLabel = "Corrupted: differs from the backup";
+
+    public static string CorruptDetail(string parentName, long size, long parentSize) =>
+        size == parentSize ? $"{parentName} has other content of the same size" : $"{parentName} has {Format.Bytes(parentSize)}, here {Format.Bytes(size)}";
 
     public static int Write(SqliteConnection conn, string source, string parentName, IReadOnlyList<BackupTarget> targets)
     {
@@ -39,7 +43,7 @@ internal static class BackupAnnotations
                 else if (files++ < MaxFileLabels)
                 {
                     notes.Add(state == BackupStates.Corrupt
-                        ? new Annotations.Item(id, Kind, "Corrupted: differs from the backup", r.IsDBNull(6) ? null : $"{parentName} has {Format.Bytes(r.GetInt64(6))}, here {Format.Bytes(r.GetInt64(5))}", state)
+                        ? new Annotations.Item(id, Kind, CorruptLabel, r.IsDBNull(6) ? null : CorruptDetail(parentName, r.GetInt64(5), r.GetInt64(6)), state)
                         : new Annotations.Item(id, Kind, "Missing from the backup", $"not on {parentName}", state));
                 }
             }

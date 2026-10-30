@@ -53,8 +53,9 @@ SQLite (WAL) in /data/analyze.db
   its own rows on each sync.
 - **BackupFiles** — written by the `parent` integration (the parent is this instance's backup server): one row per local file and folder inside
   the backed-up folders (`State`: files synced/corrupt/missing/unsynced, folders synced/unsynced; `IsDir`, `EntryId`, `LocalRootId`/`LocalRelPath`,
-  `Size`, `ParentSize` when the parent has the path, `Verified` = equal content hashes, folders' `Children`/`SyncedChildren`). Replaced on each sync;
-  `Settings["backup:parent"]` keeps the last `BackupSnapshot` (parent info, targets, mappings used, detected mappings).
+  `Size`, `ParentSize` and `ParentHash` when the parent has the path, `Verified` = equal content hashes, folders' `Children`/`SyncedChildren`).
+  Replaced on each sync; file rows are re-checked in between as hashes arrive (`BackupRecheck`). `Settings["backup:parent"]` keeps the last
+  `BackupSnapshot` (parent info, targets, mappings used, detected mappings, hash-feed cursors per parent root).
 - **ArchiveListings** (key = the archive's `EntryId`; `Size`/`MTime` it was listed at, `Format`, `Streamed`, `Error`, `Files`, `FileBytes`),
   **ArchiveMembers** (`ArchiveId`, normalized `Path`, `Name`, `Size`, `Crc` = CRC32 or null) and **ArchiveExtractions** (`ArchiveId`, `State`
   complete/partial, `RootId` + `BaseRelPath` + `Strip` = archive path `p` is expected at `BaseRelPath/p` with `Strip` removed from its start,
@@ -68,11 +69,30 @@ SQLite can sort them. Migrations are created only with `dotnet ef migrations add
 
 ## Scan pipeline (`ScanService.RunAsync`)
 
-One scan at a time (`ScanQueue` → `ScanWorker`, guarded by `JobLock`). `JobLock` serializes every background writer: scans, plan
-apply, AI runs, rule apply and integration syncs (a sync waiting for it reports `queued`). Settings saves (`SettingsStore`,
-`IntegrationHost.SaveAsync`, ignore / enter-filesystem endpoints) apply in memory at once and persist through `JobLock.WriteAsync`:
-written immediately when the lock is free, else kept per key (latest wins) and written when the running job releases it; the
-endpoints return `savedLater` (the holder) so the UI can say so.
+One scan at a time (`ScanQueue` → `ScanWorker`). `JobLock` is a reader/writer lock over the index:
+
+- **Exclusive** (`AcquireAsync`) — only work that changes the tree itself: a scan's walk (and its folder size history), applying a plan
+  (`PlanWorker`; its rescans of the changed folders run inside that hold, `ScanService.RunAsync(lockHeld: true)`) and removing ignored
+  folders (`PruneIgnored`). Exclusive requests win: while one runs or waits, no new shared holder starts.
+- **Shared** (`AcquireSharedAsync` → `SharedLease`) — everything that only fills in or reads data about existing entries and runs side by
+  side: the background processing after a walk (`ScanProcessor`), integration syncs, rule apply, extraction checks, AI (only while storing
+  each answer, never while waiting for the model; it skips entries that vanished meanwhile) and the backup hash refresh.
+  Long shared work gives way between batches: `ScanContext.CheckYield` throws `YieldException` when `SharedLease.YieldWanted`, the
+  processor releases its lease, waits for the exclusive job and starts over from the first unfinished phase. Shared work never keeps
+  anything across a yield, and writes only rows that are still the same (`WHERE Id AND Size AND MTime`).
+- Settings saves (`SettingsStore`, `IntegrationHost.SaveAsync`, ignore / enter-filesystem endpoints) apply in memory at once and persist
+  through `JobLock.WriteAsync`: written immediately (shared) unless an exclusive job runs or waits, else kept per key (latest wins) and
+  written when it is done; the endpoints return `savedLater` (the holder) so the UI can say so.
+
+`ScanService.RunAsync` does step 1 (and step 7's history) under the exclusive lock, marks the `ScanRun` completed, raises `Completed`
+(integrations re-sync at once) and hands steps 2–7 to `ScanProcessor.Request` (a `ProcessRequest`: scope, full, skip hashing, changed).
+`ScanProcessor` (`ScanProcessorWorker`) runs one pass at a time as job kind `processing`; requests that arrive meanwhile are merged
+(`ProcessRequest.Merge`: smallest common scope) and, at the next phase boundary, restart the pass. Every phase works from the state in the
+index (`Detected = 0`, `FullHash IS NULL`, `HashedAt` older than…), so stopping at any batch loses nothing. After a pass it adds the hash
+count to the scan's row and raises `Processed` (AI auto-classify; integrations with `IIntegration.SyncAfterProcessing`). At startup
+without a startup scan it queues a pass over everything (no categorizing) that resumes unfinished detection and hashing.
+`IHashListener`s are told the entry ids of every stored hash batch (the backup re-check). `GET /scan/status` says whether a scan walks
+and whether processing runs; `/scan/cancel` stops both.
 
 1. **Walk** (`Walker`): depth-first; per directory it loads existing children by `ParentId`, `lstat`s every name (`Native.LStat` → `statx`),
    inserts new rows, updates changed files (size/mtime/inode/type) and resets their detection and hashes, deletes vanished subtrees,
@@ -112,14 +132,14 @@ endpoints return `savedLater` (the holder) so the UI can say so.
 6. **Verify** (full scans with `VerifyAfterDays > 0`, `ContentHasher.VerifyAsync`): re-reads files with `HashedAt` older than that, oldest first, up to
    `VerifyMaxGb`; a different hash with unchanged size and mtime sets `CorruptAt` (insight "Possibly corrupted files", search `corrupt=true`;
    `DELETE /files/{id}/corrupt` accepts the new content). Files whose size/mtime differ from the index are skipped (the next walk resets them).
-7. **History** snapshot (full scans), `PRAGMA optimize`.
+7. **History** snapshot (full scans, during the walk's exclusive hold); `PRAGMA optimize` at the end of processing.
 
 Hash batches (`ContentHasher`, `DuplicateFinder`) are also stored once they hold 2 GB / 8 GB of files, so big files' hashes are saved as
 they come. Phase names (`walking`, `detecting`, `categorizing`, `archives`, `extractions`, `hashing`, `duplicates`, `verifying`, `finishing`, and the
 light jobs' `checking` and `pruning`) are explained in the UI by
 `ClientApp/src/lib/phases.ts` — keep it in sync when adding a phase.
 
-Two light jobs share the scan queue (one writer at a time, same progress and cancel; no `ScanRun` row, no `Completed` event):
+Two light jobs share the scan queue (one at a time, same progress and cancel; no `ScanRun` row, no `Completed` event; pruning is exclusive, the check shared):
 `ScanRequest.VerifyExtractions` (`ExtractionVerifier`: reads each matched file and compares its CRC32 with the archive's — the archive itself
 is never read; files whose size/mtime differ from the index count as unverified) and `ScanRequest.PruneIgnored` (`IgnorePruner`: walks the
 `(RootId, RelPath)` index and deletes the outermost entries the ignore list covers, with `EntryMaintenance.DeleteEntry`). `POST /ignore`
@@ -128,9 +148,12 @@ and settings saves that add ignore patterns queue the prune, so ignored items le
 Priority (`AppSettings.Priority`, `PriorityApplier`): `background` sets every thread of the process to nice 10 and the idle I/O class
 (`Native.SetBackgroundPriority`, Linux via `/proc/self/task`; new threads inherit it; elsewhere the process priority class), and
 `AppSettings.WorkerThreads()` returns 1 instead of `HashThreads`; `full` restores normal priority (needs root or CAP_SYS_NICE on Linux,
-otherwise a restart).
+otherwise a restart). In background mode the processor also watches the disks (`DiskLoad`, `/proc/diskstats` I/O time of the roots'
+devices, or of every real disk when none matches, e.g. ZFS): at most every 5 s, between batches (none of its own I/O in flight), it measures
+for 0.5 s and, while another process keeps a disk more than 50% busy, waits 10 s and measures again (the job shows "waiting: disks …
+busy"); an exclusive job waiting ends the wait.
 
-Progress is reported to `JobBoard` (kind `scan`), throttled, and pushed through SignalR (`progress` events). The UI refetches what is on
+Progress is reported to `JobBoard` (kinds `scan` and `processing`), throttled, and pushed through SignalR (`progress` events). The UI refetches what is on
 screen when a job changes phase and every 10 s while a scan runs; server caches (`Caches`) are dropped on phase changes too.
 
 ## Activity log
@@ -239,9 +262,10 @@ such an entry (hard links are allowed — the content stays).
 
 A parent–child link: the **parent** is the ANalyze on the backup server, the **child** is the instance whose files are backed up there; the child
 enables the `parent` integration (URL, the parent's `ANalyze__ApiToken`, mappings parent path → local path). The parent needs nothing but a token;
-it always serves `GET /api/v1/backup/info` (version, hash algorithm, `HashAllFiles`, roots with file/hash counts) and
+it always serves `GET /api/v1/backup/info` (version, hash algorithm, `HashAllFiles`, roots with file/hash counts, its clock `now`),
 `GET /api/v1/backup/files?rootId=&after=&limit=` (files and folders of one root in `RelPath` order, keyset-paged on the unique index; short JSON
-names `p s m h c d`). Both are behind the normal auth policy.
+names `p s m h c d`) and `GET /api/v1/backup/hashes?rootId=&after=hashedAt:id&limit=` (the hash feed: files hashed or re-verified after the
+cursor, oldest first, on the index `(RootId, HashedAt)`; `cursor` = where the page ends). All are behind the normal auth policy.
 
 Rules (`BackupSync`, child side):
 - a **file is synchronized** when the parent has a file at the mapped path;
@@ -256,7 +280,14 @@ on the server). If fewer than a fifth of a root's first 200 files are found at t
 (name + size). Local entries in those folders (outermost only, no symlinks) are loaded with their parent counterpart and processed deepest first,
 so each folder sees its children's results; then `BackupFiles` is replaced in one transaction. `BackupAnnotations` labels every folder (Synced /
 Not synced · N%, `backup` kind), the backed-up folders (`backup-root`) and corrupt/missing files (at most 50k); other files are not labelled one by
-one. `GET /entries/{id}` returns the entry's `backup` row. Plugin routes: `summary`, `folders?rootId&path` (the folder, its sub-folders, its direct
+one. `GET /entries/{id}` returns the entry's `backup` row.
+
+Hashes need not exist when the sync runs (it compares sizes where a hash is missing) and are used as they arrive, without a new sync
+(`BackupRecheck.Run`: equal hashes verify, a different size or hash inside a synchronized folder makes the file corrupt and labels it):
+- hashed **here**: `BackupHashListener` (an `IHashListener`) re-checks every batch the background hashing stores;
+- hashed on the **parent**: `BackupHashRefresh` reads the parent's hash feed every 15 minutes from the cursors the last sync saved (the
+  parent's clock at the sync's start), stores `ParentHash`/`ParentSize` and re-checks those files; older parents without a feed are skipped.
+The integration also syncs again after the processing that follows a scan (`SyncAfterProcessing`), which settles folder states. Plugin routes: `summary`, `folders?rootId&path` (the folder, its sub-folders, its direct
 files by state), `files?state&rootId&path&direct&q&sort` (with the parent path, mapped back), `suggest-mappings`. UI: `integrations/parent/BackupPage.tsx`.
 
 ### Docker
