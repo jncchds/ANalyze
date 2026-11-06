@@ -1,7 +1,6 @@
 using ANalyze.Infrastructure.Jobs;
 using Microsoft.AspNetCore.SignalR;
 using ANalyze.Infrastructure.Logging;
-using Microsoft.Extensions.Caching.Memory;
 
 namespace ANalyze.Web.Infrastructure;
 
@@ -11,7 +10,7 @@ public sealed class JobHub(JobBoard board) : Hub
     public IReadOnlyCollection<JobProgress> GetStatus() => board.All;
 }
 
-public sealed class JobHubObserver(IHubContext<JobHub> hub, IMemoryCache cache) : IJobObserver
+public sealed class JobHubObserver(IHubContext<JobHub> hub, Caches caches) : IJobObserver
 {
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string?> _phases = new();
 
@@ -22,36 +21,110 @@ public sealed class JobHubObserver(IHubContext<JobHub> hub, IMemoryCache cache) 
         if (!progress.IsActive || phaseChanged)
         {
             // Cached summaries (sidebar counters, overview) are stale once a job finishes or moves on to its next step.
-            Caches.Invalidate(cache);
+            caches.Invalidate();
         }
 
         _ = hub.Clients.All.SendAsync("progress", progress);
     }
 }
 
-public static class Caches
+/// <summary>
+/// Results of whole-index aggregates (overview, insights, sidebar counters), served stale-while-revalidate: once computed, a value is
+/// returned at once even when stale, while one background computation per key brings it up to date and then tells the UI
+/// ("refreshed" with the key) to fetch it again. On a slow or busy disk (a scan running) the pages stay usable instead of waiting
+/// for, and piling up, aggregates over millions of rows. Only the very first request for a key waits.
+/// </summary>
+public sealed class Caches(IHubContext<JobHub> hub, ILogger<Caches> log)
 {
-    private static CancellationTokenSource _reset = new();
+    /// <summary>A fresh value is recomputed after this long anyway (changes that no job reports).</summary>
+    private static readonly TimeSpan MaxAge = TimeSpan.FromMinutes(10);
 
-    public static Microsoft.Extensions.Primitives.IChangeToken Token => new Microsoft.Extensions.Primitives.CancellationChangeToken(_reset.Token);
+    /// <summary>A stale value is recomputed at most this often, so a long scan's many steps do not keep the disks busy with aggregates.</summary>
+    public TimeSpan MinGap { get; set; } = TimeSpan.FromSeconds(60);
 
-    public static void Invalidate(IMemoryCache _)
+    private sealed class Slot
     {
-        var old = Interlocked.Exchange(ref _reset, new CancellationTokenSource());
-        old.Cancel();
-        old.Dispose();
+        public object? Value;
+        public long Version = -1;
+        public DateTimeOffset At;
+        public Task? Running;
     }
 
-    public static async Task<T> GetAsync<T>(IMemoryCache cache, string key, Func<Task<T>> factory)
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Slot> _slots = new();
+    private long _version;
+
+    /// <summary>Marks every cached value stale; each is recomputed in the background on its next request.</summary>
+    public void Invalidate() => Interlocked.Increment(ref _version);
+
+    public async Task<T> GetAsync<T>(string key, Func<Task<T>> factory)
+        where T : class
     {
-        if (cache.TryGetValue(key, out T? v) && v is not null)
+        var slot = _slots.GetOrAdd(key, _ => new Slot());
+        Task running;
+        lock (slot)
         {
-            return v;
+            var now = DateTimeOffset.UtcNow;
+            var stale = slot.Version != Interlocked.Read(ref _version) || now - slot.At > MaxAge;
+            if (stale && slot.Running is null)
+            {
+                // A value computed less than MinGap ago is kept that long before the next computation starts.
+                var wait = slot.Value is null ? TimeSpan.Zero : slot.At + MinGap - now;
+                slot.Running = Task.Run(() => RefreshAsync(key, slot, factory, wait));
+            }
+
+            if (slot.Value is T value)
+            {
+                return value;
+            }
+
+            running = slot.Running!;
         }
 
-        v = await factory();
-        cache.Set(key, v, new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10) }.AddExpirationToken(Token));
-        return v;
+        // Nothing computed yet: wait for the computation (its error, if any, goes to this request).
+        await running;
+        lock (slot)
+        {
+            return (T)slot.Value!;
+        }
+    }
+
+    private async Task RefreshAsync<T>(string key, Slot slot, Func<Task<T>> factory, TimeSpan wait)
+        where T : class
+    {
+        var hadValue = slot.Value is not null;
+        try
+        {
+            if (wait > TimeSpan.Zero)
+            {
+                await Task.Delay(wait);
+            }
+
+            // Invalidations during the computation leave the result stale, so the next request starts another.
+            var version = Interlocked.Read(ref _version);
+            var v = await factory();
+            lock (slot)
+            {
+                (slot.Value, slot.Version, slot.At) = (v, version, DateTimeOffset.UtcNow);
+            }
+        }
+        catch (Exception e) when (hadValue)
+        {
+            // The stale value stays; the next request tries again.
+            log.LogWarning(e, "Refreshing {Key} failed", key);
+            return;
+        }
+        finally
+        {
+            lock (slot)
+            {
+                slot.Running = null;
+            }
+        }
+
+        if (hadValue)
+        {
+            _ = hub.Clients.All.SendAsync("refreshed", key);
+        }
     }
 }
 

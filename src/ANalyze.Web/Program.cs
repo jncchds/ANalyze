@@ -79,6 +79,7 @@ builder.Services.AddPhotoIntegrations();
 builder.Services.AddDockerIntegration();
 builder.Services.AddBackupIntegration();
 builder.Services.AddSingleton(sp => new PreviewService(analyze.ThumbsDir, sp.GetRequiredService<ILogger<PreviewService>>()));
+builder.Services.AddSingleton<Caches>();
 builder.Services.AddSingleton<IJobObserver, JobHubObserver>();
 builder.Services.AddHostedService<LogPusher>();
 builder.Services.AddMemoryCache();

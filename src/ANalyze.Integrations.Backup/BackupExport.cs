@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json.Serialization;
 using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Roots;
 using ANalyze.Infrastructure.Settings;
@@ -14,7 +15,10 @@ namespace ANalyze.Integrations.Backup;
 /// <param name="Now">The parent's clock (unix seconds) when answering: where a child starts reading the hash feed after a sync. Null from older parents.</param>
 public sealed record ExportInfo(string App, string? Version, string Host, string HashAlgorithm, bool HashAllFiles, int VerifyAfterDays, IReadOnlyList<ExportRoot> Roots, long? Now = null);
 
-public sealed record ExportRoot(int Id, string Path, string Name, long Files, long Size, long Hashed, DateTimeOffset? LastScanAt);
+/// <param name="Files">Files under the root (from the root folder's totals; symlinks included, partial while a scan walks).</param>
+/// <param name="Hashed">No longer sent (counting it scanned the whole index); left out of the JSON so older children read 0.</param>
+public sealed record ExportRoot(int Id, string Path, string Name, long Files, long Size,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Hashed, DateTimeOffset? LastScanAt);
 
 /// <summary>One file or folder, with short property names because there can be millions.</summary>
 /// <param name="P">Path relative to the root.</param>
@@ -51,18 +55,19 @@ public static class BackupExport
         g.MapGet("/info", (SqliteSetup sqlite, RootRegistry roots, SettingsStore settings) =>
         {
             using var c = sqlite.Open();
-            var counts = Db.Query(c, "SELECT RootId, COUNT(*), COALESCE(SUM(Size), 0), COUNT(FullHash) FROM Entries WHERE IsDir = 0 AND IsSymlink = 0 GROUP BY RootId",
-                r => (Root: r.GetInt32(0), Files: r.GetInt64(1), Size: r.GetInt64(2), Hashed: r.GetInt64(3))).ToDictionary(x => x.Root);
+            // The root folder's row already holds the totals: one lookup per root on the (RootId, RelPath) index, no scan of all files.
             var s = settings.Current;
             return new ExportInfo("ANalyze", Version(), Environment.MachineName, HashAlgorithm, s.HashAllFiles, s.VerifyAfterDays,
                 roots.All.Where(r => !r.Missing).Select(r =>
                 {
-                    var n = counts.GetValueOrDefault(r.Id);
-                    return new ExportRoot(r.Id, r.Path, r.Name, n.Files, n.Size, n.Hashed, r.LastScanAt);
+                    var n = Db.Query(c, "SELECT FileCount, TotalSize FROM Entries WHERE RootId = $r AND RelPath = ''",
+                        x => (Files: x.GetInt64(0), Size: x.GetInt64(1)), ("$r", r.Id)).FirstOrDefault();
+                    return new ExportRoot(r.Id, r.Path, r.Name, n.Files, n.Size, null, r.LastScanAt);
                 }).ToList(), DateTimeOffset.UtcNow.ToUnixTimeSeconds());
         });
 
         // Keyset paging on the (RootId, HashedAt) index; the cursor is "hashedAt:id" of the last file returned.
+        // "HashedAt >= $at" lets SQLite seek to the cursor; with only the OR it walks the root's index from the start on every page.
         g.MapGet("/hashes", (int rootId, string? after, int? limit, SqliteSetup sqlite, RootRegistry roots) =>
         {
             if (roots.Get(rootId) is null)
@@ -75,7 +80,7 @@ public static class BackupExport
             using var c = sqlite.Open();
             var rows = Db.Query(c, $"""
                 SELECT RelPath, Size, MTime, FullHash, CorruptAt, HashedAt, Id FROM Entries
-                WHERE RootId = $r AND (HashedAt > $at OR (HashedAt = $at AND Id > $id)) AND IsDir = 0 AND IsSymlink = 0 AND FullHash IS NOT NULL
+                WHERE RootId = $r AND HashedAt >= $at AND (HashedAt > $at OR Id > $id) AND IsDir = 0 AND IsSymlink = 0 AND FullHash IS NOT NULL
                 ORDER BY HashedAt, Id LIMIT {take}
                 """, r => (File: new ExportFile(r.GetString(0), r.GetInt64(1), r.GetInt64(2), r.GetString(3), r.IsDBNull(4) ? null : r.GetInt64(4)), At: r.GetInt64(5), Id: r.GetInt64(6)),
                 ("$r", rootId), ("$at", at), ("$id", id));

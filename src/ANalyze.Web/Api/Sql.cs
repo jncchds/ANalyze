@@ -60,5 +60,11 @@ public static class Sql
         return ($" AND {alias}.RootId = $root AND {alias}.RelPath >= $from AND {alias}.RelPath < $to", [("$root", rootId), ("$from", p + "/"), ("$to", p + "0")]);
     }
 
+    /// <summary>
+    /// <c>Entries e</c> read front to back, for aggregates over all files (or a whole root). Without it SQLite picks an index on a
+    /// low-selectivity column (IsDir, RootId) and reads every row in index order: random I/O, slow on spinning or busy disks.
+    /// </summary>
+    public const string FullScan = "Entries e NOT INDEXED";
+
     public const string Identity = "CASE WHEN Inode = 0 THEN 'i' || Id ELSE Dev || ':' || Inode END";
 }

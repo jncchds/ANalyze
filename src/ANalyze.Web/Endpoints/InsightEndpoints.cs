@@ -17,8 +17,13 @@ public static class InsightEndpoints
 
     public static void MapInsightEndpoints(this RouteGroupBuilder api)
     {
-        api.MapGet("/insights", async (int? rootId, AnalyzeDbContext db, IMemoryCache cache, CancellationToken ct) =>
-            await Caches.GetAsync(cache, $"insights:{rootId}", () => BuildAsync(db, rootId, ct)));
+        // Computed in the background (see Caches): with its own context, and not cancelled with the request.
+        api.MapGet("/insights", async (int? rootId, IDbContextFactory<AnalyzeDbContext> dbf, Caches caches) =>
+            await caches.GetAsync($"insights:{rootId}", async () =>
+            {
+                await using var db = await dbf.CreateDbContextAsync();
+                return await BuildAsync(db, rootId, CancellationToken.None);
+            }));
 
         // Folders that grew the most between the last two full scans.
         api.MapGet("/insights/growth", (int? rootId, int? limit, SqliteSetup sqlite) =>

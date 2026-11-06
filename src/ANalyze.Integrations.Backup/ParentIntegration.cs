@@ -40,6 +40,7 @@ public sealed class ParentIntegration(
     RootRegistry roots,
     SettingsStore appSettings,
     IDbContextFactory<AnalyzeDbContext> dbf,
+    JobLock jobLock,
     ILogger<ParentIntegration> log) : IIntegration
 {
     public const string SnapshotKey = "backup:parent";
@@ -49,6 +50,9 @@ public sealed class ParentIntegration(
 
     // New hashes here are re-checked batch by batch (BackupHashListener); the sync after processing also catches up on folders.
     public bool SyncAfterProcessing => true;
+
+    // Reading the parent takes long and needs no lock: SyncAsync locks the index only to compare and write.
+    public bool LocksIndexItself => true;
 
     public string Name => "ANalyze parent";
 
@@ -84,10 +88,9 @@ public sealed class ParentIntegration(
             var info = await Client(settings).InfoAsync(ct);
             var mappings = settings.GetMappings("mappings");
             var files = info.Roots.Sum(r => r.Files);
-            var hashed = info.Roots.Sum(r => r.Hashed);
             var lines = new List<string>
             {
-                $"{info.App} {info.Version} — {info.Roots.Count} roots, {files:N0} files, {Pct(hashed, files)} with a content hash.",
+                $"{info.App} {info.Version} — {info.Roots.Count} roots, {files:N0} files.",
             };
             foreach (var r in info.Roots)
             {
@@ -132,9 +135,21 @@ public sealed class ParentIntegration(
             };
 
         using var conn = sqlite.Open();
-        var result = await new BackupSync(conn, roots).RunAsync(info, settings.GetMappings("mappings"), fetch, progress, ct);
-        progress.Report(new IntegrationProgress("labels", 0, 0));
-        BackupAnnotations.Write(conn, Id, name, result.Targets);
+        var result = await new BackupSync(conn, roots).RunAsync(info, settings.GetMappings("mappings"), fetch, progress, ct,
+            async c =>
+            {
+                if (jobLock.ExclusiveWanted)
+                {
+                    progress.Report(new IntegrationProgress($"waiting for {jobLock.Holder ?? "a scan"} to finish", 0, 0));
+                }
+
+                return await jobLock.AcquireSharedAsync("integration:" + Id, c);
+            },
+            r =>
+            {
+                progress.Report(new IntegrationProgress("labels", 0, 0));
+                BackupAnnotations.Write(conn, Id, name, r.Targets);
+            });
 
         // The parent's hash feed is read from the moment this sync asked for its info (BackupHashRefresh).
         var cursors = compareHashes && info.Now is { } now ? info.Roots.ToDictionary(r => r.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), _ => $"{now}:0") : null;
@@ -309,7 +324,6 @@ public sealed class ParentIntegration(
 
     public void MapEndpoints(RouteGroupBuilder group) => BackupEndpoints.Map(group, this);
 
-    private static string Pct(long part, long whole) => whole == 0 ? "0%" : $"{part * 100.0 / whole:0.#}%";
 }
 
 public static class BackupDependencyInjection

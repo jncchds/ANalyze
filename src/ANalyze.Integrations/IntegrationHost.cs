@@ -159,14 +159,14 @@ public sealed class IntegrationHost(
             try
             {
                 // Shared with the background processing and other syncs; only waits for a walk, a plan or ignored-folder pruning.
-                if (jobLock.ExclusiveWanted)
+                if (!integration.LocksIndexItself && jobLock.ExclusiveWanted)
                 {
                     var busy = jobLock.Holder ?? "a scan";
                     log.LogInformation("{Integration} sync waits for {Holder} to finish", integration.Name, busy);
                     board.Report(new JobProgress { Kind = kind, State = JobStates.Queued, Title = integration.Name + " sync", Message = $"Waiting for {busy}", StartedAt = started }, force: true);
                 }
 
-                held = await jobLock.AcquireSharedAsync(kind, CancellationToken.None);
+                held = integration.LocksIndexItself ? null : await jobLock.AcquireSharedAsync(kind, CancellationToken.None);
                 started = DateTimeOffset.UtcNow;
                 var settings = await LoadAsync(id, CancellationToken.None);
                 board.Report(new JobProgress { Kind = kind, State = JobStates.Running, Title = integration.Name + " sync", StartedAt = started }, force: true);

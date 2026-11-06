@@ -162,9 +162,9 @@ public static class SystemEndpoints
         });
 
         // Everything the sidebar needs in one call.
-        api.MapGet("/summary", async (SqliteSetup sqlite, AnalyzeDbContext db, SettingsStore settings, TrashService trash, IMemoryCache cache, CancellationToken ct) =>
+        api.MapGet("/summary", async (SqliteSetup sqlite, AnalyzeDbContext db, SettingsStore settings, TrashService trash, Caches caches, CancellationToken ct) =>
         {
-            var reclaim = await Caches.GetAsync(cache, "summary.reclaimable", () => Task.FromResult(ComputeReclaimable(sqlite)));
+            var reclaim = await caches.GetAsync("summary.reclaimable", () => Task.FromResult(ComputeReclaimable(sqlite)));
             var drafts = await db.ActionPlans.CountAsync(p => p.Status == PlanStatus.Draft, ct);
             var bins = await trash.ListAsync(ct);
             var pinnedIds = settings.Current.PinnedFolders;
@@ -219,7 +219,7 @@ public static class SystemEndpoints
         using var c = sqlite.Open();
         var dup = Sql.Query(c, $"""
             SELECT COALESCE(SUM(w), 0), COUNT(*) FROM (
-                SELECT (COUNT(DISTINCT {Sql.Identity}) - 1) * MAX(Size) AS w FROM Entries
+                SELECT (COUNT(DISTINCT {Sql.Identity}) - 1) * MAX(Size) AS w FROM Entries NOT INDEXED
                 WHERE FullHash IS NOT NULL AND IsDir = 0 AND IsSymlink = 0
                 GROUP BY FullHash HAVING COUNT(DISTINCT {Sql.Identity}) > 1)
             """, r => new { bytes = r.GetInt64(0), groups = r.GetInt64(1) }).First();

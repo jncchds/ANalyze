@@ -24,8 +24,8 @@ public static class BrowseEndpoints
     public static void MapBrowseEndpoints(this RouteGroupBuilder api)
     {
         // Totals and breakdowns for everything, one root, or one folder.
-        api.MapGet("/overview", async (int? rootId, string? path, SqliteSetup sqlite, IMemoryCache cache) =>
-            await Caches.GetAsync(cache, $"overview:{rootId}:{path}", () => Task.FromResult(Overview(sqlite, rootId, path))));
+        api.MapGet("/overview", async (int? rootId, string? path, SqliteSetup sqlite, Caches caches) =>
+            await caches.GetAsync($"overview:{rootId}:{path}", () => Task.FromResult(Overview(sqlite, rootId, path))));
 
         api.MapGet("/entries/{id:long}", async (long id, AnalyzeDbContext db, RootRegistry roots, CancellationToken ct) =>
         {
@@ -361,24 +361,43 @@ public static class BrowseEndpoints
     {
         using var c = sqlite.Open();
         var (scope, args) = Sql.ScopeOf(rootId, path);
-        var totals = Sql.Query(c, $"SELECT COUNT(*), COALESCE(SUM(Size),0), COALESCE(SUM(AllocSize),0) FROM Entries e WHERE IsDir = 0 {scope}",
-            r => new { files = r.GetInt64(0), size = r.GetInt64(1), alloc = r.GetInt64(2) }, args).First();
+        // Everything or a whole root: read the table front to back. Left to itself SQLite walks an index (size, category, parent…)
+        // and fetches each file's row from wherever it lies, which is many times slower on spinning or busy disks.
+        // A folder keeps the (RootId, RelPath) range index.
+        var files = string.IsNullOrEmpty(path?.Trim('/')) ? Sql.FullScan : "Entries e";
+        // One pass over the files for all breakdowns (each used to read the whole index again: slow on a busy disk).
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var groups = Sql.Query(c, $"""
+            SELECT e.CategoryId, e.Kind, COALESCE(e.Ext, ''),
+                CASE
+                    WHEN $now - e.MTime < 2592000 THEN 0
+                    WHEN $now - e.MTime < 31536000 THEN 1
+                    WHEN $now - e.MTime < 94608000 THEN 2
+                    WHEN $now - e.MTime < 157680000 THEN 3
+                    WHEN $now - e.MTime < 315360000 THEN 4
+                    ELSE 5 END,
+                CASE
+                    WHEN e.Size < 1048576 THEN 0
+                    WHEN e.Size < 104857600 THEN 1
+                    WHEN e.Size < 1073741824 THEN 2
+                    WHEN e.Size < 10737418240 THEN 3
+                    ELSE 4 END,
+                COUNT(*), SUM(e.Size), SUM(e.AllocSize)
+            FROM {files} WHERE e.IsDir = 0 {scope} GROUP BY 1, 2, 3, 4, 5
+            """, r => (Category: r.NullableInt(0), Kind: (FileKind)r.GetInt32(1), Ext: r.GetString(2), Age: r.GetInt32(3), SizeBucket: r.GetInt32(4),
+                Files: r.GetInt64(5), Size: r.GetInt64(6), Alloc: r.GetInt64(7)), [.. args, ("$now", now)]);
+        var totals = new { files = groups.Sum(g => g.Files), size = groups.Sum(g => g.Size), alloc = groups.Sum(g => g.Alloc) };
         var dirs = Sql.Scalar<long>(c, $"SELECT COUNT(*) FROM Entries e WHERE IsDir = 1 {scope}", args);
-
-        var byCategory = Sql.Query(c, $"""
-            SELECT e.CategoryId, COUNT(*), SUM(e.Size) FROM Entries e WHERE e.IsDir = 0 {scope}
-            GROUP BY e.CategoryId ORDER BY SUM(e.Size) DESC
-            """, r => new { categoryId = r.NullableInt(0), files = r.GetInt64(1), size = r.GetInt64(2) }, args);
-
-        var byKind = Sql.Query(c, $"""
-            SELECT e.Kind, COUNT(*), SUM(e.Size) FROM Entries e WHERE e.IsDir = 0 {scope}
-            GROUP BY e.Kind ORDER BY SUM(e.Size) DESC
-            """, r => new { kind = (FileKind)r.GetInt32(0), files = r.GetInt64(1), size = r.GetInt64(2) }, args);
-
-        var byExt = Sql.Query(c, $"""
-            SELECT COALESCE(e.Ext, ''), COUNT(*), SUM(e.Size) FROM Entries e WHERE e.IsDir = 0 {scope}
-            GROUP BY e.Ext ORDER BY SUM(e.Size) DESC LIMIT 25
-            """, r => new { ext = r.GetString(0), files = r.GetInt64(1), size = r.GetInt64(2) }, args);
+        var byCategory = groups.GroupBy(g => g.Category).Select(x => new { categoryId = x.Key, files = x.Sum(g => g.Files), size = x.Sum(g => g.Size) })
+            .OrderByDescending(x => x.size).ToList();
+        var byKind = groups.GroupBy(g => g.Kind).Select(x => new { kind = x.Key, files = x.Sum(g => g.Files), size = x.Sum(g => g.Size) })
+            .OrderByDescending(x => x.size).ToList();
+        var byExt = groups.GroupBy(g => g.Ext).Select(x => new { ext = x.Key, files = x.Sum(g => g.Files), size = x.Sum(g => g.Size) })
+            .OrderByDescending(x => x.size).Take(25).ToList();
+        var age = groups.GroupBy(g => g.Age).OrderBy(x => x.Key).Select(x => new { bucket = x.Key, files = x.Sum(g => g.Files), size = x.Sum(g => g.Size) }).ToList();
+        var bySize = groups.GroupBy(g => g.SizeBucket).OrderBy(x => x.Key).Select(x => new { bucket = x.Key, files = x.Sum(g => g.Files), size = x.Sum(g => g.Size) }).ToList();
+        string[] ageLabels = ["< 1 month", "1-12 months", "1-3 years", "3-5 years", "5-10 years", "10+ years"];
+        string[] sizeLabels = ["< 1 MB", "1-100 MB", "100 MB-1 GB", "1-10 GB", "10+ GB"];
 
         var largestFiles = Sql.Query(c, $"""
             SELECT e.Id, e.RootId, e.Name, e.RelPath, e.Size, e.CategoryId, e.Kind, e.MTime FROM Entries e
@@ -386,34 +405,13 @@ public static class BrowseEndpoints
             """, r => new { id = r.GetInt64(0), rootId = r.GetInt32(1), name = r.GetString(2), relPath = r.GetString(3), size = r.GetInt64(4), categoryId = r.NullableInt(5), kind = (FileKind)r.GetInt32(6), mtime = r.GetInt64(7) }, args);
 
         // "Heaviest folders": by bytes of the files directly inside them, so parents do not drown out the real culprits.
+        // Grouped by ParentId first, so only the top 25 folders are looked up (not one parent row per file).
         var heaviest = Sql.Query(c, $"""
-            SELECT p.Id, p.RootId, p.Name, p.RelPath, SUM(e.Size) AS direct, COUNT(*), p.TotalSize FROM Entries e JOIN Entries p ON p.Id = e.ParentId
-            WHERE e.IsDir = 0 {scope} GROUP BY p.Id ORDER BY direct DESC LIMIT 25
+            SELECT p.Id, p.RootId, p.Name, p.RelPath, x.direct, x.n, p.TotalSize FROM (
+                SELECT e.ParentId AS pid, SUM(e.Size) AS direct, COUNT(*) AS n FROM {files}
+                WHERE e.IsDir = 0 {scope} GROUP BY e.ParentId ORDER BY direct DESC LIMIT 25) x
+            JOIN Entries p ON p.Id = x.pid ORDER BY x.direct DESC
             """, r => new { id = r.GetInt64(0), rootId = r.GetInt32(1), name = r.GetString(2), relPath = r.GetString(3), direct = r.GetInt64(4), files = r.GetInt64(5), total = r.GetInt64(6) }, args);
-
-        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var age = Sql.Query(c, $"""
-            SELECT CASE
-                WHEN $now - e.MTime < 2592000 THEN 0
-                WHEN $now - e.MTime < 31536000 THEN 1
-                WHEN $now - e.MTime < 94608000 THEN 2
-                WHEN $now - e.MTime < 157680000 THEN 3
-                WHEN $now - e.MTime < 315360000 THEN 4
-                ELSE 5 END AS bucket, COUNT(*), SUM(e.Size)
-            FROM Entries e WHERE e.IsDir = 0 {scope} GROUP BY bucket ORDER BY bucket
-            """, r => new { bucket = r.GetInt32(0), files = r.GetInt64(1), size = r.GetInt64(2) }, [.. args, ("$now", now)]);
-        string[] ageLabels = ["< 1 month", "1-12 months", "1-3 years", "3-5 years", "5-10 years", "10+ years"];
-
-        var bySize = Sql.Query(c, $"""
-            SELECT CASE
-                WHEN e.Size < 1048576 THEN 0
-                WHEN e.Size < 104857600 THEN 1
-                WHEN e.Size < 1073741824 THEN 2
-                WHEN e.Size < 10737418240 THEN 3
-                ELSE 4 END AS bucket, COUNT(*), SUM(e.Size)
-            FROM Entries e WHERE e.IsDir = 0 {scope} GROUP BY bucket ORDER BY bucket
-            """, r => new { bucket = r.GetInt32(0), files = r.GetInt64(1), size = r.GetInt64(2) }, args);
-        string[] sizeLabels = ["< 1 MB", "1-100 MB", "100 MB-1 GB", "1-10 GB", "10+ GB"];
 
         return new
         {

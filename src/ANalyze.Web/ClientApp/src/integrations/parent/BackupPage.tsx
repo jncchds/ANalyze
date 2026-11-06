@@ -33,7 +33,7 @@ interface Summary {
     syncedAt: string
     parentName: string
     url: string
-    info: { version?: string; hashAllFiles: boolean; roots: { path: string; files: number; hashed: number }[] }
+    info: { version?: string; hashAllFiles: boolean; roots: { path: string; files: number }[] }
     detected: { from: string; to: string }[]
     unmapped: number
     hashesCompared: boolean

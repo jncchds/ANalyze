@@ -79,6 +79,8 @@ later scans only look at what changed (size, mtime, inode), so they are much fas
 
 - **Live results** — results are stored while the scan runs (at least every 2 seconds), so Browse, Search and the
   integrations see folders as soon as they are walked.
+- **Responsive while scanning** — Overview, Insights and the sidebar counters show their last numbers at once and update
+  in the background (at most once a minute), so they stay usable on slow or busy disks.
 - **Walk first, the rest in the background** — a scan only holds the index to itself while it walks the folders. File
   types, categories, archives, hashes, duplicates and re-verification then run in the background (*Processing* in the
   sidebar), next to integration syncs and the AI, and step aside whenever the next scan or a plan needs the index;
@@ -262,7 +264,8 @@ How it decides:
 
 The **Backup** page shows how much is on the backup, corrupted and missing files, and a folder view with each folder's
 share; Browse labels every folder (*Synced*, *Not synced · 40%*) and each corrupted or missing file. The comparison runs
-after each scan of the child; the backup server only answers read-only requests.
+after each scan of the child; the backup server only answers read-only requests, also while it scans. Downloading the
+backup server's file list doesn't wait for a scan on the child, and doesn't hold one up either.
 
 Hashing a large library takes a long time, so the comparison doesn't wait for it: it compares sizes where a hash is
 still missing and uses each hash as soon as it exists. Files hashed on the child are checked against the backup batch

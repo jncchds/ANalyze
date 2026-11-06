@@ -25,7 +25,7 @@ internal static class BackupAnnotations
         {
             q.CommandText = $"""
                 SELECT EntryId, IsDir, State, Children, SyncedChildren, Size, ParentSize FROM BackupFiles
-                WHERE IsDir = 1 OR State IN ('{BackupStates.Corrupt}', '{BackupStates.Missing}')
+                WHERE IsDir = 1 OR (IsDir = 0 AND State IN ('{BackupStates.Corrupt}', '{BackupStates.Missing}'))
                 """;
             using var r = q.ExecuteReader();
             while (r.Read())
