@@ -1,5 +1,13 @@
 # Release Notes
 
+## v0.1.11 — 2026-11-06
+
+- fix: `GET /backup/info` answers at once, also while the backup server scans: file counts and sizes come from each root's folder totals instead of counting every file (the hash count is no longer sent; "Test connection" no longer shows it)
+- fix: the backup hash feed (`GET /backup/hashes`) seeks to its cursor instead of reading each root's hashes from the start on every page
+- fix: a backup sync downloads the backup server's file list without locking the index, so it no longer waits for a scan's walk here nor holds the next scan up; only the comparison and the writes take the lock
+- fix: Overview, Insights and the sidebar stay usable while a scan loads the disks: they show their last numbers at once and recompute in the background (one at a time, at most once a minute), then refresh on screen; the 10-second live refresh no longer cancels and resends slow requests
+- fix: Overview and the reclaimable-space counter read the index front to back instead of fetching every file in index order (several times faster on spinning or busy disks), and the overview's breakdowns come from one pass instead of six
+
 ## v0.1.10 — 2026-10-30
 
 - feat: scans hold the index to themselves only while they walk the folders: file types, categories, archives, hashing, duplicates and re-verification follow in the background ("Processing"), next to integration syncs, rule apply and the AI, and step aside between batches whenever the next scan, a plan or ignored-folder pruning needs the index, then carry on; integrations re-sync right after the walk, the AI runs once types are known, and unfinished hashing resumes after a restart

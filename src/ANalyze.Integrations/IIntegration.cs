@@ -45,6 +45,13 @@ public interface IIntegration
     /// for integrations that use content hashes.
     /// </summary>
     bool SyncAfterProcessing => false;
+
+    /// <summary>
+    /// False (default): the host holds a shared lock on the index for the whole sync, so it waits for a scan's walk and a walk waits
+    /// for it. True: the sync takes <c>JobLock</c> itself, only around the part that reads or writes the index, so a long download
+    /// from the other system neither waits for a walk nor holds one up.
+    /// </summary>
+    bool LocksIndexItself => false;
 }
 
 /// <summary>Supplies path mappings found automatically (e.g. from Docker mounts) for an integration.</summary>

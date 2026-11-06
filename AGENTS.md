@@ -76,7 +76,9 @@ One scan at a time (`ScanQueue` → `ScanWorker`). `JobLock` is a reader/writer 
   folders (`PruneIgnored`). Exclusive requests win: while one runs or waits, no new shared holder starts.
 - **Shared** (`AcquireSharedAsync` → `SharedLease`) — everything that only fills in or reads data about existing entries and runs side by
   side: the background processing after a walk (`ScanProcessor`), integration syncs, rule apply, extraction checks, AI (only while storing
-  each answer, never while waiting for the model; it skips entries that vanished meanwhile) and the backup hash refresh.
+  each answer, never while waiting for the model; it skips entries that vanished meanwhile) and the backup hash refresh. `IntegrationHost`
+  holds the lease for a whole sync, unless `IIntegration.LocksIndexItself`: then the integration takes it only around the part that touches
+  the index (the parent integration downloads the backup server's tree without it, so the download neither waits for a walk nor holds one up).
   Long shared work gives way between batches: `ScanContext.CheckYield` throws `YieldException` when `SharedLease.YieldWanted`, the
   processor releases its lease, waits for the exclusive job and starts over from the first unfinished phase. Shared work never keeps
   anything across a yield, and writes only rows that are still the same (`WHERE Id AND Size AND MTime`).
@@ -154,7 +156,15 @@ for 0.5 s and, while another process keeps a disk more than 50% busy, waits 10 s
 busy"); an exclusive job waiting ends the wait.
 
 Progress is reported to `JobBoard` (kinds `scan` and `processing`), throttled, and pushed through SignalR (`progress` events). The UI refetches what is on
-screen when a job changes phase and every 10 s while a scan runs; server caches (`Caches`) are dropped on phase changes too.
+screen when a job changes phase and every 10 s while a scan runs, never cancelling a request still in flight (`cancelRefetch: false`).
+
+Whole-index aggregates (`/overview`, `/insights`, the sidebar's reclaimable space) go through `Caches` (singleton), stale-while-revalidate: a
+phase change only marks values stale; the next request gets the old value at once and starts one background computation per key (at most
+every 60 s, own connection / `DbContext`, not cancelled with the request), and when it is done SignalR sends `refreshed` with the key so the
+UI refetches. Only the very first request for a key waits. The aggregates over all files or a whole root read `Sql.FullScan`
+(`Entries e NOT INDEXED`): left alone SQLite walks an index on a low-selectivity column (IsDir, RootId, CategoryId, ParentId) and fetches
+every row in index order, random I/O that is many times slower on spinning or busy disks. The overview computes its breakdowns (totals,
+category, kind, extension, age, size) in one grouped pass, and "heaviest folders" groups by `ParentId` before joining the top 25.
 
 ## Activity log
 
@@ -262,10 +272,13 @@ such an entry (hard links are allowed — the content stays).
 
 A parent–child link: the **parent** is the ANalyze on the backup server, the **child** is the instance whose files are backed up there; the child
 enables the `parent` integration (URL, the parent's `ANalyze__ApiToken`, mappings parent path → local path). The parent needs nothing but a token;
-it always serves `GET /api/v1/backup/info` (version, hash algorithm, `HashAllFiles`, roots with file/hash counts, its clock `now`),
+it always serves `GET /api/v1/backup/info` (version, hash algorithm, `HashAllFiles`, roots with file count and size read from each root folder's
+totals — one row per root, no scan, so it answers quickly while the parent scans; `hashed` is no longer sent — and its clock `now`),
 `GET /api/v1/backup/files?rootId=&after=&limit=` (files and folders of one root in `RelPath` order, keyset-paged on the unique index; short JSON
 names `p s m h c d`) and `GET /api/v1/backup/hashes?rootId=&after=hashedAt:id&limit=` (the hash feed: files hashed or re-verified after the
-cursor, oldest first, on the index `(RootId, HashedAt)`; `cursor` = where the page ends). All are behind the normal auth policy.
+cursor, oldest first, on the index `(RootId, HashedAt)` with `HashedAt >= cursor` so each page seeks instead of walking the root's index;
+`cursor` = where the page ends). All are behind the normal auth policy and take no `JobLock`: the database is in WAL mode, so a scan on the
+parent does not block them.
 
 Rules (`BackupSync`, child side):
 - a **file is synchronized** when the parent has a file at the mapped path;
@@ -274,7 +287,9 @@ Rules (`BackupSync`, child side):
 - inside a synchronized folder (the file's direct parent), a file is **corrupt** when the parent's copy differs in size or — when both hashes are
   known — hash, and **missing** when the parent does not have it; elsewhere a file the parent lacks is **unsynced**.
 
-Implementation: the parent's tree goes into a temp table at the local paths it maps to (`ParentStage`, indexed by path and parent path). The
+Implementation: the parent's tree goes into a temp table at the local paths it maps to (`ParentStage`, indexed by path and parent path), with no
+lock on the index (only the sample-path lookups read `Entries`); the shared lease is taken for the comparison, the `BackupFiles` rewrite and the
+labels (`BackupSync.RunAsync(lockIndex, whileLocked)`), and the backed-up folders' entry ids are looked up under it. The
 backed-up folders are the parent roots that map to a local folder, else each mapping that starts inside a root (the backup may live in a sub-folder
 on the server). If fewer than a fifth of a root's first 200 files are found at the mapped path, a mapping is detected with `PathMatcher.Detect`
 (name + size). Local entries in those folders (outermost only, no symlinks) are loaded with their parent counterpart and processed deepest first,

@@ -27,6 +27,7 @@ docker compose -f docker-compose.dev.yml up --build  # full app on :8080 with ./
 ## Gotchas
 
 - Subtree ranges on `Entries.RelPath` use `>= 'p/' AND < 'p0'` (index-friendly); keep it that way.
+- Aggregates over all files or a whole root read `Sql.FullScan` (`Entries e NOT INDEXED`), and expensive page summaries go through `Caches` (stale-while-revalidate); see AGENTS.md.
 - Any new code that creates files or folders on a root must give them the parent's owner (`Native.CreateDirectoryLikeParent`, `Native.SetOwner`); the container runs as root.
 - Read file content only via `RootRegistry.ResolveForRead` and entry ids.
 - Enum JSON is camelCase strings (`JsonStringEnumConverter` registered for HTTP and SignalR). Query-string enums are parsed case-insensitively by hand where needed.

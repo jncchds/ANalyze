@@ -27,14 +27,19 @@ export function JobsProvider({ children }: { children: ReactNode }) {
         const finished = before && before.state !== p.state && (p.state === 'completed' || p.state === 'failed' || p.state === 'cancelled')
         const nextStep = before && p.state === 'running' && before.phase !== p.phase
         if (finished || nextStep) {
-          // Anything may have changed: sizes, categories, plans, annotations.
-          setTimeout(() => qc.invalidateQueries(), 100)
+          // Anything may have changed: sizes, categories, plans, annotations. A request still running is kept, not restarted.
+          setTimeout(() => qc.invalidateQueries(undefined, { cancelRefetch: false }), 100)
         }
         return { ...prev, [p.kind]: p }
       })
     }
     c.on('progress', apply)
     c.on('logs', (lines: LogLine[]) => listeners.current.forEach((fn) => fn(lines)))
+    // The server recomputed a cached summary in the background ("overview:…", "insights:…", "summary.reclaimable"): fetch it again.
+    c.on('refreshed', (key: string) => {
+      const name = key.split(/[:.]/)[0]
+      qc.invalidateQueries({ queryKey: [name] }, { cancelRefetch: false })
+    })
     const load = () =>
       c.invoke<JobProgress[]>('GetStatus').then((all) => setJobs(Object.fromEntries(all.map((j) => [j.kind, j])))).catch(() => {})
     c.onreconnected(load)
@@ -48,7 +53,8 @@ export function JobsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!scanRunning) return
     // Folders and sizes appear in the index during the walk: keep what is on screen current (only queries in use refetch).
-    const t = setInterval(() => qc.invalidateQueries({ predicate: (q) => q.queryKey[0] !== 'logs' }), LIVE_REFRESH_MS)
+    // A request that has not answered yet (slow disk) is left running instead of being cancelled and sent again.
+    const t = setInterval(() => qc.invalidateQueries({ predicate: (q) => q.queryKey[0] !== 'logs' }, { cancelRefetch: false }), LIVE_REFRESH_MS)
     return () => clearInterval(t)
   }, [scanRunning, qc])
 

@@ -84,7 +84,14 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots)
         public string State = BackupStates.Unsynced;
     }
 
-    public async Task<BackupSyncResult> RunAsync(ExportInfo info, IReadOnlyList<PathMapping> configured, FetchPage fetch, IProgress<IntegrationProgress> progress, CancellationToken ct)
+    /// <summary>
+    /// Reads the parent's tree into a temp table, then compares and replaces <c>BackupFiles</c>. Reading the parent (the slow part, over
+    /// the network) needs no lock on the index: it only writes the connection's temp table and looks up a few sample paths.
+    /// <paramref name="lockIndex"/>, when given, is taken for the comparison and the writes; <paramref name="whileLocked"/> runs
+    /// before it is released (e.g. to write labels).
+    /// </summary>
+    public async Task<BackupSyncResult> RunAsync(ExportInfo info, IReadOnlyList<PathMapping> configured, FetchPage fetch, IProgress<IntegrationProgress> progress, CancellationToken ct,
+        Func<CancellationToken, Task<IDisposable>>? lockIndex = null, Action<BackupSyncResult>? whileLocked = null)
     {
         var mappings = configured.ToList();
         var detected = new List<PathMapping>();
@@ -134,7 +141,7 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots)
             {
                 var localPath = IntegrationSettings.MapPath(start, mappings);
                 var (tRoot, tRel) = Resolve(localPath);
-                targets.Add(new BackupTarget(root.Id, start, localPath, tRoot, tRel, tRoot is { } tr ? DirId(tr, tRel!) : null));
+                targets.Add(new BackupTarget(root.Id, start, localPath, tRoot, tRel, null));
                 if (tRoot is { } t)
                 {
                     // The folder itself exists on the parent; it is nobody's child here.
@@ -176,7 +183,10 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots)
         }
 
         // 2. Local entries inside the backup folders (outermost targets only), deepest first so folders see their children's results.
+        using var lease = lockIndex is null ? null : await lockIndex(ct);
         progress.Report(new IntegrationProgress("comparing", 0, 0));
+        // Looked up under the lock: a walk that ran meanwhile may have added or removed the folders.
+        targets = targets.Select(t => t with { EntryId = t.RootId is { } tr ? DirId(tr, t.RelPath!) : null }).ToList();
         var scopes = targets.Where(t => t.EntryId is not null).Select(t => (Root: t.RootId!.Value, Rel: t.RelPath!)).Distinct().ToList();
         scopes = scopes.Where(s => !scopes.Any(o => o != s && o.Root == s.Root && (o.Rel.Length == 0 || s.Rel.StartsWith(o.Rel + "/", StringComparison.Ordinal)))).ToList();
         var nodes = new Dictionary<long, Node>();
@@ -284,7 +294,9 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots)
         Exec("DROP TABLE temp.BackupResult");
         Exec("DROP TABLE temp.ParentStage");
         var folders = nodes.Values.Count(n => n.IsDir);
-        return new BackupSyncResult(targets, mappings, detected, files, folders, nodes.Values.Count(n => n.IsDir && n.Synced), unmapped);
+        var result = new BackupSyncResult(targets, mappings, detected, files, folders, nodes.Values.Count(n => n.IsDir && n.Synced), unmapped);
+        whileLocked?.Invoke(result);
+        return result;
     }
 
     /// <summary>How many of the sample files exist as files at their mapped local path.</summary>
