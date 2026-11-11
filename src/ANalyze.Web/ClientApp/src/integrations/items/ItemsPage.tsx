@@ -350,7 +350,7 @@ function GroupDialog({ config, row, onClose }: { config: ItemsConfig; row: Group
           ))}
         </div>
       )}
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} />
+      <EntryDrawer id={preview} onClose={() => setPreview(null)} list={ids} onNavigate={setPreview} />
       <PlanDialog open={plan} onClose={() => setPlan(false)} entryIds={ids} count={ids.length} size={row.size} title={`Clean up: ${row.title}`} />
     </Modal>
   )
@@ -389,7 +389,7 @@ function Entries({ config, path, empty, showItem }: { config: ItemsConfig; path:
           </button>
         ))}
       </div>
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} />
+      <EntryDrawer id={preview} onClose={() => setPreview(null)} list={ids} onNavigate={setPreview} />
       <PlanDialog open={plan} onClose={() => setPlan(false)} entryIds={ids} count={ids.length} size={shownSize} title={`${config.name}: clean up ${count(ids.length)} entries`} />
     </>
   )

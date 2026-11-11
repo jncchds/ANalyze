@@ -298,7 +298,7 @@ function TitleDialog({ type, row, onClose }: { type: TitleType; row: TitleRow; o
           ))}
         </div>
       )}
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} />
+      <EntryDrawer id={preview} onClose={() => setPreview(null)} list={ids} onNavigate={setPreview} />
       <PlanDialog open={plan} onClose={() => setPlan(false)} entryIds={ids} count={ids.length} size={row.size} title={`Clean up: ${row.title}`} />
     </Modal>
   )
@@ -326,7 +326,7 @@ function NotInPlex() {
           </button>
         ))}
       </div>
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} />
+      <EntryDrawer id={preview} onClose={() => setPreview(null)} list={q.data.items.map((f) => f.id)} onNavigate={setPreview} />
     </>
   )
 }

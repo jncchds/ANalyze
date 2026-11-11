@@ -41,7 +41,8 @@ public sealed record HashPage(IReadOnlyList<ExportFile> Items, string? Next, str
 /// Read-only API another ANalyze uses to compare its backup with this instance (the parent): <c>GET /api/v1/backup/info</c>,
 /// <c>GET /api/v1/backup/files?rootId=&amp;after=&amp;limit=</c> (files and folders of one root in path order, paged by path) and
 /// <c>GET /api/v1/backup/hashes?rootId=&amp;after=&amp;limit=</c> (files of one root hashed after a cursor "hashedAt:id", oldest first) and
-/// <c>GET /api/v1/backup/probe</c> (block fingerprints of one file, to explain how a copy differs: <see cref="MapBackupProbe"/>).
+/// <c>GET /api/v1/backup/probe</c> (block fingerprints of one file, to explain how a copy differs: <see cref="MapBackupProbe"/>) and
+/// <c>GET /api/v1/backup/content</c> (one file's bytes, to show the copies side by side: <see cref="MapBackupContent"/>).
 /// Protected like the rest of the API; a child authenticates with <c>ANalyze__ApiToken</c>.
 /// </summary>
 public static class BackupExport
@@ -53,6 +54,7 @@ public static class BackupExport
     {
         var g = api.MapGroup("/backup");
         g.MapBackupProbe();
+        g.MapBackupContent();
 
         g.MapGet("/info", (SqliteSetup sqlite, RootRegistry roots, SettingsStore settings) =>
         {
@@ -204,6 +206,26 @@ public static class BackupExport
             }
 
             return Results.Empty;
+        });
+
+    /// <summary>
+    /// <c>GET /backup/content?rootId=&amp;path=</c>: one file's bytes (Range requests supported), for a child that shows its copy next to
+    /// the parent's. Always <c>application/octet-stream</c>: the child labels it with its own file's type.
+    /// </summary>
+    public static void MapBackupContent(this RouteGroupBuilder g) =>
+        g.MapGet("/content", (int rootId, string path, RootRegistry roots) =>
+        {
+            try
+            {
+                var full = roots.ResolveForRead(rootId, path.Trim('/'));
+                return File.Exists(full)
+                    ? Results.File(full, "application/octet-stream", enableRangeProcessing: true, lastModified: File.GetLastWriteTimeUtc(full))
+                    : Results.NotFound(new { missing = true });
+            }
+            catch (Exception e) when (e is UnauthorizedAccessException or FileNotFoundException or KeyNotFoundException or InvalidOperationException)
+            {
+                return Results.NotFound(new { missing = true });
+            }
         });
 
     /// <summary>"hashedAt:id" → parts; anything else is the start of the feed.</summary>

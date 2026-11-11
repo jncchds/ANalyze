@@ -8,6 +8,7 @@ import type { Annotation, Entry } from '../api/types'
 import { bytes, date, kindLabel } from '../lib/format'
 import { PlanDialog } from './PlanDialog'
 import { AnnotationBadges, CategoryPill, ErrorBox, Loading, Tabs } from './ui'
+import { BackupCompareView } from './BackupCompareView'
 import { HexView, MainPreview, MetaView, TextView, previewTabs } from './viewers'
 
 interface EntryDetail {
@@ -40,8 +41,11 @@ function backupText(b: NonNullable<EntryDetail['backup']>, size: number) {
   }
 }
 
-/** Side panel with details, category, integrations, actions and the preview/text/hex/metadata viewers. */
-export function EntryDrawer({ id, onClose }: { id: number | null; onClose: () => void }) {
+/**
+ * Side panel with details, category, integrations, actions and the preview/text/hex/metadata viewers. With `list` (the files of
+ * the page, in its order) and `onNavigate` it steps to the previous/next file (buttons, ← / → keys).
+ */
+export function EntryDrawer({ id, onClose, list, onNavigate }: { id: number | null; onClose: () => void; list?: number[]; onNavigate?: (id: number) => void }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const categories = useCategories()
@@ -52,13 +56,29 @@ export function EntryDrawer({ id, onClose }: { id: number | null; onClose: () =>
   const hostPath = useToHostPath()
   const q = useQuery({ queryKey: ['entry', id], queryFn: () => api<EntryDetail>(`/entries/${id}`), enabled: id !== null })
 
-  useEffect(() => setTab('preview'), [id])
+  const pos = id !== null && list && onNavigate ? list.indexOf(id) : -1
+  const prev = pos > 0 ? list![pos - 1] : undefined
+  const next = pos >= 0 && pos < list!.length - 1 ? list![pos + 1] : undefined
+
+  // The tab stays while stepping through files (e.g. comparing one file after another); it resets when the drawer closes.
+  useEffect(() => {
+    if (id === null) setTab('preview')
+  }, [id])
   useEffect(() => {
     if (id === null) return
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') return onClose()
+      // Arrow keys belong to inputs and media controls while they have the focus.
+      const t = e.target as HTMLElement | null
+      if (e.altKey || e.ctrlKey || e.metaKey || t?.closest('input, textarea, select, video, audio, [contenteditable="true"]')) return
+      if (e.key === 'ArrowLeft' && prev !== undefined) onNavigate!(prev)
+      else if (e.key === 'ArrowRight' && next !== undefined) onNavigate!(next)
+      else return
+      e.preventDefault()
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [id, onClose])
+  }, [id, onClose, prev, next, onNavigate])
 
   const setCategory = useMutation({
     mutationFn: (categoryId: number | null) => api(`/entries/${id}/category`, { method: 'PUT', json: { categoryId } }),
@@ -79,12 +99,18 @@ export function EntryDrawer({ id, onClose }: { id: number | null; onClose: () =>
   const d = q.data
   const e = d?.entry
   const cat = e?.categoryId ? catMap.get(e.categoryId) : undefined
-  const tabs = e && !e.isDir ? previewTabs(e) : []
+  // Files the backup has get a side-by-side comparison with its copy.
+  const onBackup = !!d?.backup && !d.backup.isDir && (d.backup.state === 'synced' || d.backup.state === 'corrupt')
+  const tabs = e && !e.isDir ? [...previewTabs(e), ...(onBackup ? [{ id: 'backup', label: 'Compare with backup' }] : [])] : []
+  const shown = tabs.some((t) => t.id === tab) ? tab : 'preview'
 
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/30" onClick={onClose} />
-      <aside className="fixed inset-y-0 right-0 z-50 flex w-[min(52rem,100vw)] flex-col border-l border-line bg-surface shadow-2xl" aria-label="Details">
+      <aside
+        className={clsx('fixed inset-y-0 right-0 z-50 flex flex-col border-l border-line bg-surface shadow-2xl', shown === 'backup' ? 'w-[min(110rem,100vw)]' : 'w-[min(52rem,100vw)]')}
+        aria-label="Details"
+      >
         <div className="flex items-start gap-3 border-b border-line px-5 py-3">
           <div className="min-w-0 flex-1">
             {d && (
@@ -103,6 +129,19 @@ export function EntryDrawer({ id, onClose }: { id: number | null; onClose: () =>
               {e?.name ?? '…'}
             </h2>
           </div>
+          {pos >= 0 && (
+            <div className="flex shrink-0 items-center gap-1">
+              <button className="btn-ghost px-2 py-1" disabled={prev === undefined} onClick={() => onNavigate!(prev!)} title="Previous file (←)" aria-label="Previous file">
+                ‹
+              </button>
+              <span className="text-xs tabular muted">
+                {pos + 1} / {list!.length}
+              </span>
+              <button className="btn-ghost px-2 py-1" disabled={next === undefined} onClick={() => onNavigate!(next!)} title="Next file (→)" aria-label="Next file">
+                ›
+              </button>
+            </div>
+          )}
           <button className="btn-ghost px-2 py-1" onClick={onClose} aria-label="Close">
             ✕
           </button>
@@ -201,11 +240,12 @@ export function EntryDrawer({ id, onClose }: { id: number | null; onClose: () =>
 
               {!e.isDir && (
                 <div>
-                  <Tabs tabs={tabs.map((t) => ({ id: t.id, label: t.label }))} value={tab} onChange={setTab} />
-                  {tab === 'preview' && <MainPreview entry={e} />}
-                  {tab === 'text' && <TextView entry={e} />}
-                  {tab === 'hex' && <HexView entry={e} />}
-                  {tab === 'meta' && <MetaView entry={e} />}
+                  <Tabs tabs={tabs.map((t) => ({ id: t.id, label: t.label }))} value={shown} onChange={setTab} />
+                  {shown === 'preview' && <MainPreview key={e.id} entry={e} />}
+                  {shown === 'text' && <TextView key={e.id} entry={e} />}
+                  {shown === 'hex' && <HexView key={e.id} entry={e} />}
+                  {shown === 'meta' && <MetaView entry={e} />}
+                  {shown === 'backup' && <BackupCompareView key={e.id} entry={e} />}
                 </div>
               )}
             </div>

@@ -129,6 +129,57 @@ internal static class BackupEndpoints
         g.MapGet("/compare", (long entryId, BackupCompare compare) => compare.Get(entryId) is { } s ? Results.Ok(s) : Results.NotFound());
         g.MapDelete("/compare", (long entryId, BackupCompare compare) => compare.Cancel(entryId) ? Results.NoContent() : Results.NotFound());
 
+        // The parent's copy of a file, streamed through (Range passed on, so video seeks and byte views work), typed like the file here.
+        g.MapGet("/content", async (long entryId, HttpContext http, BackupCompare compare, CancellationToken ct) =>
+        {
+            BackupCompare.ParentFile f;
+            HttpResponseMessage? res;
+            try
+            {
+                f = await compare.LocateAsync(entryId, ct);
+                res = await f.Client.ContentAsync(f.ParentRootId, f.ParentRel, http.Request.Headers.Range.ToString(), ct);
+            }
+            catch (Exception e) when (e is InvalidOperationException or HttpRequestException or TaskCanceledException or UriFormatException)
+            {
+                return Results.Problem(e.Message, statusCode: 404);
+            }
+
+            if (res is null)
+            {
+                return Results.Problem($"{f.ParentName} no longer has this file.", statusCode: 404);
+            }
+
+            using (res)
+            {
+                // Never let the browser render active content from the backup in our origin.
+                var type = f.Mime ?? "application/octet-stream";
+                if (type is "text/html" or "image/svg+xml" or "application/xhtml+xml" or "text/javascript")
+                {
+                    type = "text/plain";
+                }
+
+                var r = http.Response;
+                r.StatusCode = (int)res.StatusCode;
+                r.ContentType = type;
+                r.Headers.CacheControl = "no-store";
+                r.Headers.XContentTypeOptions = "nosniff";
+                if (res.Content.Headers.ContentLength is { } len)
+                {
+                    r.ContentLength = len;
+                }
+
+                if (res.Content.Headers.ContentRange is { } range)
+                {
+                    r.Headers.ContentRange = range.ToString();
+                }
+
+                r.Headers.AcceptRanges = "bytes";
+                await res.Content.CopyToAsync(r.Body, ct);
+            }
+
+            return Results.Empty;
+        });
+
         g.MapPost("/suggest-mappings", async (IntegrationSettings? body, IntegrationHost host, CancellationToken ct) =>
         {
             var settings = body is null ? await host.LoadAsync(plugin.Id, ct) : await host.MergeAsync(plugin.Id, body, ct);

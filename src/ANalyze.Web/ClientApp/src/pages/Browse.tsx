@@ -264,7 +264,7 @@ export default function Browse() {
         />
       )}
 
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} />
+      <EntryDrawer id={preview} onClose={() => setPreview(null)} list={items.filter((i) => !i.isDir).map((i) => i.id)} onNavigate={setPreview} />
       <PlanDialog
         open={plan}
         onClose={() => setPlan(false)}

@@ -92,6 +92,44 @@ internal sealed class ParentClient(HttpClient http, string url, string? token)
         throw new InvalidOperationException("The parent stopped answering before it finished reading its copy.");
     }
 
+    /// <summary>
+    /// The parent's copy of a file, streamed (the caller disposes the response); <paramref name="range"/> is passed on as the Range header.
+    /// Null when the file is not there.
+    /// </summary>
+    public async Task<HttpResponseMessage?> ContentAsync(int rootId, string relPath, string? range, CancellationToken ct)
+    {
+        using var req = Request($"/backup/content?rootId={rootId}&path={Uri.EscapeDataString(relPath)}");
+        if (!string.IsNullOrEmpty(range))
+        {
+            req.Headers.TryAddWithoutValidation("Range", range);
+        }
+
+        var res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (res.StatusCode == HttpStatusCode.NotFound)
+        {
+            var body = await res.Content.ReadAsStringAsync(ct);
+            res.Dispose();
+            return body.Contains("missing", StringComparison.Ordinal)
+                ? null
+                : throw new InvalidOperationException("The parent is too old to show its copies: update its ANalyze.");
+        }
+
+        if (res.StatusCode != HttpStatusCode.RequestedRangeNotSatisfiable)
+        {
+            try
+            {
+                Check(res, token);
+            }
+            catch
+            {
+                res.Dispose();
+                throw;
+            }
+        }
+
+        return res;
+    }
+
     private HttpRequestMessage Request(string path)
     {
         var req = new HttpRequestMessage(HttpMethod.Get, _base + path);

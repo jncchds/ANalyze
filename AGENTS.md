@@ -320,6 +320,16 @@ blocks or ≤ 5%; the side whose index has `CorruptAt` is the damaged one), head
 max(2 blocks, 10%)), edited; for other sizes: header / trailer / middle when equal start + end cover ≥ half the shorter copy, else
 different. It also says which copy is newer and which is likely damaged, and lists the differing ranges (≤ 50).
 
+**Side by side**: the parent serves `GET /api/v1/backup/content?rootId=&path=` (Range supported, always `application/octet-stream`,
+404 `{"missing":true}`); the child proxies it as `GET /integrations/parent/content?entryId=` (`BackupCompare.LocateAsync` finds the
+parent path, Range passed on, typed with the local entry's MIME with the same active-content downgrade as `/files/{id}/content`,
+`nosniff`). UI: `components/BackupCompareView.tsx`, the "Compare with backup" tab of `EntryDrawer` for files whose backup state is
+synced or corrupt (the drawer widens). Text: first 1 MB of each, Myers line diff (`diffLines`, gives up past 2000 differing lines);
+bytes: 4 KB pages of both via Range, next/previous difference scans 1 MB steps from both sides.
+
+`EntryDrawer` takes `list` (ids in the page's order) + `onNavigate` for ‹ › and ← / → (ignored while an input or a media element has
+the focus); the open tab stays while stepping.
+
 ### Docker
 
 `DockerClient` talks to `unix:///var/run/docker.sock` (or `tcp://…`, e.g. a socket proxy) and only reads `/version` and `/containers/json`.

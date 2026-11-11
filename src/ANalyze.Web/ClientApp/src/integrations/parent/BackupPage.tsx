@@ -227,7 +227,7 @@ function Folders({ targets, threshold, focus }: { targets: Target[]; threshold: 
     t.rootId === f.rootId && (!t.relPath || f.path === t.relPath || f.path.startsWith(t.relPath + '/'))
   const [target, setTarget] = useState(() => Math.max(0, focus ? targets.findIndex((t) => inTarget(t, focus)) : 0))
   const [path, setPath] = useState<string | null>(() => (focus && targets.some((t) => inTarget(t, focus)) ? focus.path : null))
-  const [preview, setPreview] = useState<number | null>(null)
+  const [preview, setPreview] = useState<Preview>(null)
   const t = targets[target]
   const current = path ?? t?.relPath ?? ''
   const q = useQuery({
@@ -321,14 +321,20 @@ function Folders({ targets, threshold, focus }: { targets: Target[]; threshold: 
                   .map((x) => `${count(q.data!.files.find((f) => f.state === x.id)!.files)} ${x.label.toLowerCase()}`)
                   .join(' · ')}
               </p>
-              <FileList rootId={t.rootId!} path={current} direct onOpen={setPreview} />
+              <FileList rootId={t.rootId!} path={current} direct onOpen={(id, list) => setPreview({ id, list })} />
             </Section>
           )}
         </>
       )}
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} />
+      <FileDrawer preview={preview} setPreview={setPreview} />
     </>
   )
+}
+
+type Preview = { id: number; list: number[] } | null
+
+function FileDrawer({ preview, setPreview }: { preview: Preview; setPreview: (p: Preview) => void }) {
+  return <EntryDrawer id={preview?.id ?? null} onClose={() => setPreview(null)} list={preview?.list} onNavigate={(id) => setPreview({ id, list: preview!.list })} />
 }
 
 function detail(f: FileRow) {
@@ -346,7 +352,10 @@ function detail(f: FileRow) {
 
 const STATE_TONE: Record<FileState, string> = { synced: 'chip', corrupt: 'rounded bg-danger/10 px-1.5 text-xs text-danger', missing: 'pill-amber', unsynced: 'pill-muted' }
 
-function FileList({ state, rootId, path, direct, q, onOpen }: { state?: FileState; rootId?: number; path?: string; direct?: boolean; q?: string; onOpen: (id: number) => void }) {
+/** Opens a file in the drawer, with the list it was opened from (for previous/next). */
+type OpenFile = (id: number, list: number[]) => void
+
+function FileList({ state, rootId, path, direct, q, onOpen }: { state?: FileState; rootId?: number; path?: string; direct?: boolean; q?: string; onOpen: OpenFile }) {
   const [pages, setPages] = useState(1)
   const [explain, setExplain] = useState<number | null>(null)
   const parentName = useQuery({ queryKey: ['parent', 'summary'], queryFn: () => api<Summary>('/integrations/parent/summary') }).data?.snapshot?.parentName ?? 'the backup'
@@ -363,7 +372,7 @@ function FileList({ state, rootId, path, direct, q, onOpen }: { state?: FileStat
         {r.data.items.map((f) => (
           <div key={f.id}>
             <div className="flex items-center gap-2">
-              <button className="flex min-w-0 flex-1 items-center gap-3 px-1 py-1.5 text-left text-sm hover:bg-accent-faint" onClick={() => onOpen(f.entryId)}>
+              <button className="flex min-w-0 flex-1 items-center gap-3 px-1 py-1.5 text-left text-sm hover:bg-accent-faint" onClick={() => onOpen(f.entryId, r.data!.items.map((x) => x.entryId))}>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate" title={f.parentPath}>
                     {f.relPath}
@@ -402,7 +411,7 @@ function FileList({ state, rootId, path, direct, q, onOpen }: { state?: FileStat
 
 function Files({ state }: { state: FileState }) {
   const [q, setQ] = useState('')
-  const [preview, setPreview] = useState<number | null>(null)
+  const [preview, setPreview] = useState<Preview>(null)
   const totals = useQuery({
     queryKey: ['parent', 'files', state, q, 'totals'],
     queryFn: () => api<{ total: number; totalSize: number }>('/integrations/parent/files', { query: { state, q, limit: 1 } }),
@@ -419,9 +428,9 @@ function Files({ state }: { state: FileState }) {
         )}
       </div>
       <div className="card px-3 py-1">
-        <FileList state={state} q={q} onOpen={setPreview} />
+        <FileList state={state} q={q} onOpen={(id, list) => setPreview({ id, list })} />
       </div>
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} />
+      <FileDrawer preview={preview} setPreview={setPreview} />
     </>
   )
 }

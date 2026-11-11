@@ -181,7 +181,7 @@ export default function Overview() {
           />
         </Section>
       </div>
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} />
+      <EntryDrawer id={preview} onClose={() => setPreview(null)} list={d.largestFiles.slice(0, 12).map((f) => f.id)} onNavigate={setPreview} />
     </>
   )
 }

@@ -105,20 +105,26 @@ public sealed class BackupCompare(IntegrationHost host, ParentIntegration plugin
         }
     }
 
-    private async Task<DiffReport> CompareAsync(Run run, CancellationToken ct)
+    /// <summary>Where a file of the backup comparison is on the parent, with what both indexes know about it.</summary>
+    internal sealed record ParentFile(ParentClient Client, string ParentName, int ParentRootId, string ParentRel, string ParentPath,
+        int Root, string Rel, string? Mime, long ParentSize, string? ParentHash, string? Hash, long? HashedAt, long? CorruptAt);
+
+    /// <summary>Finds a local file's copy on the parent (from the last sync); throws <see cref="InvalidOperationException"/> when it has none.</summary>
+    internal async Task<ParentFile> LocateAsync(long entryId, CancellationToken ct)
     {
         var settings = await host.LoadAsync(plugin.Id, ct);
         var snap = await plugin.LoadSnapshotAsync(ct) ?? throw new InvalidOperationException("Compare the backup first.");
 
-        (int Root, string Rel, long? ParentSize, string? ParentHash, string? Hash, long? HashedAt, long? CorruptAt) row;
+        (int Root, string Rel, long? ParentSize, string? ParentHash, string? Hash, long? HashedAt, long? CorruptAt, string? Mime) row;
         using (var c = sqlite.Open())
         {
             row = Db.Query(c, """
-                SELECT b.LocalRootId, b.LocalRelPath, b.ParentSize, b.ParentHash, e.FullHash, e.HashedAt, e.CorruptAt
+                SELECT b.LocalRootId, b.LocalRelPath, b.ParentSize, b.ParentHash, e.FullHash, e.HashedAt, e.CorruptAt, e.Mime
                 FROM BackupFiles b JOIN Entries e ON e.Id = b.EntryId WHERE b.EntryId = $e AND b.IsDir = 0
                 """, r => (r.GetInt32(0), r.GetString(1), r.IsDBNull(2) ? (long?)null : r.GetInt64(2), r.IsDBNull(3) ? null : r.GetString(3),
-                    r.IsDBNull(4) ? null : r.GetString(4), r.IsDBNull(5) ? (long?)null : r.GetInt64(5), r.IsDBNull(6) ? (long?)null : r.GetInt64(6)),
-                ("$e", run.EntryId)).FirstOrDefault();
+                    r.IsDBNull(4) ? null : r.GetString(4), r.IsDBNull(5) ? (long?)null : r.GetInt64(5), r.IsDBNull(6) ? (long?)null : r.GetInt64(6),
+                    r.IsDBNull(7) ? null : r.GetString(7)),
+                ("$e", entryId)).FirstOrDefault();
         }
 
         if (row.Rel is null)
@@ -135,18 +141,23 @@ public sealed class BackupCompare(IntegrationHost host, ParentIntegration plugin
         var parentRoot = snap.Info.Roots
             .Where(r => parentPath.StartsWith(r.Path.TrimEnd('/') + "/", StringComparison.Ordinal))
             .MaxBy(r => r.Path.Length) ?? throw new InvalidOperationException($"{parentPath} is in none of {snap.ParentName}'s roots.");
-        var parentRel = parentPath[(parentRoot.Path.TrimEnd('/').Length + 1)..];
+        return new ParentFile(plugin.Client(settings), snap.ParentName, parentRoot.Id, parentPath[(parentRoot.Path.TrimEnd('/').Length + 1)..], parentPath,
+            row.Root, row.Rel, row.Mime, row.ParentSize.Value, row.ParentHash, row.Hash, row.HashedAt, row.CorruptAt);
+    }
 
-        var local = roots.ResolveForRead(row.Root, row.Rel);
+    private async Task<DiffReport> CompareAsync(Run run, CancellationToken ct)
+    {
+        var f = await LocateAsync(run.EntryId, ct);
+        var local = roots.ResolveForRead(f.Root, f.Rel);
         var size = new FileInfo(local).Length;
         run.Size = size;
-        run.ParentSize = row.ParentSize.Value;
-        var block = FileMap.ChooseBlock(Math.Max(size, row.ParentSize.Value));
-        var compare = Math.Min(size, row.ParentSize.Value);
+        run.ParentSize = f.ParentSize;
+        var block = FileMap.ChooseBlock(Math.Max(size, f.ParentSize));
+        var compare = Math.Min(size, f.ParentSize);
 
         // Both copies are read at the same time; the parent's read stops when this side fails.
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var parentTask = plugin.Client(settings).ProbeAsync(parentRoot.Id, parentRel, block, size,
+        var parentTask = f.Client.ProbeAsync(f.ParentRootId, f.ParentRel, block, size,
             n => { Interlocked.Exchange(ref run.ParentRead, n); run.Phase = "reading"; }, () => run.Phase = "waiting", stop.Token);
 
         FileMap here;
@@ -155,7 +166,7 @@ public sealed class BackupCompare(IntegrationHost host, ParentIntegration plugin
         {
             run.Phase = "reading";
             here = await FileMap.ComputeAsync(local, block, compare, n => Interlocked.Add(ref run.Read, n), ct);
-            var probe = await parentTask ?? throw new InvalidOperationException($"{snap.ParentName} no longer has this file ({parentPath}).");
+            var probe = await parentTask ?? throw new InvalidOperationException($"{f.ParentName} no longer has this file ({f.ParentPath}).");
             run.ParentSize = probe.Size;
             Interlocked.Exchange(ref run.ParentRead, probe.Size);
             var parent = FileMap.FromProbe(probe);
@@ -168,9 +179,9 @@ public sealed class BackupCompare(IntegrationHost host, ParentIntegration plugin
             }
 
             return BackupDiff.Analyze(here, parent,
-                new DiffIndex(row.Hash, row.HashedAt, row.CorruptAt),
-                new DiffIndex(probe.Index?.Hash ?? row.ParentHash, probe.Index?.HashedAt, probe.Index?.CorruptAt),
-                snap.ParentName);
+                new DiffIndex(f.Hash, f.HashedAt, f.CorruptAt),
+                new DiffIndex(probe.Index?.Hash ?? f.ParentHash, probe.Index?.HashedAt, probe.Index?.CorruptAt),
+                f.ParentName);
         }
         finally
         {

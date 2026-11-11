@@ -175,7 +175,7 @@ export default function Duplicates() {
         </Section>
       )}
 
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} />
+      <EntryDrawer id={preview} onClose={() => setPreview(null)} list={d?.groups.flatMap((g) => g.members.map((m) => m.id))} onNavigate={setPreview} />
       {wizard && <DedupeWizard hashes={wizard.hashes} onClose={() => setWizard(null)} />}
     </>
   )

@@ -230,5 +230,18 @@ public sealed class BackupDiffTests : IDisposable
         Assert.Equal(DiffVerdicts.Truncated, report.GetProperty("verdict").GetString());
         Assert.Equal(BackupDiff.Parent, report.GetProperty("damaged").GetString());
         Assert.Equal(200_000, report.GetProperty("commonPrefix").GetInt64());
+
+        // The parent's copy, streamed through the child for the side-by-side view: whole, and a byte range.
+        var whole = await http.GetByteArrayAsync($"/api/v1/integrations/parent/content?entryId={entryId}");
+        Assert.Equal(data[..200_000], whole);
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"/api/v1/integrations/parent/content?entryId={entryId}");
+        req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(150_000, 150_015);
+        using var part = await http.SendAsync(req);
+        Assert.Equal(System.Net.HttpStatusCode.PartialContent, part.StatusCode);
+        Assert.Equal(data[150_000..150_016], await part.Content.ReadAsByteArrayAsync());
+        Assert.Equal(150_000, part.Content.Headers.ContentRange!.From);
+
+        var gone = await http.GetAsync("/api/v1/backup/content?rootId=1&path=bk/docs/nope.bin");
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, gone.StatusCode);
     }
 }

@@ -288,6 +288,17 @@ how they differ and which copy is likely the bad one:
 The page also shows sizes, dates, the type each copy looks like, the first bytes, zero areas, and a bar of where the
 differences are. Both sides read one file at a time. The backup server must run 0.1.12 or newer.
 
+**Compare with backup** is a tab in the file panel, for every file the backup has. It shows both copies side by side,
+streamed from the backup server through this instance:
+- images: side by side, *Flip* (both at the same place, click or auto-switch), or *Difference* (changed pixels in red)
+- video and audio: linked playback (play, pause, seek and speed follow each other); you hear one copy, which you pick
+- PDFs: side by side
+- text: a line diff
+- any file, under *Bytes*: both hex dumps with differing bytes marked, next/previous difference, and shortcuts to the
+  ranges *What happened?* found
+
+The file panel also has **‹ ›** buttons (and the ← → keys) to step through the files of the list it was opened from.
+
 ### Plex
 
 **Integrations → Plex**: server URL, `X-Plex-Token`, enable, **Sync now** (and after every scan if enabled).
