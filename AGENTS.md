@@ -380,7 +380,11 @@ CI (`.github/workflows/docker.yml`, job `desktop`): Linux x64+arm64 (AppImage, t
 arm64 (one job each, so each gets its own NSIS installer and zip; arm64 is cross-built on the x64 runner) on every non-PR build, uploaded as artifacts named `ANalyze-*` (the release job downloads only those: the run also
 holds Docker's build record, which is not a zip). Builds of `main` publish them as the GitHub release `v<VERSION>` (job `release`):
 created with its tag when a new version first reaches main (notes = that version's `RELEASE_NOTES.md` section), files replaced by later builds of the same version.
-Builds of `main` also set the Docker Hub description (job `docker`): `.github/scripts/dockerhub-readme.mjs` turns `README.md` into it (relative
+The Docker image is built natively per platform, without QEMU (job `docker`: `linux/amd64` on `ubuntu-latest`, `linux/arm64` on
+`ubuntu-24.04-arm`, each pushed by digest only with its own GHA cache scope); job `docker-merge` tags both as one multi-platform image
+(`latest` on main, the version, `sha-…`) with `docker buildx imagetools create`. Under emulation the arm64 runtime stage's apt-get could
+not resolve `ports.ubuntu.com`.
+Builds of `main` also set the Docker Hub description (job `docker-merge`): `.github/scripts/dockerhub-readme.mjs` turns `README.md` into it (relative
 links and images → GitHub URLs, `#section` links → the README on GitHub, GitHub alerts → bold labels, a repository link at
 `<!-- dockerhub:github-link -->`, cut at 25,000 bytes) and `peter-evans/dockerhub-description` uploads it; `DOCKERHUB_TOKEN` needs the
 "Read, Write, Delete" scope. Keep README links relative (or absolute) and its images in the repository so both sites show them.

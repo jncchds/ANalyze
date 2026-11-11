@@ -41,7 +41,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 # ffmpeg gives video thumbnails and poster frames; build with --build-arg FFMPEG=false for a smaller image.
 ARG FFMPEG=true
 # apt-get update exits 0 even when it could not fetch the package lists, and the install then fails with "Unable to locate
-# package" (seen on CI, mostly in the emulated arm64 build). --error-on=any makes a failed fetch fail the update, which is retried.
+# package". --error-on=any makes a failed fetch fail the update, which is retried.
 RUN set -eu; \
     for i in 1 2 3 4 5; do \
         if apt-get update -o Acquire::Retries=3 --error-on=any; then break; fi; \

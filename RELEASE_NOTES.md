@@ -6,6 +6,7 @@
 - feat: "Compare with backup" tab in the file panel for files on the backup: both copies side by side — images (side by side, flip, pixel difference), video and audio with linked playback, PDFs, a line diff for text, and a byte view with differences marked and next/previous difference (new parent endpoint `GET /backup/content`)
 - feat: previous/next buttons (and ← → keys) in the file panel step through the files of the list it was opened from
 - fix: the Docker image build no longer fails with "Unable to locate package fontconfig" when the Ubuntu mirror cannot be reached for a moment (seen in the arm64 build): fetching the package lists now fails loudly and is retried up to 5 times
+- fix: the arm64 Docker image is built on a native arm64 runner instead of under emulation, where its package downloads could not resolve the Ubuntu mirror; both images are then joined under the usual tags
 
 ## v0.1.11 — 2026-11-06
 
