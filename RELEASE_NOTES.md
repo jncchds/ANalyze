@@ -5,6 +5,7 @@
 - feat: "What happened?" on corrupted backup files: both instances read their copy (only block hashes cross the network, new parent endpoint `GET /backup/probe`) and the Backup page explains the difference — identical now (outdated index), cut off or grown, zeros instead of data, silent corruption (naming the side that noticed it), header/tags or end rewritten, edited in place, or a different file — with sizes, dates, detected types, first bytes and a bar of where the copies differ
 - feat: "Compare with backup" tab in the file panel for files on the backup: both copies side by side — images (side by side, flip, pixel difference), video and audio with linked playback, PDFs, a line diff for text, and a byte view with differences marked and next/previous difference (new parent endpoint `GET /backup/content`)
 - feat: previous/next buttons (and ← → keys) in the file panel step through the files of the list it was opened from
+- fix: the Docker image build no longer fails with "Unable to locate package fontconfig" when the Ubuntu mirror cannot be reached for a moment (seen in the arm64 build): fetching the package lists now fails loudly and is retried up to 5 times
 
 ## v0.1.11 — 2026-11-06
 

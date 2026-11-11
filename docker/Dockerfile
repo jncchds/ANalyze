@@ -40,10 +40,19 @@ RUN dotnet publish src/ANalyze.Web/ANalyze.Web.csproj -c Release -a $TARGETARCH 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 # ffmpeg gives video thumbnails and poster frames; build with --build-arg FFMPEG=false for a smaller image.
 ARG FFMPEG=true
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends fontconfig libfontconfig1 \
-    && if [ "$FFMPEG" = "true" ]; then apt-get install -y --no-install-recommends ffmpeg; fi \
-    && rm -rf /var/lib/apt/lists/*
+# apt-get update exits 0 even when it could not fetch the package lists, and the install then fails with "Unable to locate
+# package" (seen on CI, mostly in the emulated arm64 build). --error-on=any makes a failed fetch fail the update, which is retried.
+RUN set -eu; \
+    for i in 1 2 3 4 5; do \
+        if apt-get update -o Acquire::Retries=3 --error-on=any; then break; fi; \
+        if [ "$i" = 5 ]; then echo "apt-get update failed 5 times" >&2; exit 1; fi; \
+        echo "apt-get update failed (attempt $i), retrying in $((i * 15)) s" >&2; \
+        rm -rf /var/lib/apt/lists/*; \
+        sleep $((i * 15)); \
+    done; \
+    apt-get install -y --no-install-recommends -o Acquire::Retries=3 fontconfig libfontconfig1; \
+    if [ "$FFMPEG" = "true" ]; then apt-get install -y --no-install-recommends -o Acquire::Retries=3 ffmpeg; fi; \
+    rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app ./
 ENV ASPNETCORE_HTTP_PORTS=8080 \

@@ -15,9 +15,9 @@ docker compose -f docker-compose.dev.yml up --build  # full app on :8080 with ./
 ## Mandatory workflow rules
 
 1. **After every code change** — `dotnet build` and `npm run typecheck` (in ClientApp); fix all errors, and warnings when safe.
-2. **After every committed change** — version check-bump flow:
-   a. If the current `VERSION` was already pushed to origin (`git log origin/main..HEAD -- VERSION` is empty and the tag/commit exists on origin),
-      bump the patch number and add a new `## v{version} — {date}` heading to `RELEASE_NOTES.md`; otherwise reuse the current version.
+2. **After every committed change** — release notes:
+   a. Don't bump `VERSION` (only when the user asks), even when that version's tag already exists: a build of main for an existing
+      release `v{VERSION}` replaces its files and notes (`release` job in `.github/workflows/docker.yml`).
    b. Make sure the heading for the current version carries today's date.
    c. Add a `- feat:/fix:/refactor:` bullet for the change under that heading.
 3. **After every architectural or schema change** — update `AGENTS.md` and `README.md`.
