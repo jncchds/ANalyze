@@ -42,15 +42,69 @@ internal sealed class ParentClient(HttpClient http, string url, string? token)
         }
     }
 
-    private async Task<T> GetAsync<T>(string path, CancellationToken ct)
+    /// <summary>
+    /// The parent reads one file and returns its <see cref="FileMap"/>; null when the file is not there. The answer streams progress
+    /// lines, so the client's timeout only covers the wait for the first byte.
+    /// </summary>
+    public async Task<FileProbe?> ProbeAsync(int rootId, string relPath, int block, long compare, Action<long>? onRead, Action? onWaiting, CancellationToken ct)
     {
-        using var req = new HttpRequestMessage(HttpMethod.Get, _base + path);
+        using var req = Request($"/backup/probe?rootId={rootId}&path={Uri.EscapeDataString(relPath)}&block={block}&compare={compare}");
+        using var res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (res.StatusCode == HttpStatusCode.NotFound)
+        {
+            var body = await res.Content.ReadAsStringAsync(ct);
+            return body.Contains("missing", StringComparison.Ordinal)
+                ? null
+                : throw new InvalidOperationException("The parent is too old to compare file contents: update its ANalyze.");
+        }
+
+        Check(res, token);
+        await using var stream = await res.Content.ReadAsStreamAsync(ct);
+        using var reader = new StreamReader(stream);
+        while (await reader.ReadLineAsync(ct) is { } line)
+        {
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            var l = JsonSerializer.Deserialize<ProbeLine>(line, Json);
+            if (l?.Result is { } r)
+            {
+                return r;
+            }
+
+            if (l?.Error is { } e)
+            {
+                throw new InvalidOperationException("The parent could not read its copy: " + e);
+            }
+
+            if (l?.Read is { } n)
+            {
+                onRead?.Invoke(n);
+            }
+            else if (l?.Waiting == true)
+            {
+                onWaiting?.Invoke();
+            }
+        }
+
+        throw new InvalidOperationException("The parent stopped answering before it finished reading its copy.");
+    }
+
+    private HttpRequestMessage Request(string path)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Get, _base + path);
         if (token is not null)
         {
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         }
 
-        using var res = await http.SendAsync(req, ct);
+        return req;
+    }
+
+    private static void Check(HttpResponseMessage res, string? token)
+    {
         if (res.StatusCode == HttpStatusCode.Unauthorized)
         {
             throw new InvalidOperationException(token is null
@@ -58,12 +112,19 @@ internal sealed class ParentClient(HttpClient http, string url, string? token)
                 : "The parent rejected the token: it must equal the parent's ANalyze__ApiToken.");
         }
 
+        res.EnsureSuccessStatusCode();
+    }
+
+    private async Task<T> GetAsync<T>(string path, CancellationToken ct)
+    {
+        using var req = Request(path);
+        using var res = await http.SendAsync(req, ct);
         if (res.StatusCode == HttpStatusCode.NotFound && path.StartsWith("/backup/info", StringComparison.Ordinal))
         {
             throw new InvalidOperationException("That server is not an ANalyze with backup support (update the parent to 0.1.4 or later).");
         }
 
-        res.EnsureSuccessStatusCode();
+        Check(res, token);
         return await res.Content.ReadFromJsonAsync<T>(Json, ct) ?? throw new InvalidOperationException("Empty answer from the parent.");
     }
 }

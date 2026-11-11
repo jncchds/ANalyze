@@ -75,7 +75,7 @@ public sealed class ParentIntegration(
         IntegrationHttp.AllowInvalidCertificate(),
     ];
 
-    private ParentClient Client(IntegrationSettings s) =>
+    internal ParentClient Client(IntegrationSettings s) =>
         new(IntegrationHttp.Create(httpFactory, s), s.Require("url", "parent URL"), s.GetString("token"));
 
     private static string ParentName(IntegrationSettings s) =>
@@ -332,6 +332,7 @@ public static class BackupDependencyInjection
     {
         services.AddSingleton<ANalyze.Scanner.IHashListener, BackupHashListener>();
         services.AddHostedService<BackupHashRefresh>();
+        services.AddSingleton<BackupCompare>();
         return services.AddIntegration<ParentIntegration>();
     }
 }

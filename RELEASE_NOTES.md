@@ -1,5 +1,9 @@
 # Release Notes
 
+## v0.1.12 — 2026-11-11
+
+- feat: "What happened?" on corrupted backup files: both instances read their copy (only block hashes cross the network, new parent endpoint `GET /backup/probe`) and the Backup page explains the difference — identical now (outdated index), cut off or grown, zeros instead of data, silent corruption (naming the side that noticed it), header/tags or end rewritten, edited in place, or a different file — with sizes, dates, detected types, first bytes and a bar of where the copies differ
+
 ## v0.1.11 — 2026-11-06
 
 - fix: `GET /backup/info` answers at once, also while the backup server scans: file counts and sizes come from each root's folder totals instead of counting every file (the hash count is no longer sent; "Test connection" no longer shows it)

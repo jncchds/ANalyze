@@ -9,6 +9,7 @@ import { PathText } from '../../components/PathText'
 import { Empty, ErrorBox, Loading, PageTitle, Section, ShareBar, Stat, Tabs } from '../../components/ui'
 import { useLocate } from '../../hooks/useLocate'
 import { ago, bytes, count, pct } from '../../lib/format'
+import { ComparePanel } from './ComparePanel'
 
 type FileState = 'synced' | 'corrupt' | 'missing' | 'unsynced'
 
@@ -347,6 +348,8 @@ const STATE_TONE: Record<FileState, string> = { synced: 'chip', corrupt: 'rounde
 
 function FileList({ state, rootId, path, direct, q, onOpen }: { state?: FileState; rootId?: number; path?: string; direct?: boolean; q?: string; onOpen: (id: number) => void }) {
   const [pages, setPages] = useState(1)
+  const [explain, setExplain] = useState<number | null>(null)
+  const parentName = useQuery({ queryKey: ['parent', 'summary'], queryFn: () => api<Summary>('/integrations/parent/summary') }).data?.snapshot?.parentName ?? 'the backup'
   const r = useQuery({
     queryKey: ['parent', 'files', state, rootId, path, direct, q, pages],
     queryFn: () => api<{ total: number; totalSize: number; items: FileRow[] }>('/integrations/parent/files', { query: { state, rootId, path, direct, q, limit: 200 * pages } }),
@@ -358,16 +361,34 @@ function FileList({ state, rootId, path, direct, q, onOpen }: { state?: FileStat
     <>
       <div className="divide-y divide-line/60">
         {r.data.items.map((f) => (
-          <button key={f.id} className="flex w-full items-center gap-3 px-1 py-1.5 text-left text-sm hover:bg-accent-faint" onClick={() => onOpen(f.entryId)}>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate" title={f.parentPath}>
-                {f.relPath}
-              </span>
-              <span className={clsx('block truncate text-xs', f.state === 'corrupt' ? 'text-danger' : 'muted')}>{detail(f)}</span>
-            </span>
-            {!state && <span className={STATE_TONE[f.state]}>{FILE_STATES.find((x) => x.id === f.state)?.label}</span>}
-            <span className="w-20 text-right tabular">{bytes(f.size)}</span>
-          </button>
+          <div key={f.id}>
+            <div className="flex items-center gap-2">
+              <button className="flex min-w-0 flex-1 items-center gap-3 px-1 py-1.5 text-left text-sm hover:bg-accent-faint" onClick={() => onOpen(f.entryId)}>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate" title={f.parentPath}>
+                    {f.relPath}
+                  </span>
+                  <span className={clsx('block truncate text-xs', f.state === 'corrupt' ? 'text-danger' : 'muted')}>{detail(f)}</span>
+                </span>
+                {!state && <span className={STATE_TONE[f.state]}>{FILE_STATES.find((x) => x.id === f.state)?.label}</span>}
+                <span className="w-20 text-right tabular">{bytes(f.size)}</span>
+              </button>
+              {f.state === 'corrupt' && (
+                <button
+                  className={clsx('btn-ghost shrink-0 px-2 py-1 text-xs', explain === f.entryId && 'bg-accent-faint')}
+                  onClick={() => setExplain(explain === f.entryId ? null : f.entryId)}
+                  title="Read both copies and explain how they differ"
+                >
+                  What happened?
+                </button>
+              )}
+            </div>
+            {explain === f.entryId && (
+              <div className="mx-1 mb-2 rounded-md bg-surface-2 p-3">
+                <ComparePanel entryId={f.entryId} parentName={parentName} />
+              </div>
+            )}
+          </div>
         ))}
       </div>
       {r.data.total > r.data.items.length && (

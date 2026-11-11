@@ -272,6 +272,22 @@ still missing and uses each hash as soon as it exists. Files hashed on the child
 by batch, and every 15 minutes the child fetches the hashes the backup server computed since then (backup server
 0.1.10 or newer).
 
+**What happened?** Next to each corrupted file, this button reads both copies completely, the child's here and the
+backup server's there, at the same time. No file content crosses the network, only a hash per block. It then tells you
+how they differ and which copy is likely the bad one:
+
+| Verdict | Meaning |
+|---|---|
+| Identical now | Same content: an index was out of date (rescan) |
+| Cut off / Grew since the backup | One copy is exactly the start of the other: an interrupted copy, or data appended later (the newer one is longer) |
+| Zeros instead of data | Where they differ, one copy holds only zeros: a copy that stopped while writing, or lost data |
+| Silent corruption | A few blocks differ although size and date are the same: bit rot, a failing disk or RAM. If either instance had noticed the change while re-verifying, that copy is named |
+| Header / tags changed, End changed, Middle changed | The rest is identical, also when the size changed (e.g. a tagger rewrote audio or video metadata) |
+| Edited / Different file | Scattered changes, or nothing in common (replaced, re-encoded, downloaded again); the newer copy is named |
+
+The page also shows sizes, dates, the type each copy looks like, the first bytes, zero areas, and a bar of where the
+differences are. Both sides read one file at a time. The backup server must run 0.1.12 or newer.
+
 ### Plex
 
 **Integrations → Plex**: server URL, `X-Plex-Token`, enable, **Sync now** (and after every scan if enabled).

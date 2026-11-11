@@ -26,7 +26,7 @@ SQLite (WAL) in /data/analyze.db
 | `ANalyze.Integrations.Downloads` | qBittorrent, Transmission, SABnzbd (`DownloadIntegration` base). |
 | `ANalyze.Integrations.Jellyfin` | Jellyfin and Emby (`MediaServerIntegration` base). |
 | `ANalyze.Integrations.Photos` | Immich and PhotoPrism. |
-| `ANalyze.Integrations.Backup` | Parent–child link between two ANalyze instances: `BackupExport` (parent API), `ParentClient`, `BackupSync` (comparison), `BackupAnnotations`, `ParentIntegration`, `BackupEndpoints`. |
+| `ANalyze.Integrations.Backup` | Parent–child link between two ANalyze instances: `BackupExport` (parent API), `ParentClient`, `BackupSync` (comparison), `BackupAnnotations`, `ParentIntegration`, `BackupEndpoints`, and the per-file explanation `FileMap` / `BackupDiff` / `BackupCompare`. |
 | `ANalyze.Integrations.Docker` | Docker: `DockerClient` (unix socket or TCP), `DockerState`, `DockerPaths` (`IPathMappingSource`), `MountMath`. |
 | `ANalyze.Web` | `Program.cs`, `Endpoints/*`, `JobHub`, auth, SPA in `ClientApp/`. |
 | `desktop/` (Node, not .NET) | Electron app that bundles the published server; see "Desktop app". |
@@ -303,7 +303,22 @@ Hashes need not exist when the sync runs (it compares sizes where a hash is miss
 - hashed on the **parent**: `BackupHashRefresh` reads the parent's hash feed every 15 minutes from the cursors the last sync saved (the
   parent's clock at the sync's start), stores `ParentHash`/`ParentSize` and re-checks those files; older parents without a feed are skipped.
 The integration also syncs again after the processing that follows a scan (`SyncAfterProcessing`), which settles folder states. Plugin routes: `summary`, `folders?rootId&path` (the folder, its sub-folders, its direct
-files by state), `files?state&rootId&path&direct&q&sort` (with the parent path, mapped back), `suggest-mappings`. UI: `integrations/parent/BackupPage.tsx`.
+files by state), `files?state&rootId&path&direct&q&sort` (with the parent path, mapped back), `suggest-mappings`, `compare?entryId=` (POST start, GET poll, DELETE cancel). UI: `integrations/parent/BackupPage.tsx` (+ `ComparePanel.tsx`).
+
+**Why a file differs** ("What happened?" on a corrupt file): `BackupCompare` (singleton, results in memory, last 100) reads the local copy
+while the parent reads its copy through `GET /api/v1/backup/probe?rootId=&path=&block=&compare=`. Both build a `FileMap` in one sequential
+read: XxHash3 per block from the start (`Head`) and from the end (`Tail`, so content shifted by an insertion still matches), all-zero flags
+per head block, exact XxHash3 of the first and last `compare` bytes (the child sends its size; prefix/suffix are taken over the shorter
+length), the full XxHash128 (same as `FullHash`) and the first 34 KB for `FileTypes.Sniff`. Block size: ≥ 64 KiB, ≤ ~4096 blocks
+(`FileMap.ChooseBlock`); the parent clamps to ≤ 64k blocks and the child re-reads if the parent picked another size or its copy's size changed.
+The probe answers NDJSON (`ProbeLine`: `waiting` / `read` progress each second, then `result` or `error`) so the 2-minute client timeout only
+covers the headers; it reads one file at a time (`ProbeGate`), takes no `JobLock`, resolves via `ResolveForRead` and answers 404
+`{"missing":true}` for a missing file (an older parent answers 404 without a body). `BackupDiff.Analyze` (pure, tested) gives a verdict
+(`DiffVerdicts`): identical (an index is stale) → changing → truncated / appended (shorter = exact prefix; appended when the longer is newer)
+→ zeros (≥ 80% of the differing bytes are zeros on one side) → for equal sizes: different (≥ 90% blocks), bitrot (same mtime ±2 s, ≤ 16
+blocks or ≤ 5%; the side whose index has `CorruptAt` is the damaged one), header / trailer (differences only in the first or last
+max(2 blocks, 10%)), edited; for other sizes: header / trailer / middle when equal start + end cover ≥ half the shorter copy, else
+different. It also says which copy is newer and which is likely damaged, and lists the differing ranges (≤ 50).
 
 ### Docker
 

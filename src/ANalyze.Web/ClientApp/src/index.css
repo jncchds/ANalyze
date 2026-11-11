@@ -123,6 +123,10 @@
   @apply inline-flex items-center rounded px-2 py-0.5 text-xs text-amber bg-amber-faint;
 }
 
+@utility pill-danger {
+  @apply inline-flex items-center rounded px-2 py-0.5 text-xs text-danger bg-danger/10;
+}
+
 @utility link {
   @apply text-accent hover:underline;
 }

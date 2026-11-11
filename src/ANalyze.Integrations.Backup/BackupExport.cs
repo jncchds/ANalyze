@@ -40,7 +40,8 @@ public sealed record HashPage(IReadOnlyList<ExportFile> Items, string? Next, str
 /// <summary>
 /// Read-only API another ANalyze uses to compare its backup with this instance (the parent): <c>GET /api/v1/backup/info</c>,
 /// <c>GET /api/v1/backup/files?rootId=&amp;after=&amp;limit=</c> (files and folders of one root in path order, paged by path) and
-/// <c>GET /api/v1/backup/hashes?rootId=&amp;after=&amp;limit=</c> (files of one root hashed after a cursor "hashedAt:id", oldest first).
+/// <c>GET /api/v1/backup/hashes?rootId=&amp;after=&amp;limit=</c> (files of one root hashed after a cursor "hashedAt:id", oldest first) and
+/// <c>GET /api/v1/backup/probe</c> (block fingerprints of one file, to explain how a copy differs: <see cref="MapBackupProbe"/>).
 /// Protected like the rest of the API; a child authenticates with <c>ANalyze__ApiToken</c>.
 /// </summary>
 public static class BackupExport
@@ -51,6 +52,7 @@ public static class BackupExport
     public static void MapBackupExport(this RouteGroupBuilder api)
     {
         var g = api.MapGroup("/backup");
+        g.MapBackupProbe();
 
         g.MapGet("/info", (SqliteSetup sqlite, RootRegistry roots, SettingsStore settings) =>
         {
@@ -107,6 +109,102 @@ public static class BackupExport
             return Results.Ok(new ExportPage(items, items.Count == take ? items[^1].P : null));
         });
     }
+
+    /// <summary>One file read for a child at a time: probes read whole files and the disks may be slow.</summary>
+    private static readonly SemaphoreSlim ProbeGate = new(1, 1);
+
+    private static readonly System.Text.Json.JsonSerializerOptions LineJson = new(System.Text.Json.JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    /// <summary>
+    /// <c>GET /backup/probe?rootId=&amp;path=&amp;block=&amp;compare=</c>: reads one file and answers its <see cref="FileMap"/> as NDJSON
+    /// (<see cref="ProbeLine"/>: progress lines while waiting and reading, then the result), so a long read keeps the connection alive.
+    /// 404 with <c>{"missing":true}</c> when the file is not there (an older parent answers 404 without a body).
+    /// </summary>
+    public static void MapBackupProbe(this RouteGroupBuilder g) =>
+        g.MapGet("/probe", async (int rootId, string path, int? block, long? compare, HttpContext http, SqliteSetup sqlite, RootRegistry roots, CancellationToken ct) =>
+        {
+            var rel = path.Trim('/');
+            string full;
+            try
+            {
+                full = roots.ResolveForRead(rootId, rel);
+            }
+            catch (Exception e) when (e is UnauthorizedAccessException or FileNotFoundException or KeyNotFoundException or InvalidOperationException)
+            {
+                return Results.NotFound(new { missing = true });
+            }
+
+            if (!File.Exists(full))
+            {
+                return Results.NotFound(new { missing = true });
+            }
+
+            ProbeIndex? index;
+            using (var c = sqlite.Open())
+            {
+                index = Db.Query(c, "SELECT Size, MTime, FullHash, HashedAt, CorruptAt FROM Entries WHERE RootId = $r AND RelPath = $p AND IsDir = 0",
+                    r => new ProbeIndex(r.GetInt64(0), r.GetInt64(1), r.IsDBNull(2) ? null : r.GetString(2), r.IsDBNull(3) ? null : r.GetInt64(3), r.IsDBNull(4) ? null : r.GetInt64(4)),
+                    ("$r", rootId), ("$p", rel)).FirstOrDefault();
+            }
+
+            var res = http.Response;
+            res.ContentType = "application/x-ndjson";
+            res.Headers.CacheControl = "no-store";
+            await res.StartAsync(ct);
+            var writeLock = new SemaphoreSlim(1, 1);
+            async Task Write(ProbeLine line)
+            {
+                await writeLock.WaitAsync(ct);
+                try
+                {
+                    await res.WriteAsync(System.Text.Json.JsonSerializer.Serialize(line, LineJson) + "\n", ct);
+                    await res.Body.FlushAsync(ct);
+                }
+                finally
+                {
+                    writeLock.Release();
+                }
+            }
+
+            while (!await ProbeGate.WaitAsync(TimeSpan.FromSeconds(5), ct))
+            {
+                await Write(new ProbeLine(Waiting: true));
+            }
+
+            try
+            {
+                // Some multiple of 4 KiB, and never more than 64k blocks however small the child asked for.
+                var size = new FileInfo(full).Length;
+                var b = (int)Math.Clamp(block ?? FileMap.ChooseBlock(size), Math.Max(4096L, (size + 65535) / 65536), 1L << 30);
+                b = (b + 4095) / 4096 * 4096;
+                long read = 0;
+                using var ticker = new PeriodicTimer(TimeSpan.FromSeconds(1));
+                var mapTask = FileMap.ComputeAsync(full, b, compare ?? size, n => Interlocked.Add(ref read, n), ct);
+                while (!mapTask.IsCompleted)
+                {
+                    await Task.WhenAny(mapTask, ticker.WaitForNextTickAsync(ct).AsTask());
+                    if (!mapTask.IsCompleted)
+                    {
+                        await Write(new ProbeLine(Read: Interlocked.Read(ref read)));
+                    }
+                }
+
+                await Write(new ProbeLine(Result: (await mapTask).ToProbe(index)));
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                await Write(new ProbeLine(Error: e.Message));
+            }
+            finally
+            {
+                ProbeGate.Release();
+            }
+
+            return Results.Empty;
+        });
 
     /// <summary>"hashedAt:id" → parts; anything else is the start of the feed.</summary>
     internal static (long At, long Id) ParseCursor(string? cursor)

@@ -124,6 +124,11 @@ internal static class BackupEndpoints
             return new { total = totals.Item1, totalSize = totals.Item2, items };
         });
 
+        // How a file differs from its copy on the parent (BackupCompare): start, poll, cancel.
+        g.MapPost("/compare", (long entryId, BackupCompare compare) => compare.Start(entryId));
+        g.MapGet("/compare", (long entryId, BackupCompare compare) => compare.Get(entryId) is { } s ? Results.Ok(s) : Results.NotFound());
+        g.MapDelete("/compare", (long entryId, BackupCompare compare) => compare.Cancel(entryId) ? Results.NoContent() : Results.NotFound());
+
         g.MapPost("/suggest-mappings", async (IntegrationSettings? body, IntegrationHost host, CancellationToken ct) =>
         {
             var settings = body is null ? await host.LoadAsync(plugin.Id, ct) : await host.MergeAsync(plugin.Id, body, ct);
