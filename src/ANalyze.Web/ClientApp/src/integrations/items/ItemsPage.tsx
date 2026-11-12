@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -8,6 +8,7 @@ import { EntryDrawer } from '../../components/EntryDrawer'
 import { PlanDialog } from '../../components/PlanDialog'
 import { Empty, ErrorBox, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../../components/ui'
 import { useLocate } from '../../hooks/useLocate'
+import { useEntryPreview, useUrlEnum, useUrlOverlay, useUrlParam, useUrlParams } from '../../hooks/useUrlState'
 import { PathText } from '../../components/PathText'
 import { ago, bytes, count, date, pct } from '../../lib/format'
 
@@ -106,21 +107,32 @@ function StatePill({ state }: { state?: string }) {
   return <span className={STATE_TONE[state] ?? 'pill-muted'}>{state}</span>
 }
 
-/** Page for an item-based integration (Sonarr, qBittorrent, Jellyfin, Immich…), configured per plugin. */
+const ITEM_RELATED = ['itemFile', 'itemFileTab', 'itemFilePlan', 'itemPlan']
+const groupQuery = (id: string, key: string | null) => [id, 'groups', 'key', key]
+
+/**
+ * Page for an item-based integration (Sonarr, qBittorrent, Jellyfin, Immich…), configured per plugin. Tab, filters and the open
+ * title (`?item=<key>`, with its file panel and cleanup dialog) are in the URL, so Back steps through them.
+ */
 export function ItemsPage({ config }: { config: ItemsConfig }) {
   const base = `/integrations/${config.id}`
-  const [tab, setTab] = useState<ItemsTab>(config.tabs[0].id)
+  const [, setParams] = useUrlParams()
+  const [tab, setTab] = useUrlEnum<ItemsTab>('tab', config.tabs.map((t) => t.id), config.tabs[0].id)
+  const item = useUrlOverlay('item', ITEM_RELATED)
   const summary = useQuery({ queryKey: [config.id, 'summary'], queryFn: () => api<Summary>(`${base}/summary`) })
   const s = summary.data
-  // Opened from a label in the browser: show that title.
+  // Opened from a label in the browser: show that title (the label's `?entry=` becomes `?item=…`).
   const located = useLocate<{ key?: string }>(config.id)
   const locatedKey = located.target?.key
-  const locatedRow = useQuery({
-    queryKey: [config.id, 'groups', 'key', locatedKey],
-    queryFn: () => api<{ items: GroupRow[] }>(`${base}/groups`, { query: { key: locatedKey } }),
-    enabled: !!locatedKey,
+  useEffect(() => {
+    if (locatedKey) setParams({ entry: null, item: locatedKey }, { replace: true })
+  }, [locatedKey, setParams])
+  const openRow = useQuery({
+    queryKey: groupQuery(config.id, item.value),
+    queryFn: () => api<{ items: GroupRow[] }>(`${base}/groups`, { query: { key: item.value } }),
+    enabled: !!item.value,
   })
-  const locatedGroup = locatedKey ? locatedRow.data?.items[0] : undefined
+  const openGroup = item.value ? openRow.data?.items[0] : undefined
 
   if (summary.isLoading) return <Loading />
   if (summary.error) return <ErrorBox error={summary.error} />
@@ -166,26 +178,31 @@ export function ItemsPage({ config }: { config: ItemsConfig }) {
         )}
       </div>
 
-      <Tabs tabs={config.tabs.map((t) => ({ id: t.id, label: t.label }))} value={tab} onChange={setTab} />
+      <Tabs tabs={config.tabs.map((t) => ({ id: t.id, label: t.label }))} value={tab} onChange={(t) => setTab(t)} />
       <p className="mb-3 text-sm muted">{current.hint}</p>
       {tab === 'titles' && <Titles config={config} />}
       {tab === 'untracked' && <Entries config={config} path="untracked?mode=files" empty="Everything in these folders is known." />}
       {tab === 'orphans' && <Entries config={config} path="untracked?mode=top" empty="Nothing in these folders is unknown." />}
       {tab === 'copies' && <Entries config={config} path="copies" empty="No copies found (only files with identical content are compared)." showItem />}
       {tab === 'unmatched' && <Unmatched config={config} />}
-      {locatedGroup && <GroupDialog config={config} row={locatedGroup} onClose={located.clear} />}
+      {openGroup && <GroupDialog config={config} row={openGroup} onClose={item.close} />}
     </>
   )
 }
 
 function Titles({ config }: { config: ItemsConfig }) {
   const base = `/integrations/${config.id}`
-  const [kind, setKind] = useState(config.kinds?.[0]?.id ?? '')
-  const [filter, setFilter] = useState('')
-  const [state, setState] = useState('')
-  const [sort, setSort] = useState('size')
-  const [q, setQ] = useState('')
-  const [open, setOpen] = useState<GroupRow | null>(null)
+  const qc = useQueryClient()
+  const [kind, setKind] = useUrlParam('kind', config.kinds?.[0]?.id ?? '')
+  const [filter, setFilter] = useUrlParam('filter')
+  const [state, setState] = useUrlParam('state')
+  const [sort, setSort] = useUrlParam('sort', 'size')
+  const [q, setQ] = useUrlParam('q')
+  const item = useUrlOverlay('item', ITEM_RELATED)
+  const setOpen = (t: GroupRow) => {
+    qc.setQueryData(groupQuery(config.id, t.key), { items: [t] })
+    item.open(t.key)
+  }
   const top = useQuery({
     queryKey: [config.id, 'groups', kind, filter, state, sort, q],
     queryFn: () => api<{ total: number; totalSize: number; items: GroupRow[] }>(`${base}/groups`, { query: { kind, filter, state, sort, q, limit: 300 } }),
@@ -230,7 +247,7 @@ function Titles({ config }: { config: ItemsConfig }) {
           <option value="added">Recently added</option>
           <option value="title">Title</option>
         </select>
-        <input className="input max-w-xs" placeholder="Title…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input className="input max-w-xs" placeholder="Title…" value={q} onChange={(e) => setQ(e.target.value, { replace: true })} />
         {top.data && (
           <span className="ml-auto text-sm muted">
             {count(top.data.total)} {config.noun} · {bytes(top.data.totalSize)}
@@ -273,7 +290,6 @@ function Titles({ config }: { config: ItemsConfig }) {
           })}
         </div>
       )}
-      {open && <GroupDialog config={config} row={open} onClose={() => setOpen(null)} />}
     </>
   )
 }
@@ -281,8 +297,8 @@ function Titles({ config }: { config: ItemsConfig }) {
 function GroupDialog({ config, row, onClose }: { config: ItemsConfig; row: GroupRow; onClose: () => void }) {
   const base = `/integrations/${config.id}`
   const qc = useQueryClient()
-  const [preview, setPreview] = useState<number | null>(null)
-  const [plan, setPlan] = useState(false)
+  const preview = useEntryPreview('itemFile')
+  const plan = useUrlOverlay('itemPlan')
   const q = useQuery({ queryKey: [config.id, 'group', row.key], queryFn: () => api<GroupFile[]>(`${base}/group`, { query: { key: row.key } }) })
   const unmonitor = useMutation({
     mutationFn: () => api<{ unmonitored: number }>(`${base}/unmonitor`, { method: 'POST', json: { keys: [row.key] } }),
@@ -303,7 +319,7 @@ function GroupDialog({ config, row, onClose }: { config: ItemsConfig; row: Group
           </a>
         )}
         {row.folderId && (
-          <Link className="btn-secondary" to={`/browse/${row.folderId}`} onClick={onClose}>
+          <Link className="btn-secondary" to={`/browse/${row.folderId}`}>
             Open folder
           </Link>
         )}
@@ -312,7 +328,7 @@ function GroupDialog({ config, row, onClose }: { config: ItemsConfig; row: Group
             {unmonitor.isSuccess ? 'Unmonitored ✓' : 'Unmonitor'}
           </button>
         )}
-        <button className="btn-primary" disabled={!ids.length} onClick={() => setPlan(true)}>
+        <button className="btn-primary" disabled={!ids.length} onClick={() => plan.open(1)}>
           Clean up…
         </button>
       </div>
@@ -342,7 +358,7 @@ function GroupDialog({ config, row, onClose }: { config: ItemsConfig; row: Group
               {config.watch && f.kind !== 'track' && <span className="text-xs muted">{f.playCount > 0 ? `✓ ${f.lastUsedAt ? ago(f.lastUsedAt) : 'watched'}` : 'unwatched'}</span>}
               <span className="w-20 text-right tabular">{bytes(f.size)}</span>
               {f.entryId && (
-                <button className="btn-ghost px-2 py-0.5 text-xs" onClick={() => setPreview(f.entryId!)}>
+                <button className="btn-ghost px-2 py-0.5 text-xs" onClick={() => preview.open(f.entryId!)}>
                   Details
                 </button>
               )}
@@ -350,15 +366,15 @@ function GroupDialog({ config, row, onClose }: { config: ItemsConfig; row: Group
           ))}
         </div>
       )}
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} list={ids} onNavigate={setPreview} />
-      <PlanDialog open={plan} onClose={() => setPlan(false)} entryIds={ids} count={ids.length} size={row.size} title={`Clean up: ${row.title}`} />
+      <EntryDrawer preview={preview} list={ids} />
+      <PlanDialog open={plan.value !== null} onClose={plan.close} entryIds={ids} count={ids.length} size={row.size} title={`Clean up: ${row.title}`} />
     </Modal>
   )
 }
 
 function Entries({ config, path, empty, showItem }: { config: ItemsConfig; path: string; empty: string; showItem?: boolean }) {
-  const [preview, setPreview] = useState<number | null>(null)
-  const [plan, setPlan] = useState(false)
+  const preview = useEntryPreview()
+  const plan = useUrlOverlay('plan')
   const q = useQuery({ queryKey: [config.id, path], queryFn: () => api<EntryPage>(`/integrations/${config.id}/${path}`, { query: { limit: 500 } }) })
   if (q.isLoading) return <Loading />
   if (q.error) return <ErrorBox error={q.error} />
@@ -372,13 +388,13 @@ function Entries({ config, path, empty, showItem }: { config: ItemsConfig; path:
           {count(q.data.total)} entries · {bytes(q.data.totalSize)}
           {q.data.total > q.data.items.length ? ` (largest ${count(q.data.items.length)} shown, ${pct(shownSize, q.data.totalSize)} of the size)` : ''}
         </span>
-        <button className="btn-primary" onClick={() => setPlan(true)}>
+        <button className="btn-primary" onClick={() => plan.open('shown')}>
           Clean up shown…
         </button>
       </div>
       <div className="card divide-y divide-line/60">
         {q.data.items.map((f) => (
-          <button key={f.id} className="flex w-full items-center gap-3 px-3 py-1.5 text-left text-sm hover:bg-accent-faint" onClick={() => setPreview(f.id)}>
+          <button key={f.id} className="flex w-full items-center gap-3 px-3 py-1.5 text-left text-sm hover:bg-accent-faint" onClick={() => preview.open(f.id)}>
             <span className="w-5 shrink-0 text-center">{f.isDir ? '📁' : '📄'}</span>
             <span className="min-w-0 flex-1">
               <span className="block truncate">{f.relPath}</span>
@@ -389,8 +405,8 @@ function Entries({ config, path, empty, showItem }: { config: ItemsConfig; path:
           </button>
         ))}
       </div>
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} list={ids} onNavigate={setPreview} />
-      <PlanDialog open={plan} onClose={() => setPlan(false)} entryIds={ids} count={ids.length} size={shownSize} title={`${config.name}: clean up ${count(ids.length)} entries`} />
+      <EntryDrawer preview={preview} list={ids} />
+      <PlanDialog open={plan.value !== null} onClose={plan.close} entryIds={ids} count={ids.length} size={shownSize} title={`${config.name}: clean up ${count(ids.length)} entries`} />
     </>
   )
 }

@@ -7,6 +7,7 @@ import type { Page, RuleCondition } from '../api/types'
 import { Empty, ErrorBox, Field, Loading, PageTitle, Section, Stat, Tabs } from '../components/ui'
 import { isActive, useJob } from '../hooks/useJobs'
 import { useScope } from '../hooks/useScope'
+import { useUrlEnum } from '../hooks/useUrlState'
 import { bytes, count, dateTime, kindIcon } from '../lib/format'
 import { describe } from './Rules'
 
@@ -48,7 +49,7 @@ export default function Ai() {
   const qc = useQueryClient()
   const { rootId } = useScope()
   const job = useJob('ai')
-  const [tab, setTab] = useState<'review' | 'suggestions' | 'history'>('suggestions')
+  const [tab, setTab] = useUrlEnum('tab', ['suggestions', 'review', 'history'] as const, 'suggestions')
   const [limit, setLimit] = useState(200)
   const status = useQuery({ queryKey: ['ai-status'], queryFn: () => api<AiStatus>('/ai/status'), refetchInterval: isActive(job) ? 3000 : false })
   const classify = useMutation({ mutationFn: () => api('/ai/classify', { method: 'POST', json: { limit, rootId } }) })
@@ -103,7 +104,7 @@ export default function Ai() {
             { id: 'history', label: 'History' },
           ]}
           value={tab}
-          onChange={setTab}
+          onChange={(t) => setTab(t)}
         />
         {tab === 'suggestions' && <Suggestions onChange={() => qc.invalidateQueries()} />}
         {tab === 'review' && <Review onChange={() => qc.invalidateQueries()} />}

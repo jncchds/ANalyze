@@ -4,23 +4,16 @@ import { api } from '../api/client'
 
 /**
  * Integration labels in the browser link to `/integrations/{id}?entry={entryId}`. This reads that entry and asks the integration's
- * `locate` endpoint where it belongs on the page (a title, a folder…). `clear` drops the parameter, e.g. when the opened dialog closes.
+ * `locate` endpoint where it belongs on the page (a title, a folder…). The page then replaces `entry` with its own URL state for
+ * that place (e.g. `?item=<key>`), so Back and reloads work like anywhere else on the page.
  */
 export function useLocate<T>(integrationId: string) {
-  const [params, setParams] = useSearchParams()
+  const [params] = useSearchParams()
   const entry = params.get('entry')
   const q = useQuery({
     queryKey: [integrationId, 'locate', entry],
     queryFn: () => api<T>(`/integrations/${integrationId}/locate`, { query: { entryId: entry } }),
     enabled: !!entry,
   })
-  const clear = () =>
-    setParams(
-      (p) => {
-        p.delete('entry')
-        return p
-      },
-      { replace: true },
-    )
-  return { entry, target: entry ? q.data : undefined, clear }
+  return { entry, target: entry ? q.data : undefined }
 }

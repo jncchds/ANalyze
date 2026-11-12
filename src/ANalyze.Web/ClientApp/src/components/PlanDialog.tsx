@@ -5,6 +5,7 @@ import { api } from '../api/client'
 import { useConfig, useTemplates } from '../api/hooks'
 import type { ActionOp, ConflictPolicy, SearchFilter } from '../api/types'
 import { bytes } from '../lib/format'
+import { leaveOverlay } from '../hooks/useUrlState'
 import { ErrorBox, Field, Modal } from './ui'
 
 /**
@@ -43,8 +44,7 @@ export function PlanDialog({ open, onClose, entryIds, filter, count, size, defau
     },
     onSuccess: (p) => {
       qc.invalidateQueries({ queryKey: ['summary'] })
-      onClose()
-      navigate(`/actions/${p.id}`)
+      leaveOverlay(navigate, `/actions/${p.id}`)
     },
   })
 

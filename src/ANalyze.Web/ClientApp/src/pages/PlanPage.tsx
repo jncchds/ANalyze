@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -8,6 +7,7 @@ import type { PlanDetail } from '../api/types'
 import { ConfirmButton, Empty, ErrorBox, Loading, PageTitle, Progress, Stat } from '../components/ui'
 import { isActive, useJob } from '../hooks/useJobs'
 import { bytes, count, dateTime } from '../lib/format'
+import { useUrlNumber, useUrlParam } from '../hooks/useUrlState'
 import { STATUS_STYLE } from './Actions'
 
 const PAGE = 200
@@ -27,9 +27,10 @@ export default function PlanPage() {
   const navigate = useNavigate()
   const roots = useRoots()
   const job = useJob('apply')
-  const [filter, setFilter] = useState('all')
-  const [search, setSearch] = useState('')
-  const [offset, setOffset] = useState(0)
+  // Filter, path filter and page are in the URL, so Back steps through them.
+  const [filter, setFilter] = useUrlParam('filter', 'all')
+  const [search, setSearch] = useUrlParam('q')
+  const [offset, setOffset] = useUrlNumber('offset')
   const running = isActive(job) && job?.refId === Number(id)
   const q = useQuery({
     queryKey: ['plan', id, filter, search, offset],
@@ -48,7 +49,7 @@ export default function PlanPage() {
     mutationFn: () => api(`/plans/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['plans'] })
-      navigate('/actions')
+      navigate('/actions', { replace: true })
     },
   })
 
@@ -133,10 +134,7 @@ export default function PlanPage() {
           <button
             key={f.id}
             className={clsx('btn px-2.5 py-1 text-xs', filter === f.id ? 'bg-accent-faint text-accent' : 'text-muted hover:text-fg')}
-            onClick={() => {
-              setFilter(f.id)
-              setOffset(0)
-            }}
+            onClick={() => setFilter(f.id, { also: { offset: null } })}
           >
             {f.label}
           </button>
@@ -145,10 +143,7 @@ export default function PlanPage() {
           className="input ml-auto max-w-xs py-1"
           placeholder="Filter paths…"
           value={search}
-          onChange={(e) => {
-            setSearch(e.target.value)
-            setOffset(0)
-          }}
+          onChange={(e) => setSearch(e.target.value, { replace: true, also: { offset: null } })}
         />
         {draft && (
           <>

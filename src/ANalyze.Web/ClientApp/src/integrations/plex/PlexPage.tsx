@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect } from 'react'
 import { Link } from 'react-router'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { api } from '../../api/client'
 import { BarList } from '../../components/charts'
@@ -10,6 +10,7 @@ import { Empty, ErrorBox, Loading, Modal, PageTitle, Section, Stat, Tabs } from 
 import { ago, bytes, count, date, pct } from '../../lib/format'
 import { PathText } from '../../components/PathText'
 import { useLocate } from '../../hooks/useLocate'
+import { useEntryPreview, useUrlEnum, useUrlOverlay, useUrlParam, useUrlParams } from '../../hooks/useUrlState'
 
 type TitleType = 'movie' | 'show' | 'artist'
 
@@ -68,30 +69,44 @@ const FILTERS = [
   { id: 'missing', label: 'Files not found' },
 ]
 
-/** Plex view: which movies, shows and artists take the most space, and how much of it is watched. */
+const titleQuery = (type: TitleType | undefined, key: string | null) => ['plex-top', 'key', type, key]
+
+/**
+ * Plex view: which movies, shows and artists take the most space, and how much of it is watched. Tab, filters and the open title
+ * (`?title=<key>`, with its file panel and cleanup dialog) are in the URL, so Back steps through them.
+ */
 export default function PlexPage() {
-  const [type, setType] = useState<TitleType>('movie')
-  const [filter, setFilter] = useState('')
-  const [section, setSection] = useState('')
-  const [sort, setSort] = useState('size')
-  const [q, setQ] = useState('')
-  const [open, setOpen] = useState<TitleRow | null>(null)
-  const [tab, setTab] = useState<'titles' | 'notInPlex' | 'unmatched'>('titles')
+  const qc = useQueryClient()
+  const [, setParams] = useUrlParams()
+  const [type, setType] = useUrlEnum<TitleType>('type', TYPES.map((t) => t.id), 'movie')
+  const [filter, setFilter] = useUrlParam('filter')
+  const [section, setSection] = useUrlParam('section')
+  const [sort, setSort] = useUrlParam('sort', 'size')
+  const [q, setQ] = useUrlParam('q')
+  const title = useUrlOverlay('title', ['titleFile', 'titleFileTab', 'titleFilePlan', 'titlePlan'])
+  const [tab, setTab] = useUrlEnum('tab', ['titles', 'notInPlex', 'unmatched'] as const, 'titles')
   const summary = useQuery({ queryKey: ['plex-summary'], queryFn: () => api<Summary>('/integrations/plex/summary') })
   const top = useQuery({
     queryKey: ['plex-top', type, filter, section, sort, q],
     queryFn: () => api<{ total: number; totalSize: number; items: TitleRow[] }>('/integrations/plex/top', { query: { type, filter, section, sort, q, limit: 300 } }),
     enabled: tab === 'titles',
   })
-  // Opened from a label in the browser: show that movie, show or artist.
+  // Opened from a label in the browser: show that movie, show or artist (the label's `?entry=` becomes `?type=…&title=…`).
   const located = useLocate<{ type?: TitleType; key?: string }>('plex')
-  const loc = located.target?.key ? located.target : undefined
-  const locatedRow = useQuery({
-    queryKey: ['plex-top', 'key', loc?.type, loc?.key],
-    queryFn: () => api<{ items: TitleRow[] }>('/integrations/plex/top', { query: { type: loc!.type, key: loc!.key } }),
-    enabled: !!loc,
+  const loc = located.target?.key && located.target.type ? located.target : undefined
+  useEffect(() => {
+    if (loc) setParams({ entry: null, tab: null, section: null, type: loc.type === 'movie' ? null : loc.type, title: loc.key }, { replace: true })
+  }, [loc, setParams])
+  const openRow = useQuery({
+    queryKey: titleQuery(type, title.value),
+    queryFn: () => api<{ items: TitleRow[] }>('/integrations/plex/top', { query: { type, key: title.value } }),
+    enabled: !!title.value,
   })
-  const locatedTitle = loc ? locatedRow.data?.items[0] : undefined
+  const openTitle = title.value ? openRow.data?.items[0] : undefined
+  const open = (t: TitleRow) => {
+    qc.setQueryData(titleQuery(type, t.key), { items: [t] })
+    title.open(t.key)
+  }
   const s = summary.data
   const total = s?.sections.reduce((a, x) => a + x.size, 0) ?? 0
   const watched = s?.sections.reduce((a, x) => a + x.watchedSize, 0) ?? 0
@@ -130,11 +145,7 @@ export default function PlexPage() {
               </>
             ),
             value: x.size,
-            onClick: () => {
-              setTab('titles')
-              setSection(x.key)
-              setType(x.type === 'show' ? 'show' : x.type === 'artist' ? 'artist' : 'movie')
-            },
+            onClick: () => setParams({ tab: null, section: x.key, type: x.type === 'show' || x.type === 'artist' ? x.type : null }),
           }))}
         />
       </Section>
@@ -146,7 +157,7 @@ export default function PlexPage() {
           { id: 'unmatched', label: `Not found on disk (${count(unmatched)})` },
         ]}
         value={tab}
-        onChange={setTab}
+        onChange={(t) => setTab(t)}
       />
 
       {tab === 'titles' && (
@@ -157,10 +168,7 @@ export default function PlexPage() {
                 <button
                   key={t.id}
                   className={clsx('btn px-2.5 py-1', type === t.id ? 'bg-accent-faint text-accent' : 'text-muted')}
-                  onClick={() => {
-                    setType(t.id)
-                    setSection('')
-                  }}
+                  onClick={() => setType(t.id, { also: { section: null } })}
                 >
                   {t.label}
                 </button>
@@ -188,7 +196,7 @@ export default function PlexPage() {
               <option value="added">Recently added</option>
               <option value="title">Title</option>
             </select>
-            <input className="input max-w-xs" placeholder="Title…" value={q} onChange={(e) => setQ(e.target.value)} />
+            <input className="input max-w-xs" placeholder="Title…" value={q} onChange={(e) => setQ(e.target.value, { replace: true })} />
             {top.data && (
               <span className="ml-auto text-sm muted">
                 {count(top.data.total)} titles · {bytes(top.data.totalSize)}
@@ -207,7 +215,7 @@ export default function PlexPage() {
                 const max = top.data!.items[0].size
                 const unit = TYPES.find((x) => x.id === type)!.unit
                 return (
-                  <button key={t.key} className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-accent-faint" onClick={() => setOpen(t)}>
+                  <button key={t.key} className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-accent-faint" onClick={() => open(t)}>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2 text-sm">
                         <span className="truncate font-semibold">{t.title}</span>
@@ -236,15 +244,14 @@ export default function PlexPage() {
       )}
       {tab === 'notInPlex' && <NotInPlex />}
       {tab === 'unmatched' && <Unmatched />}
-      {open && <TitleDialog type={type} row={open} onClose={() => setOpen(null)} />}
-      {locatedTitle && loc?.type && <TitleDialog type={loc.type} row={locatedTitle} onClose={located.clear} />}
+      {openTitle && <TitleDialog type={type} row={openTitle} onClose={title.close} />}
     </>
   )
 }
 
 function TitleDialog({ type, row, onClose }: { type: TitleType; row: TitleRow; onClose: () => void }) {
-  const [preview, setPreview] = useState<number | null>(null)
-  const [plan, setPlan] = useState(false)
+  const preview = useEntryPreview('titleFile')
+  const plan = useUrlOverlay('titlePlan')
   const q = useQuery({ queryKey: ['plex-title', type, row.key], queryFn: () => api<TitleFile[]>('/integrations/plex/title', { query: { type: type === 'movie' ? 'movie' : type, key: row.key } }) })
   const files = q.data ?? []
   const ids = files.flatMap((f) => (f.entryId ? [f.entryId] : []))
@@ -260,11 +267,11 @@ function TitleDialog({ type, row, onClose }: { type: TitleType; row: TitleRow; o
           </a>
         )}
         {row.folderId && (
-          <Link className="btn-secondary" to={`/browse/${row.folderId}`} onClick={onClose}>
+          <Link className="btn-secondary" to={`/browse/${row.folderId}`}>
             Open folder
           </Link>
         )}
-        <button className="btn-primary" disabled={!ids.length} onClick={() => setPlan(true)}>
+        <button className="btn-primary" disabled={!ids.length} onClick={() => plan.open(1)}>
           Clean up…
         </button>
       </div>
@@ -290,7 +297,7 @@ function TitleDialog({ type, row, onClose }: { type: TitleType; row: TitleRow; o
               <span className="text-xs muted">{f.viewCount > 0 ? `✓ ${f.lastViewedAt ? ago(f.lastViewedAt) : 'watched'}` : 'unwatched'}</span>
               <span className="w-20 text-right tabular">{bytes(f.size)}</span>
               {f.entryId && (
-                <button className="btn-ghost px-2 py-0.5 text-xs" onClick={() => setPreview(f.entryId!)}>
+                <button className="btn-ghost px-2 py-0.5 text-xs" onClick={() => preview.open(f.entryId!)}>
                   Details
                 </button>
               )}
@@ -298,14 +305,14 @@ function TitleDialog({ type, row, onClose }: { type: TitleType; row: TitleRow; o
           ))}
         </div>
       )}
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} list={ids} onNavigate={setPreview} />
-      <PlanDialog open={plan} onClose={() => setPlan(false)} entryIds={ids} count={ids.length} size={row.size} title={`Clean up: ${row.title}`} />
+      <EntryDrawer preview={preview} list={ids} />
+      <PlanDialog open={plan.value !== null} onClose={plan.close} entryIds={ids} count={ids.length} size={row.size} title={`Clean up: ${row.title}`} />
     </Modal>
   )
 }
 
 function NotInPlex() {
-  const [preview, setPreview] = useState<number | null>(null)
+  const preview = useEntryPreview()
   const q = useQuery({
     queryKey: ['plex-not-in'],
     queryFn: () => api<{ total: number; totalSize: number; items: { id: number; relPath: string; size: number; mtime: number }[] }>('/integrations/plex/not-in-plex', { query: { limit: 300 } }),
@@ -319,14 +326,14 @@ function NotInPlex() {
       </p>
       <div className="card divide-y divide-line/60">
         {q.data.items.map((f) => (
-          <button key={f.id} className="flex w-full items-center gap-3 px-3 py-1.5 text-left text-sm hover:bg-accent-faint" onClick={() => setPreview(f.id)}>
+          <button key={f.id} className="flex w-full items-center gap-3 px-3 py-1.5 text-left text-sm hover:bg-accent-faint" onClick={() => preview.open(f.id)}>
             <span className="min-w-0 flex-1 truncate">{f.relPath}</span>
             <span className="text-xs muted">{date(f.mtime)}</span>
             <span className="w-20 text-right tabular">{bytes(f.size)}</span>
           </button>
         ))}
       </div>
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} list={q.data.items.map((f) => f.id)} onNavigate={setPreview} />
+      <EntryDrawer preview={preview} list={q.data.items.map((f) => f.id)} />
     </>
   )
 }

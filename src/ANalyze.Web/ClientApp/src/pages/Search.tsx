@@ -1,5 +1,4 @@
-import { useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router'
+import { useEffect, useMemo, useState } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useCategories, useRoots } from '../api/hooks'
@@ -9,6 +8,7 @@ import { EntryTable, type SortKey } from '../components/EntryTable'
 import { PlanDialog } from '../components/PlanDialog'
 import { Empty, ErrorBox, Loading, PageTitle } from '../components/ui'
 import { useScope } from '../hooks/useScope'
+import { useEntryPreview, useUrlOverlay, useUrlParams } from '../hooks/useUrlState'
 import { bytes, count, kindLabel, parseSize } from '../lib/format'
 
 const KINDS: FileKind[] = ['video', 'audio', 'image', 'document', 'pdf', 'ebook', 'text', 'code', 'archive', 'diskImage', 'executable', 'font', 'database', 'model3D', 'other', 'unknown']
@@ -18,7 +18,10 @@ const BOOL_KEYS = ['uncategorized', 'duplicates', 'dirs', 'emptyDirs', 'brokenLi
 const NUM_KEYS = ['rootId', 'categoryId', 'minSize', 'maxSize', 'olderThanDays', 'newerThanDays', 'notAccessedDays'] as const
 const STR_KEYS = ['q', 'path', 'kind', 'ext', 'tag', 'segment', 'sort', 'extracted'] as const
 
-/** The search filter lives in the URL so insights, the sidebar and bookmarks can link to any result set. */
+/**
+ * The search filter lives in the URL so insights, the sidebar and bookmarks can link to any result set, and every change of it is
+ * a history entry (Back undoes it). The file panel (`file`) and the cleanup dialog (`plan`) are in the URL too.
+ */
 function readFilter(p: URLSearchParams): SearchFilter {
   const f: Record<string, unknown> = {}
   for (const k of STR_KEYS) if (p.get(k)) f[k] = p.get(k)
@@ -28,24 +31,24 @@ function readFilter(p: URLSearchParams): SearchFilter {
 }
 
 export default function Search() {
-  const [params, setParams] = useSearchParams()
+  const [params, setParams] = useUrlParams()
   const filter = useMemo(() => readFilter(params), [params])
   const categories = useCategories()
   const roots = useRoots()
   const { rootId: scopeRoot } = useScope()
   const effective: SearchFilter = { ...filter, rootId: filter.rootId ?? scopeRoot }
   const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [preview, setPreview] = useState<number | null>(null)
-  const [plan, setPlan] = useState<'selection' | 'all' | null>(null)
+  const preview = useEntryPreview()
+  const planOverlay = useUrlOverlay('plan')
+  // A selection is not in the URL: reopened from the history without one, the dialog stays closed.
+  const plan = planOverlay.value === 'all' ? 'all' : planOverlay.value === 'selection' && selected.size > 0 ? 'selection' : null
   const [q, setQ] = useState(filter.q ?? '')
+  // Back/Forward change the filter under the inputs; follow it.
+  useEffect(() => setQ(filter.q ?? ''), [filter.q])
 
   const set = (patch: Partial<Record<keyof SearchFilter, string | number | boolean | undefined>>) => {
-    const next = new URLSearchParams(params)
-    for (const [k, v] of Object.entries(patch)) {
-      if (v === undefined || v === '' || v === false) next.delete(k)
-      else next.set(k, String(v))
-    }
-    setParams(next, { replace: true })
+    const clean = Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, v === undefined || v === '' || v === false ? null : v]))
+    setParams({ ...clean, file: null, fileTab: null, plan: null })
     setSelected(new Set())
   }
 
@@ -69,7 +72,7 @@ export default function Search() {
         subtitle={first ? `${count(first.total)} ${filter.dirs || filter.emptyDirs ? 'folders' : 'files'} · ${bytes(first.totalSize)}` : undefined}
         actions={
           first && first.total > 0 ? (
-            <button className="btn-primary" onClick={() => setPlan('all')}>
+            <button className="btn-primary" onClick={() => planOverlay.open('all')}>
               Clean up all {count(first.total)}…
             </button>
           ) : undefined
@@ -122,12 +125,12 @@ export default function Search() {
               </option>
             ))}
           </select>
-          <input className="input" placeholder="Extensions: mkv,mp4" defaultValue={filter.ext} onBlur={(e) => set({ ext: e.target.value.trim() || undefined })} aria-label="Extensions" />
-          <input className="input" placeholder="Min size: 100MB" defaultValue={filter.minSize ? bytes(filter.minSize) : ''} onBlur={(e) => set({ minSize: parseSize(e.target.value) })} aria-label="Minimum size" />
-          <input className="input" placeholder="Older than (days)" defaultValue={filter.olderThanDays} onBlur={(e) => set({ olderThanDays: e.target.value || undefined })} aria-label="Older than days" />
-          <input className="input" placeholder="Tag" defaultValue={filter.tag} onBlur={(e) => set({ tag: e.target.value.trim() || undefined })} aria-label="Tag" />
-          <input className="input" placeholder="Inside folder named…" defaultValue={filter.segment} onBlur={(e) => set({ segment: e.target.value.trim() || undefined })} aria-label="Folder name" />
-          <input className="input" placeholder="Under path: Photos/2021" defaultValue={filter.path} onBlur={(e) => set({ path: e.target.value.trim() || undefined })} aria-label="Path" />
+          <input key={String(filter.ext ?? '')} className="input" placeholder="Extensions: mkv,mp4" defaultValue={filter.ext} onBlur={(e) => set({ ext: e.target.value.trim() || undefined })} aria-label="Extensions" />
+          <input key={String(filter.minSize ?? '')} className="input" placeholder="Min size: 100MB" defaultValue={filter.minSize ? bytes(filter.minSize) : ''} onBlur={(e) => set({ minSize: parseSize(e.target.value) })} aria-label="Minimum size" />
+          <input key={String(filter.olderThanDays ?? '')} className="input" placeholder="Older than (days)" defaultValue={filter.olderThanDays} onBlur={(e) => set({ olderThanDays: e.target.value || undefined })} aria-label="Older than days" />
+          <input key={String(filter.tag ?? '')} className="input" placeholder="Tag" defaultValue={filter.tag} onBlur={(e) => set({ tag: e.target.value.trim() || undefined })} aria-label="Tag" />
+          <input key={String(filter.segment ?? '')} className="input" placeholder="Inside folder named…" defaultValue={filter.segment} onBlur={(e) => set({ segment: e.target.value.trim() || undefined })} aria-label="Folder name" />
+          <input key={String(filter.path ?? '')} className="input" placeholder="Under path: Photos/2021" defaultValue={filter.path} onBlur={(e) => set({ path: e.target.value.trim() || undefined })} aria-label="Path" />
           <select className="input" value={filter.extracted ?? ''} onChange={(e) => set({ extracted: e.target.value || undefined })} aria-label="Extracted archives">
             <option value="">Archives: any</option>
             <option value="any">Archives found extracted</option>
@@ -158,7 +161,8 @@ export default function Search() {
               className="link ml-auto text-sm"
               onClick={() => {
                 setQ('')
-                setParams(new URLSearchParams(), { replace: true })
+                setParams(Object.fromEntries([...params.keys()].map((k) => [k, null])))
+                setSelected(new Set())
               }}
             >
               Clear filters
@@ -176,7 +180,7 @@ export default function Search() {
           <button className="btn-ghost" onClick={() => setSelected(new Set())}>
             Clear
           </button>
-          <button className="btn-primary" onClick={() => setPlan('selection')}>
+          <button className="btn-primary" onClick={() => planOverlay.open('selection')}>
             Clean up selection…
           </button>
         </div>
@@ -196,7 +200,7 @@ export default function Search() {
           selected={selected}
           onToggle={(id) => setSelected((s) => toggle(s, id))}
           onToggleAll={(all) => setSelected(all ? new Set(items.map((i) => i.id)) : new Set())}
-          onOpen={(e: Entry) => setPreview(e.id)}
+          onOpen={(e: Entry) => preview.open(e.id)}
           sort={(filter.sort as SortKey) ?? 'size'}
           asc={filter.asc}
           onSort={onSort}
@@ -211,10 +215,10 @@ export default function Search() {
         />
       )}
 
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} list={items.filter((i) => !i.isDir).map((i) => i.id)} onNavigate={setPreview} />
+      <EntryDrawer preview={preview} list={items.filter((i) => !i.isDir).map((i) => i.id)} />
       <PlanDialog
         open={plan !== null}
-        onClose={() => setPlan(null)}
+        onClose={planOverlay.close}
         entryIds={plan === 'selection' ? [...selected] : undefined}
         filter={plan === 'all' ? effective : undefined}
         count={plan === 'selection' ? selected.size : first?.total}

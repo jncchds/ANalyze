@@ -6,6 +6,7 @@ import { useCategories, useCategoryMap, useConfig, useRules, useTemplates } from
 import type { ActionOp, ActionTemplate, Category, ConflictPolicy, Rule, RuleClause, RuleCondition, RuleField, RuleOp } from '../api/types'
 import { ConfirmButton, Empty, ErrorBox, Field, Loading, Modal, PageTitle, Tabs, Toggle } from '../components/ui'
 import { bytes, count } from '../lib/format'
+import { useUrlEnum, useUrlOverlay, useUrlParam } from '../hooks/useUrlState'
 
 const FIELDS: { id: RuleField; label: string; numeric?: boolean; hint?: string }[] = [
   { id: 'extension', label: 'Extension', hint: 'mkv,mp4' },
@@ -32,8 +33,19 @@ const OPS: { id: RuleOp; label: string; numeric?: boolean; text?: boolean }[] = 
   { id: 'lessThan', label: 'less than', numeric: true },
 ]
 
+const NEW_RULE: Partial<Rule> = { enabled: true, stopProcessing: true, tags: [], condition: { match: 'all', clauses: [{ field: 'extension', op: 'in', value: '', negate: false }] } }
+const NEW_CATEGORY: Partial<Category> = { name: '', color: '#2a78d6' }
+const NEW_TEMPLATE: Partial<ActionTemplate> = { name: '', op: 'move', destination: 'Sorted/{category}/{name}', conflict: 'rename' }
+
+/** The item an `?edit=` dialog shows: `new` for a new one, otherwise the id of an existing one (undefined while not loaded). */
+function editTarget<T extends { id: number }>(value: string | null, list: T[] | undefined, fresh: Partial<T>): Partial<T> | undefined {
+  if (value === null) return undefined
+  return value === 'new' ? fresh : list?.find((x) => String(x.id) === value)
+}
+
 export default function Rules() {
-  const [tab, setTab] = useState<'rules' | 'categories' | 'templates'>('rules')
+  // Tab and the open editor (`?edit=new|<id>`) are in the URL, so Back closes the editor and returns to the previous tab.
+  const [tab, setTab] = useUrlEnum('tab', ['rules', 'categories', 'templates'] as const, 'rules')
   return (
     <>
       <PageTitle subtitle="Rules run top to bottom on every file; the first rule that assigns a category wins, tags add up. Manual choices always win, AI fills the gaps.">
@@ -46,7 +58,7 @@ export default function Rules() {
           { id: 'templates', label: 'Action templates' },
         ]}
         value={tab}
-        onChange={setTab}
+        onChange={(t) => setTab(t, { also: { edit: null } })}
       />
       {tab === 'rules' && <RulesTab />}
       {tab === 'categories' && <CategoriesTab />}
@@ -59,8 +71,10 @@ function RulesTab() {
   const rules = useRules()
   const cats = useCategoryMap()
   const qc = useQueryClient()
-  const [editing, setEditing] = useState<Partial<Rule> | null>(null)
-  const [filter, setFilter] = useState('')
+  const edit = useUrlOverlay('edit')
+  const editing = editTarget(edit.value, rules.data, NEW_RULE)
+  const [filter, setFilterParam] = useUrlParam('filter')
+  const setFilter = (v: string) => setFilterParam(v, { replace: true })
   const invalidate = () => qc.invalidateQueries({ queryKey: ['rules'] })
   const apply = useMutation({ mutationFn: () => api('/rules/apply', { method: 'POST' }) })
   const restore = useMutation({ mutationFn: () => api<{ added: number }>('/rules/restore-builtins', { method: 'POST' }), onSuccess: invalidate })
@@ -105,7 +119,7 @@ function RulesTab() {
         <button className="btn-secondary" onClick={() => apply.mutate()} disabled={apply.isPending}>
           {apply.isSuccess ? 'Applying…' : 'Re-apply rules'}
         </button>
-        <button className="btn-primary" onClick={() => setEditing({ enabled: true, stopProcessing: true, tags: [], condition: { match: 'all', clauses: [{ field: 'extension', op: 'in', value: '', negate: false }] } })}>
+        <button className="btn-primary" onClick={() => edit.open('new')}>
           New rule
         </button>
       </div>
@@ -124,7 +138,7 @@ function RulesTab() {
                   ▼
                 </button>
               </div>
-              <button className="min-w-0 flex-1 text-left" onClick={() => setEditing(r)}>
+              <button className="min-w-0 flex-1 text-left" onClick={() => edit.open(r.id)}>
                 <div className="flex flex-wrap items-center gap-2 text-sm">
                   <span className="font-semibold">{r.name}</span>
                   {r.source !== 'user' && <span className="pill-muted">{r.source === 'ai' ? '✨ AI' : 'built-in'}</span>}
@@ -148,7 +162,7 @@ function RulesTab() {
         })}
         {shown.length === 0 && <Empty>No rules.</Empty>}
       </div>
-      {editing && <RuleEditor rule={editing} onClose={() => setEditing(null)} />}
+      {editing && <RuleEditor key={edit.value} rule={editing} onClose={edit.close} />}
     </>
   )
 }
@@ -310,12 +324,13 @@ export function RuleEditor({ rule, onClose }: { rule: Partial<Rule>; onClose: ()
 function CategoriesTab() {
   const cats = useCategories()
   const qc = useQueryClient()
-  const [editing, setEditing] = useState<Partial<Category> | null>(null)
+  const edit = useUrlOverlay('edit')
+  const target = editTarget(edit.value, cats.data, NEW_CATEGORY)
   const save = useMutation({
     mutationFn: (c: Partial<Category>) => (c.id ? api(`/categories/${c.id}`, { method: 'PUT', json: c }) : api('/categories', { method: 'POST', json: c })),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['categories'] })
-      setEditing(null)
+      edit.close()
     },
   })
   const remove = useMutation({ mutationFn: (id: number) => api(`/categories/${id}`, { method: 'DELETE' }), onSuccess: () => qc.invalidateQueries() })
@@ -323,7 +338,7 @@ function CategoriesTab() {
   return (
     <>
       <div className="mb-3 flex justify-end">
-        <button className="btn-primary" onClick={() => setEditing({ name: '', color: '#2a78d6' })}>
+        <button className="btn-primary" onClick={() => edit.open('new')}>
           New category
         </button>
       </div>
@@ -331,7 +346,7 @@ function CategoriesTab() {
         {cats.data?.map((c) => (
           <div key={c.id} className="card flex items-start gap-3 p-3">
             <span className="mt-1 h-3 w-3 shrink-0 rounded-full" style={{ background: c.color }} />
-            <button className="min-w-0 flex-1 text-left" onClick={() => setEditing(c)}>
+            <button className="min-w-0 flex-1 text-left" onClick={() => edit.open(c.id)}>
               <div className="font-semibold">{c.name}</div>
               <div className="text-xs muted">{c.description}</div>
             </button>
@@ -341,31 +356,36 @@ function CategoriesTab() {
           </div>
         ))}
       </div>
-      {editing && (
-        <Modal open onClose={() => setEditing(null)} title={editing.id ? 'Edit category' : 'New category'}>
-          <div className="space-y-3">
-            <Field label="Name">
-              <input className="input" value={editing.name ?? ''} onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
-            </Field>
-            <Field label="Color">
-              <input type="color" className="h-9 w-20 rounded border border-line" value={editing.color ?? '#2a78d6'} onChange={(e) => setEditing({ ...editing, color: e.target.value })} />
-            </Field>
-            <Field label="Description (also shown to the AI)">
-              <input className="input" value={editing.description ?? ''} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
-            </Field>
-            {save.error && <ErrorBox error={save.error} />}
-            <div className="flex justify-end gap-2">
-              <button className="btn-secondary" onClick={() => setEditing(null)}>
-                Cancel
-              </button>
-              <button className="btn-primary" onClick={() => save.mutate(editing)} disabled={!editing.name?.trim()}>
-                Save
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
+      {target && <CategoryEditor key={edit.value} initial={target} onClose={edit.close} onSave={(c) => save.mutate(c)} error={save.error} />}
     </>
+  )
+}
+
+function CategoryEditor({ initial, onClose, onSave, error }: { initial: Partial<Category>; onClose: () => void; onSave: (c: Partial<Category>) => void; error: unknown }) {
+  const [editing, setEditing] = useState(initial)
+  return (
+    <Modal open onClose={onClose} title={editing.id ? 'Edit category' : 'New category'}>
+      <div className="space-y-3">
+        <Field label="Name">
+          <input className="input" value={editing.name ?? ''} onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+        </Field>
+        <Field label="Color">
+          <input type="color" className="h-9 w-20 rounded border border-line" value={editing.color ?? '#2a78d6'} onChange={(e) => setEditing({ ...editing, color: e.target.value })} />
+        </Field>
+        <Field label="Description (also shown to the AI)">
+          <input className="input" value={editing.description ?? ''} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
+        </Field>
+        {!!error && <ErrorBox error={error} />}
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn-primary" onClick={() => onSave(editing)} disabled={!editing.name?.trim()}>
+            Save
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
@@ -373,12 +393,13 @@ function TemplatesTab() {
   const templates = useTemplates()
   const config = useConfig()
   const qc = useQueryClient()
-  const [editing, setEditing] = useState<Partial<ActionTemplate> | null>(null)
+  const edit = useUrlOverlay('edit')
+  const target = editTarget(edit.value, templates.data, NEW_TEMPLATE)
   const save = useMutation({
     mutationFn: (t: Partial<ActionTemplate>) => (t.id ? api(`/templates/${t.id}`, { method: 'PUT', json: t }) : api('/templates', { method: 'POST', json: t })),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['templates'] })
-      setEditing(null)
+      edit.close()
     },
   })
   const remove = useMutation({ mutationFn: (id: number) => api(`/templates/${id}`, { method: 'DELETE' }), onSuccess: () => qc.invalidateQueries({ queryKey: ['templates'] }) })
@@ -386,14 +407,14 @@ function TemplatesTab() {
     <>
       <div className="mb-3 flex items-center">
         <p className="flex-1 text-sm muted">Reusable actions offered when cleaning up (moves use path tokens relative to the root).</p>
-        <button className="btn-primary" onClick={() => setEditing({ name: '', op: 'move', destination: 'Sorted/{category}/{name}', conflict: 'rename' })}>
+        <button className="btn-primary" onClick={() => edit.open('new')}>
           New template
         </button>
       </div>
       <div className="card divide-y divide-line/60">
         {templates.data?.map((t) => (
           <div key={t.id} className="flex items-center gap-3 px-3 py-2">
-            <button className="min-w-0 flex-1 text-left" onClick={() => setEditing(t)}>
+            <button className="min-w-0 flex-1 text-left" onClick={() => edit.open(t.id)}>
               <div className="text-sm font-semibold">{t.name}</div>
               <div className="truncate text-xs muted">
                 {t.op}
@@ -406,45 +427,50 @@ function TemplatesTab() {
           </div>
         ))}
       </div>
-      {editing && (
-        <Modal open onClose={() => setEditing(null)} title={editing.id ? 'Edit template' : 'New template'}>
-          <div className="space-y-3">
-            <Field label="Name">
-              <input className="input" value={editing.name ?? ''} onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
-            </Field>
-            <Field label="Action">
-              <select className="input" value={editing.op} onChange={(e) => setEditing({ ...editing, op: e.target.value as ActionOp })}>
-                <option value="trash">Move to trash</option>
-                <option value="move">Move / rename</option>
-                <option value="delete">Delete permanently</option>
-              </select>
-            </Field>
-            {editing.op === 'move' && (
-              <Field label="Destination" hint={`Tokens: ${config.data?.pathTokens.map((t) => `{${t}}`).join(' ')}`}>
-                <input className="input font-mono" value={editing.destination ?? ''} onChange={(e) => setEditing({ ...editing, destination: e.target.value })} />
-              </Field>
-            )}
-            <Field label="When the destination exists">
-              <select className="input" value={editing.conflict} onChange={(e) => setEditing({ ...editing, conflict: e.target.value as ConflictPolicy })}>
-                <option value="rename">Rename</option>
-                <option value="skip">Skip</option>
-                <option value="overwrite">Overwrite</option>
-              </select>
-            </Field>
-            <Field label="Description">
-              <input className="input" value={editing.description ?? ''} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
-            </Field>
-            <div className="flex justify-end gap-2">
-              <button className="btn-secondary" onClick={() => setEditing(null)}>
-                Cancel
-              </button>
-              <button className="btn-primary" onClick={() => save.mutate(editing)} disabled={!editing.name?.trim()}>
-                Save
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
+      {target && <TemplateEditor key={edit.value} initial={target} pathTokens={config.data?.pathTokens} onClose={edit.close} onSave={(t) => save.mutate(t)} />}
     </>
+  )
+}
+
+function TemplateEditor({ initial, pathTokens, onClose, onSave }: { initial: Partial<ActionTemplate>; pathTokens?: string[]; onClose: () => void; onSave: (t: Partial<ActionTemplate>) => void }) {
+  const [editing, setEditing] = useState(initial)
+  return (
+    <Modal open onClose={onClose} title={editing.id ? 'Edit template' : 'New template'}>
+      <div className="space-y-3">
+        <Field label="Name">
+          <input className="input" value={editing.name ?? ''} onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+        </Field>
+        <Field label="Action">
+          <select className="input" value={editing.op} onChange={(e) => setEditing({ ...editing, op: e.target.value as ActionOp })}>
+            <option value="trash">Move to trash</option>
+            <option value="move">Move / rename</option>
+            <option value="delete">Delete permanently</option>
+          </select>
+        </Field>
+        {editing.op === 'move' && (
+          <Field label="Destination" hint={`Tokens: ${pathTokens?.map((t) => `{${t}}`).join(' ')}`}>
+            <input className="input font-mono" value={editing.destination ?? ''} onChange={(e) => setEditing({ ...editing, destination: e.target.value })} />
+          </Field>
+        )}
+        <Field label="When the destination exists">
+          <select className="input" value={editing.conflict} onChange={(e) => setEditing({ ...editing, conflict: e.target.value as ConflictPolicy })}>
+            <option value="rename">Rename</option>
+            <option value="skip">Skip</option>
+            <option value="overwrite">Overwrite</option>
+          </select>
+        </Field>
+        <Field label="Description">
+          <input className="input" value={editing.description ?? ''} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
+        </Field>
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn-primary" onClick={() => onSave(editing)} disabled={!editing.name?.trim()}>
+            Save
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }

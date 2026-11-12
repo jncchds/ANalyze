@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
@@ -8,6 +7,7 @@ import { BarList } from '../components/charts'
 import { EntryDrawer } from '../components/EntryDrawer'
 import { Empty, ErrorBox, Loading, PageTitle, Section, Stat } from '../components/ui'
 import { useScope } from '../hooks/useScope'
+import { useEntryPreview } from '../hooks/useUrlState'
 import { bytes, count, kindIcon, kindLabel } from '../lib/format'
 
 interface OverviewData {
@@ -27,7 +27,7 @@ export default function Overview() {
   const categories = useCategoryMap()
   const roots = useRoots()
   const summary = useSummary()
-  const [preview, setPreview] = useState<number | null>(null)
+  const preview = useEntryPreview()
   const q = useQuery({ queryKey: ['overview', rootId], queryFn: () => api<OverviewData>('/overview', { query: { rootId } }) })
 
   if (q.isLoading) return <Loading />
@@ -92,7 +92,7 @@ export default function Overview() {
           <ul className="divide-y divide-line/60">
             {d.largestFiles.slice(0, 12).map((f) => (
               <li key={f.id}>
-                <button className="flex w-full items-center gap-2 rounded px-1.5 py-1.5 text-left text-sm hover:bg-accent-faint" onClick={() => setPreview(f.id)}>
+                <button className="flex w-full items-center gap-2 rounded px-1.5 py-1.5 text-left text-sm hover:bg-accent-faint" onClick={() => preview.open(f.id)}>
                   <span>{kindIcon(f.kind)}</span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate">{f.name}</span>
@@ -181,7 +181,7 @@ export default function Overview() {
           />
         </Section>
       </div>
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} list={d.largestFiles.slice(0, 12).map((f) => f.id)} onNavigate={setPreview} />
+      <EntryDrawer preview={preview} list={d.largestFiles.slice(0, 12).map((f) => f.id)} />
     </>
   )
 }

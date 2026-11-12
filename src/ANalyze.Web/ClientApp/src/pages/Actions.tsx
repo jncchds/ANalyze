@@ -1,10 +1,11 @@
-import { Link, useSearchParams } from 'react-router'
+import { Link } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { api } from '../api/client'
 import type { PlanRow } from '../api/types'
 import { ConfirmButton, Empty, ErrorBox, Loading, PageTitle, Tabs } from '../components/ui'
 import { bytes, count, dateTime } from '../lib/format'
+import { useUrlEnum } from '../hooks/useUrlState'
 
 interface TrashBin {
   planId: number
@@ -27,8 +28,7 @@ export const STATUS_STYLE: Record<string, string> = {
 const OP_LABEL: Record<string, string> = { trash: '🗑️ Trash', delete: '⚠️ Delete', move: '📦 Move', hardlink: '🔗 Hard link' }
 
 export default function Actions() {
-  const [params, setParams] = useSearchParams()
-  const tab = (params.get('tab') as 'plans' | 'trash') ?? 'plans'
+  const [tab, setTab] = useUrlEnum('tab', ['plans', 'trash'] as const, 'plans')
   return (
     <>
       <PageTitle subtitle="Every change goes through a plan: review the list, untick anything you want to keep, then apply. Trash and moves can be undone.">Actions</PageTitle>
@@ -38,7 +38,7 @@ export default function Actions() {
           { id: 'trash', label: 'Trash' },
         ]}
         value={tab}
-        onChange={(t) => setParams({ tab: t }, { replace: true })}
+        onChange={(t) => setTab(t)}
       />
       {tab === 'plans' ? <Plans /> : <Trash />}
     </>

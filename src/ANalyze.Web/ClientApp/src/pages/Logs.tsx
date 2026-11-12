@@ -4,6 +4,7 @@ import clsx from 'clsx'
 import { api } from '../api/client'
 import type { LogLevel, LogLine } from '../api/types'
 import { useLogStream } from '../hooks/useJobs'
+import { useUrlEnum, useUrlNumber, useUrlParam } from '../hooks/useUrlState'
 import { Empty, ErrorBox, Loading, PageTitle, Section } from '../components/ui'
 
 type MinLevel = 'debug' | 'info' | 'warning' | 'error'
@@ -39,20 +40,25 @@ function time(iso: string) {
 
 /** The activity log: what ANalyze is doing, newest first, following live. Kept in memory on the server (last 20,000 lines). */
 export default function Logs() {
-  const [level, setLevel] = useState<MinLevel>('info')
-  const [source, setSource] = useState('')
-  const [q, setQ] = useState('')
-  const [search, setSearch] = useState('')
+  // Level, area, search and the opened line are in the URL, so Back steps through them.
+  const [level, setLevel] = useUrlEnum<MinLevel>('level', ['debug', 'info', 'warning', 'error'], 'info')
+  const [source, setSource] = useUrlParam('source')
+  const [search, setSearchParam] = useUrlParam('q')
+  const [q, setQ] = useState(search)
   const [lines, setLines] = useState<LogLine[]>([])
   const [paused, setPaused] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [atEnd, setAtEnd] = useState(false)
-  const [open, setOpen] = useState<number | null>(null)
+  const [openParam, setOpenParam] = useUrlNumber('line', -1)
+  const open = openParam < 0 ? null : openParam
+  const setOpen = (id: number | null) => setOpenParam(id ?? -1)
 
   useEffect(() => {
-    const t = setTimeout(() => setSearch(q.trim()), 300)
+    const t = setTimeout(() => setSearchParam(q.trim(), { replace: true }), 300)
     return () => clearTimeout(t)
-  }, [q])
+  }, [q, setSearchParam])
+  // Back/Forward change the search under the input; follow it.
+  useEffect(() => setQ((cur) => (cur.trim() === search ? cur : search)), [search])
 
   const params = (before?: number) =>
     new URLSearchParams({ level, limit: String(PAGE), ...(source ? { source } : {}), ...(search ? { q: search } : {}), ...(before ? { before: String(before) } : {}) })

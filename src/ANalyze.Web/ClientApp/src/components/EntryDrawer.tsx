@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router'
+import { useEffect } from 'react'
+import { Link } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { api, fileUrl } from '../api/client'
@@ -9,6 +9,7 @@ import { bytes, date, kindLabel } from '../lib/format'
 import { PlanDialog } from './PlanDialog'
 import { AnnotationBadges, CategoryPill, ErrorBox, Loading, Tabs } from './ui'
 import { BackupCompareView } from './BackupCompareView'
+import { useUrlOverlay, type EntryPreview } from '../hooks/useUrlState'
 import { HexView, MainPreview, MetaView, TextView, previewTabs } from './viewers'
 
 interface EntryDetail {
@@ -42,32 +43,32 @@ function backupText(b: NonNullable<EntryDetail['backup']>, size: number) {
 }
 
 /**
- * Side panel with details, category, integrations, actions and the preview/text/hex/metadata viewers. With `list` (the files of
- * the page, in its order) and `onNavigate` it steps to the previous/next file (buttons, ← / → keys).
+ * Side panel with details, category, integrations, actions and the preview/text/hex/metadata viewers. It is opened through the
+ * URL (`useEntryPreview`: `?file=<id>&fileTab=…`), so Back closes it. With `list` (the files of the page, in its order) it steps to
+ * the previous/next file (buttons, ← / → keys) in place, keeping the viewer tab.
  */
-export function EntryDrawer({ id, onClose, list, onNavigate }: { id: number | null; onClose: () => void; list?: number[]; onNavigate?: (id: number) => void }) {
+export function EntryDrawer({ preview, list }: { preview: EntryPreview; list?: number[] }) {
+  const { id, close: onClose, step: onNavigate, tab, setTab } = preview
   const qc = useQueryClient()
-  const navigate = useNavigate()
   const categories = useCategories()
   const catMap = useCategoryMap()
   const summary = useSummary()
-  const [tab, setTab] = useState('preview')
-  const [plan, setPlan] = useState(false)
+  const plan = useUrlOverlay(`${preview.key}Plan`)
   const hostPath = useToHostPath()
   const q = useQuery({ queryKey: ['entry', id], queryFn: () => api<EntryDetail>(`/entries/${id}`), enabled: id !== null })
 
-  const pos = id !== null && list && onNavigate ? list.indexOf(id) : -1
+  const pos = id !== null && list ? list.indexOf(id) : -1
   const prev = pos > 0 ? list![pos - 1] : undefined
   const next = pos >= 0 && pos < list!.length - 1 ? list![pos + 1] : undefined
 
-  // The tab stays while stepping through files (e.g. comparing one file after another); it resets when the drawer closes.
   useEffect(() => {
-    if (id === null) setTab('preview')
-  }, [id])
-  useEffect(() => {
-    if (id === null) return
+    if (id === null || plan.value) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') return onClose()
+      if (e.key === 'Escape') {
+        // Also keeps a dialog the panel was opened from from closing with it.
+        e.preventDefault()
+        return onClose()
+      }
       // Arrow keys belong to inputs and media controls while they have the focus.
       const t = e.target as HTMLElement | null
       if (e.altKey || e.ctrlKey || e.metaKey || t?.closest('input, textarea, select, video, audio, [contenteditable="true"]')) return
@@ -78,7 +79,7 @@ export function EntryDrawer({ id, onClose, list, onNavigate }: { id: number | nu
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [id, onClose, prev, next, onNavigate])
+  }, [id, plan.value, onClose, prev, next, onNavigate])
 
   const setCategory = useMutation({
     mutationFn: (categoryId: number | null) => api(`/entries/${id}/category`, { method: 'PUT', json: { categoryId } }),
@@ -118,7 +119,7 @@ export function EntryDrawer({ id, onClose, list, onNavigate }: { id: number | nu
                 {d.breadcrumbs.map((b, i) => (
                   <span key={b.id} className="flex items-center gap-1">
                     {i > 0 && <span>/</span>}
-                    <Link to={`/browse/${b.id}`} onClick={onClose} className="hover:text-accent">
+                    <Link to={`/browse/${b.id}`} className="hover:text-accent">
                       {b.name}
                     </Link>
                   </span>
@@ -165,13 +166,13 @@ export function EntryDrawer({ id, onClose, list, onNavigate }: { id: number | nu
                 <div className="flex flex-wrap items-center gap-2">
                   {!e.isDir && <CategoryPill category={cat} source={e.categorySource} />}
                   {e.tags.map((t) => (
-                    <Link key={t} to={`/search?tag=${encodeURIComponent(t)}`} onClick={onClose} className="chip">
+                    <Link key={t} to={`/search?tag=${encodeURIComponent(t)}`} className="chip">
                       #{t}
                     </Link>
                   ))}
                   {e.nLink > 1 && <span className="pill-muted">{e.nLink} hard links</span>}
                   {d.copies > 0 && (
-                    <Link to={`/duplicates?q=${encodeURIComponent(e.name)}`} onClick={onClose} className="pill-amber">
+                    <Link to={`/duplicates?q=${encodeURIComponent(e.name)}`} className="pill-amber">
                       {d.copies} identical {d.copies === 1 ? 'copy' : 'copies'}
                     </Link>
                   )}
@@ -218,9 +219,9 @@ export function EntryDrawer({ id, onClose, list, onNavigate }: { id: number | nu
                 <span className="flex-1" />
                 {e.isDir ? (
                   <>
-                    <button className="btn-secondary" onClick={() => { onClose(); navigate(`/browse/${e.id}`) }}>
+                    <Link className="btn-secondary" to={`/browse/${e.id}`}>
                       Open folder
-                    </button>
+                    </Link>
                     <button className="btn-ghost" onClick={() => pin.mutate()}>
                       {pinned ? 'Unpin' : '📌 Pin'}
                     </button>
@@ -233,7 +234,7 @@ export function EntryDrawer({ id, onClose, list, onNavigate }: { id: number | nu
                 <button className="btn-ghost" onClick={() => rescan.mutate()} disabled={rescan.isPending} title="Rescan this folder">
                   ↻ Rescan
                 </button>
-                <button className="btn-primary" disabled={d.root?.readOnly} onClick={() => setPlan(true)} title={d.root?.readOnly ? 'Root is read-only' : undefined}>
+                <button className="btn-primary" disabled={d.root?.readOnly} onClick={() => plan.open(1)} title={d.root?.readOnly ? 'Root is read-only' : undefined}>
                   Clean up…
                 </button>
               </div>
@@ -252,7 +253,7 @@ export function EntryDrawer({ id, onClose, list, onNavigate }: { id: number | nu
           )}
         </div>
       </aside>
-      {e && <PlanDialog open={plan} onClose={() => setPlan(false)} entryIds={[e.id]} count={1} size={e.size} />}
+      {e && <PlanDialog open={plan.value !== null} onClose={plan.close} entryIds={[e.id]} count={1} size={e.size} />}
     </>
   )
 }

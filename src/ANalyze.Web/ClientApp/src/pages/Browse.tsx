@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
+import { Link, useNavigate, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useCategoryMap, useRoots } from '../api/hooks'
@@ -10,6 +10,7 @@ import { EntryTable, type SortKey } from '../components/EntryTable'
 import { PlanDialog } from '../components/PlanDialog'
 import { AnnotationBadges, Empty, ErrorBox, Loading, PageTitle, SavedLater, Section } from '../components/ui'
 import { useScope } from '../hooks/useScope'
+import { useEntryPreview, useUrlEnum, useUrlOverlay, useUrlParams } from '../hooks/useUrlState'
 import { bytes, count, date, kindIcon } from '../lib/format'
 
 interface Detail {
@@ -40,33 +41,36 @@ interface DiskListing {
 }
 
 const VIEW_KEY = 'analyze.browse.view'
+const SORTS: SortKey[] = ['name', 'size', 'files', 'mtime']
+
+function storedView(): 'list' | 'map' {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'map' ? 'map' : 'list'
+  } catch {
+    return 'list'
+  }
+}
 
 /** Folder browser: list and treemap of a folder's children, sized and categorized, with multi-select actions. */
 export default function Browse() {
   const params = useParams()
   const navigate = useNavigate()
-  const [search, setSearch] = useSearchParams()
+  const [search, setSearch] = useUrlParams()
   // A folder below this one that is only on disk (not in the index), e.g. "new/2024"; kept in the URL so Back works.
   const diskSub = (search.get('disk') ?? '').replace(/^\/+|\/+$/g, '')
-  const openDiskSub = useCallback(
-    (sub: string) =>
-      setSearch((p) => {
-        const n = new URLSearchParams(p)
-        if (sub) n.set('disk', sub)
-        else n.delete('disk')
-        return n
-      }),
-    [setSearch],
-  )
+  const openDiskSub = useCallback((sub: string) => setSearch({ disk: sub }), [setSearch])
   const roots = useRoots()
   const { rootId } = useScope()
   const categories = useCategoryMap()
-  const [sort, setSort] = useState<SortKey>('size')
-  const [asc, setAsc] = useState(false)
+  // Sort, view, the file panel and the cleanup dialog are in the URL too, so Back steps through them.
+  const [sort] = useUrlEnum<SortKey>('sort', SORTS, 'size')
+  const asc = search.get('asc') !== null ? search.get('asc') === 'true' : sort === 'name'
   const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [preview, setPreview] = useState<number | null>(null)
-  const [plan, setPlan] = useState(false)
-  const [view, setView] = useState<'list' | 'map'>(() => (localStorage.getItem(VIEW_KEY) === 'map' ? 'map' : 'list'))
+  const preview = useEntryPreview()
+  const plan = useUrlOverlay('plan')
+  const [defaultView] = useState(storedView)
+  const [view, setViewParam] = useUrlEnum<'list' | 'map'>('view', ['list', 'map'], defaultView)
+  const setView = (v: 'list' | 'map') => setViewParam(v)
 
   // Without an id, open the selected root (or the first one).
   const fallbackRoot = roots.data?.find((r) => r.id === rootId) ?? roots.data?.find((r) => r.rootEntryId)
@@ -118,15 +122,23 @@ export default function Browse() {
     onSuccess: (r) => setSavedLater(r.savedLater ?? null),
   })
 
+  // A folder link keeps the sort and the view; the asc flag only when it is not the sort's default.
+  const keep = useCallback(
+    (to: number) => {
+      const p = new URLSearchParams()
+      for (const k of ['sort', 'asc', 'view']) if (search.get(k)) p.set(k, search.get(k)!)
+      const qs = p.toString()
+      return `/browse/${to}${qs ? `?${qs}` : ''}`
+    },
+    [search],
+  )
   const onSort = (s: SortKey) => {
-    if (s === sort) setAsc(!asc)
-    else {
-      setSort(s)
-      setAsc(s === 'name')
-    }
+    const nextAsc = s === sort ? !asc : s === 'name'
+    setSearch({ sort: s === 'size' ? null : s, asc: nextAsc === (s === 'name') ? null : String(nextAsc) })
   }
-  const open = useCallback((e: Entry) => (e.isDir ? navigate(`/browse/${e.id}`) : setPreview(e.id)), [navigate])
-  const openTree = useCallback((nid: number, isDir: boolean) => (isDir ? navigate(`/browse/${nid}`) : setPreview(nid)), [navigate])
+  const openPreview = preview.open
+  const open = useCallback((e: Entry) => (e.isDir ? navigate(keep(e.id)) : openPreview(e.id)), [navigate, openPreview, keep])
+  const openTree = useCallback((nid: number, isDir: boolean) => (isDir ? navigate(keep(nid)) : openPreview(nid)), [navigate, openPreview, keep])
   const items = useMemo(() => children.data?.items ?? [], [children.data])
   const selectedItems = items.filter((i) => selected.has(i.id))
 
@@ -160,7 +172,7 @@ export default function Browse() {
               </button>
             </div>
             {e && (
-              <button className="btn-secondary" onClick={() => setPreview(e.id)}>
+              <button className="btn-secondary" onClick={() => preview.open(e.id)}>
                 Folder details
               </button>
             )}
@@ -196,7 +208,7 @@ export default function Browse() {
           {d?.breadcrumbs.map((b, i) => (
             <span key={b.id} className="flex items-center gap-1">
               {i > 0 && <span className="muted">/</span>}
-              {b.id === id ? <span>{b.name}</span> : <Link to={`/browse/${b.id}`} className="hover:text-accent">{b.name}</Link>}
+              {b.id === id ? <span>{b.name}</span> : <Link to={keep(b.id)} className="hover:text-accent">{b.name}</Link>}
             </span>
           ))}
           {d?.annotations && <AnnotationBadges items={d.annotations} />}
@@ -218,7 +230,7 @@ export default function Browse() {
           <button className="btn-ghost" onClick={() => setSelected(new Set())}>
             Clear
           </button>
-          <button className="btn-primary" onClick={() => setPlan(true)} disabled={d?.root?.readOnly}>
+          <button className="btn-primary" onClick={() => plan.open('selection')} disabled={d?.root?.readOnly}>
             Clean up…
           </button>
         </div>
@@ -264,10 +276,10 @@ export default function Browse() {
         />
       )}
 
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} list={items.filter((i) => !i.isDir).map((i) => i.id)} onNavigate={setPreview} />
+      <EntryDrawer preview={preview} list={items.filter((i) => !i.isDir).map((i) => i.id)} />
       <PlanDialog
-        open={plan}
-        onClose={() => setPlan(false)}
+        open={plan.value !== null && selected.size > 0}
+        onClose={plan.close}
         entryIds={[...selected]}
         count={selected.size}
         size={selectedItems.reduce((s, i) => s + i.size, 0)}

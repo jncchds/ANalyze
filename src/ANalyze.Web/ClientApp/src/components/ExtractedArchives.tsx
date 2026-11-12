@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { Empty, ErrorBox, Loading, Stat } from './ui'
 import { useScope } from '../hooks/useScope'
+import { leaveOverlay, useUrlNumber, useUrlParam } from '../hooks/useUrlState'
 import { bytes, count, date } from '../lib/format'
 
 interface Place {
@@ -77,11 +78,13 @@ function verified(x: Extraction) {
 export function ExtractedArchives() {
   const { rootId } = useScope()
   const qc = useQueryClient()
-  const [state, setState] = useState('')
-  const [q, setQ] = useState('')
-  const [sort, setSort] = useState('size')
-  const [offset, setOffset] = useState(0)
-  const [open, setOpen] = useState<number | null>(null)
+  // In the URL (prefixed, as this is a tab of Duplicates), so Back steps through filters, pages and opened file lists.
+  const [state, setState] = useUrlParam('astate')
+  const [q, setQ] = useUrlParam('aq')
+  const [sort, setSort] = useUrlParam('asort', 'size')
+  const [offset, setOffset] = useUrlNumber('aoffset')
+  const [openParam, setOpen] = useUrlNumber('archive', -1)
+  const open = openParam < 0 ? null : openParam
   const list = useQuery({
     queryKey: ['extractions', rootId, state, q, sort, offset],
     queryFn: () => api<ListResponse>('/archives/extractions', { query: { rootId, state: state || undefined, q: q || undefined, sort, offset, limit: PAGE } }),
@@ -105,18 +108,12 @@ export function ExtractedArchives() {
           className="input max-w-xs"
           placeholder="Archive or folder contains…"
           value={q}
-          onChange={(e) => {
-            setQ(e.target.value)
-            setOffset(0)
-          }}
+          onChange={(e) => setQ(e.target.value, { replace: true, also: { aoffset: null } })}
         />
         <select
           className="input w-auto"
           value={state}
-          onChange={(e) => {
-            setState(e.target.value)
-            setOffset(0)
-          }}
+          onChange={(e) => setState(e.target.value, { also: { aoffset: null } })}
         >
           <option value="">All</option>
           <option value="complete">Completely extracted</option>
@@ -125,7 +122,7 @@ export function ExtractedArchives() {
           <option value="bad">Copy differs from the archive</option>
           <option value="partial">Partly extracted</option>
         </select>
-        <select className="input w-auto" value={sort} onChange={(e) => setSort(e.target.value)}>
+        <select className="input w-auto" value={sort} onChange={(e) => setSort(e.target.value, { also: { aoffset: null } })}>
           <option value="size">Largest archives</option>
           <option value="matched">Most data extracted</option>
           <option value="name">Name</option>
@@ -154,7 +151,7 @@ export function ExtractedArchives() {
       ) : (
         <div className="space-y-3">
           {d.items.map((x) => (
-            <ExtractionCard key={x.id} x={x} open={open === x.id} onToggle={() => setOpen(open === x.id ? null : x.id)} onVerify={() => verify.mutate({ ids: [x.id] })} />
+            <ExtractionCard key={x.id} x={x} open={open === x.id} onToggle={() => setOpen(open === x.id ? -1 : x.id)} onVerify={() => verify.mutate({ ids: [x.id] })} />
           ))}
           <div className="flex items-center justify-center gap-3">
             <button className="btn-secondary" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>
@@ -177,7 +174,7 @@ function ExtractionCard({ x, open, onToggle, onVerify }: { x: Extraction; open: 
   const navigate = useNavigate()
   const plan = useMutation({
     mutationFn: (remove: 'archive' | 'extracted') => api<{ id: number }>('/archives/extractions/plan', { method: 'POST', json: { ids: [x.id], remove, op: 'trash' } }),
-    onSuccess: (p) => navigate(`/actions/${p.id}`),
+    onSuccess: (p) => leaveOverlay(navigate, `/actions/${p.id}`),
   })
   const removeArchive = () => {
     if (!verified(x) && !confirm('The extracted files have not been checked against the archive yet (or some differ). Create the plan anyway?')) return

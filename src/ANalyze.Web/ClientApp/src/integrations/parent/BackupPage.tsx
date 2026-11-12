@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -8,6 +8,7 @@ import { EntryDrawer } from '../../components/EntryDrawer'
 import { PathText } from '../../components/PathText'
 import { Empty, ErrorBox, Loading, PageTitle, Section, ShareBar, Stat, Tabs } from '../../components/ui'
 import { useLocate } from '../../hooks/useLocate'
+import { useEntryPreview, useUrlEnum, useUrlNumber, useUrlParam, useUrlParams } from '../../hooks/useUrlState'
 import { ago, bytes, count, pct } from '../../lib/format'
 import { ComparePanel } from './ComparePanel'
 
@@ -77,13 +78,28 @@ interface FileRow {
 
 type Tab = 'folders' | FileState
 
-/** Backup page of the "ANalyze parent" integration: what of this instance is synchronized to the backup server (the parent). */
+const TABS: Tab[] = ['folders', ...FILE_STATES.map((x) => x.id)]
+
+const inTarget = (t: Target, f: { rootId: number; path: string }) =>
+  t.rootId === f.rootId && (!t.relPath || f.path === t.relPath || f.path.startsWith(t.relPath + '/'))
+
+/**
+ * Backup page of the "ANalyze parent" integration: what of this instance is synchronized to the backup server (the parent).
+ * Tab, folder (`?target=&path=`), filters and the file panel are in the URL, so Back steps through them.
+ */
 export default function BackupPage() {
-  const [chosenTab, setTab] = useState<Tab>('folders')
-  // Opened from a label in the browser: the folder view at that folder (or the file's folder).
-  const located = useLocate<{ rootId: number; path: string }>('parent')
-  const tab = located.target ? 'folders' : chosenTab
+  const [, setParams] = useUrlParams()
+  const [tab, setTab] = useUrlEnum<Tab>('tab', TABS, 'folders')
   const q = useQuery({ queryKey: ['parent', 'summary'], queryFn: () => api<Summary>('/integrations/parent/summary') })
+  // Opened from a label in the browser: the folder view at that folder (or the file's folder); `?entry=` becomes `?target=&path=`.
+  const located = useLocate<{ rootId: number; path: string }>('parent')
+  const focus = located.target
+  const shownTargets = useMemo(() => q.data?.targets?.filter((t) => t.entryId), [q.data])
+  useEffect(() => {
+    if (!focus || !shownTargets) return
+    const i = shownTargets.findIndex((t) => inTarget(t, focus))
+    setParams({ entry: null, tab: null, target: i > 0 ? i : null, path: i >= 0 ? focus.path : null }, { replace: true })
+  }, [focus, shownTargets, setParams])
   const sync = useMutation({ mutationFn: () => api('/integrations/parent/sync', { method: 'POST' }) })
   if (q.isLoading) return <Loading />
   if (q.error) return <ErrorBox error={q.error} />
@@ -194,17 +210,14 @@ export default function BackupPage() {
 
       <Tabs<Tab>
         value={tab}
-        onChange={(t) => {
-          located.clear()
-          setTab(t)
-        }}
+        onChange={(t) => setTab(t, { also: { q: null, explain: null } })}
         tabs={[
           { id: 'folders', label: 'Folders' },
           ...FILE_STATES.filter((x) => by(x.id).files > 0).map((x) => ({ id: x.id as Tab, label: `${x.label} (${count(by(x.id).files)})` })),
         ]}
       />
       {tab === 'folders' ? (
-        <Folders key={`${located.entry ?? ''}:${located.target ? 1 : 0}`} targets={(s.targets ?? []).filter((t) => t.entryId)} threshold={threshold} focus={located.target} />
+        <Folders targets={shownTargets ?? []} threshold={threshold} />
       ) : (
         <Files key={tab} state={tab} />
       )}
@@ -221,13 +234,13 @@ function FolderPill({ state, children, synced }: { state: string; children: numb
   return state === 'synced' ? <span className="chip">Synchronized{share}</span> : <span className="pill-amber">Not synchronized{share}</span>
 }
 
-function Folders({ targets, threshold, focus }: { targets: Target[]; threshold: number; focus?: { rootId: number; path: string } }) {
-  // Start at the located folder, inside the backed-up folder that contains it.
-  const inTarget = (t: Target, f: { rootId: number; path: string }) =>
-    t.rootId === f.rootId && (!t.relPath || f.path === t.relPath || f.path.startsWith(t.relPath + '/'))
-  const [target, setTarget] = useState(() => Math.max(0, focus ? targets.findIndex((t) => inTarget(t, focus)) : 0))
-  const [path, setPath] = useState<string | null>(() => (focus && targets.some((t) => inTarget(t, focus)) ? focus.path : null))
-  const [preview, setPreview] = useState<Preview>(null)
+function Folders({ targets, threshold }: { targets: Target[]; threshold: number }) {
+  const [params, setParams] = useUrlParams()
+  const [targetParam] = useUrlNumber('target')
+  const target = targetParam < targets.length ? targetParam : 0
+  const path = params.get('path')
+  const setPath = (p: string) => setParams({ path: p, explain: null })
+  const [preview, open] = useFilePreview()
   const t = targets[target]
   const current = path ?? t?.relPath ?? ''
   const q = useQuery({
@@ -247,10 +260,7 @@ function Folders({ targets, threshold, focus }: { targets: Target[]; threshold: 
           <select
             className="input mr-2 w-auto"
             value={target}
-            onChange={(e) => {
-              setTarget(Number(e.target.value))
-              setPath(null)
-            }}
+            onChange={(e) => setParams({ target: Number(e.target.value) || null, path: null, explain: null })}
             aria-label="Backed-up folder"
           >
             {targets.map((x, i) => (
@@ -321,20 +331,25 @@ function Folders({ targets, threshold, focus }: { targets: Target[]; threshold: 
                   .map((x) => `${count(q.data!.files.find((f) => f.state === x.id)!.files)} ${x.label.toLowerCase()}`)
                   .join(' · ')}
               </p>
-              <FileList rootId={t.rootId!} path={current} direct onOpen={(id, list) => setPreview({ id, list })} />
+              <FileList rootId={t.rootId!} path={current} direct onOpen={open} />
             </Section>
           )}
         </>
       )}
-      <FileDrawer preview={preview} setPreview={setPreview} />
+      {preview}
     </>
   )
 }
 
-type Preview = { id: number; list: number[] } | null
-
-function FileDrawer({ preview, setPreview }: { preview: Preview; setPreview: (p: Preview) => void }) {
-  return <EntryDrawer id={preview?.id ?? null} onClose={() => setPreview(null)} list={preview?.list} onNavigate={(id) => setPreview({ id, list: preview!.list })} />
+/** The file panel (in the URL) with the list it was opened from (in memory, for previous/next). */
+function useFilePreview() {
+  const preview = useEntryPreview()
+  const [list, setList] = useState<number[]>()
+  const open: OpenFile = (id, ids) => {
+    setList(ids)
+    preview.open(id)
+  }
+  return [<EntryDrawer preview={preview} list={list} />, open] as const
 }
 
 function detail(f: FileRow) {
@@ -357,7 +372,10 @@ type OpenFile = (id: number, list: number[]) => void
 
 function FileList({ state, rootId, path, direct, q, onOpen }: { state?: FileState; rootId?: number; path?: string; direct?: boolean; q?: string; onOpen: OpenFile }) {
   const [pages, setPages] = useState(1)
-  const [explain, setExplain] = useState<number | null>(null)
+  // The open "What happened?" comparison, in the URL so Back closes it.
+  const [explainParam, setExplainParam] = useUrlNumber('explain', -1)
+  const explain = explainParam < 0 ? null : explainParam
+  const setExplain = (id: number | null) => setExplainParam(id ?? -1)
   const parentName = useQuery({ queryKey: ['parent', 'summary'], queryFn: () => api<Summary>('/integrations/parent/summary') }).data?.snapshot?.parentName ?? 'the backup'
   const r = useQuery({
     queryKey: ['parent', 'files', state, rootId, path, direct, q, pages],
@@ -410,8 +428,9 @@ function FileList({ state, rootId, path, direct, q, onOpen }: { state?: FileStat
 }
 
 function Files({ state }: { state: FileState }) {
-  const [q, setQ] = useState('')
-  const [preview, setPreview] = useState<Preview>(null)
+  const [q, setQParam] = useUrlParam('q')
+  const setQ = (v: string) => setQParam(v, { replace: true })
+  const [preview, open] = useFilePreview()
   const totals = useQuery({
     queryKey: ['parent', 'files', state, q, 'totals'],
     queryFn: () => api<{ total: number; totalSize: number }>('/integrations/parent/files', { query: { state, q, limit: 1 } }),
@@ -428,9 +447,9 @@ function Files({ state }: { state: FileState }) {
         )}
       </div>
       <div className="card px-3 py-1">
-        <FileList state={state} q={q} onOpen={(id, list) => setPreview({ id, list })} />
+        <FileList state={state} q={q} onOpen={open} />
       </div>
-      <FileDrawer preview={preview} setPreview={setPreview} />
+      {preview}
     </>
   )
 }

@@ -88,6 +88,7 @@ export function Field({ label, hint, children }: { label: ReactNode; hint?: Reac
   )
 }
 
+/** A modal dialog. With a URL-backed `open` (see `useUrlOverlay`) Back closes it and `onClose` goes Back. */
 export function Modal({ open, onClose, title, children, wide }: { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode; wide?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => {
@@ -99,7 +100,12 @@ export function Modal({ open, onClose, title, children, wide }: { open: boolean;
   return (
     <dialog
       ref={ref}
-      onClose={onClose}
+      // Escape asks the owner to close (often by going Back in the history); the dialog follows `open` instead of closing itself.
+      onCancel={(e) => {
+        e.preventDefault()
+        onClose()
+      }}
+      onClose={() => open && onClose()}
       onClick={(e) => e.target === ref.current && onClose()}
       className={clsx(
         'm-auto rounded-xl border border-line bg-surface p-0 text-fg shadow-xl backdrop:bg-black/40',

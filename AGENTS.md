@@ -352,7 +352,13 @@ their parent/grandparent folders (movie, season/show, album/artist) and the libr
 
 React 19 + Vite + Tailwind 4 + TanStack Query, same shell and tokens as nopds (sidebar, cards, pills) with ANalyze's teal/cyan palette and amber
 for reclaimable space (`src/index.css`). `useJobs` holds the single SignalR connection and invalidates queries when a job finishes; `useScope`
-holds the selected root. Search filters live in the URL so insights, sidebar entries and bookmarks link to result sets. Charts: labeled bar lists
+holds the selected root. Page state lives in the URL so Back/Forward, reloads and bookmarks work (`hooks/useUrlState.ts`): tabs, filters,
+sort and pages (`useUrlParam`/`useUrlEnum`/`useUrlNumber`; choices push a history entry, typing replaces it; defaults are left out), and
+overlays (`useUrlOverlay`: dialogs as `?edit=new|<id>`, `?plan=…`, `?title=<key>`; the file panel via `useEntryPreview` as `?file=<id>&fileTab=`,
+dialogs use their own key such as `itemFile`). An overlay is pushed with a marker in the history state and closing it goes Back; opened from a
+link it closes in place; navigating away from one (`leaveOverlay`) replaces its entry. `Modal` closes only through its `open` prop, and
+integration labels' `?entry=` is turned into the page's own URL state once located. New UI state that a user would expect Back to undo
+belongs in the URL the same way. Charts: labeled bar lists
 (identity never by color alone) and an ECharts treemap. Category colors: the first eight built-ins use the validated categorical palette.
 
 Release notes: `RELEASE_NOTES.md` is embedded into `ANalyze.Web` (`EmbeddedResource`, also copied in `docker/Dockerfile`), parsed by

@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -7,6 +6,7 @@ import type { Insight, SearchFilter } from '../api/types'
 import { PlanDialog } from '../components/PlanDialog'
 import { Empty, ErrorBox, Loading, PageTitle, Section } from '../components/ui'
 import { useScope } from '../hooks/useScope'
+import { useUrlOverlay } from '../hooks/useUrlState'
 import { bytes, count, dateTime, signedBytes } from '../lib/format'
 
 interface Growth {
@@ -29,8 +29,10 @@ export function filterToQuery(f: SearchFilter) {
 export default function Insights() {
   const { rootId } = useScope()
   const navigate = useNavigate()
-  const [plan, setPlan] = useState<Insight | null>(null)
+  // The cleanup dialog of an insight: `?plan=<insight key>`.
+  const planOverlay = useUrlOverlay('plan')
   const insights = useQuery({ queryKey: ['insights', rootId], queryFn: () => api<Insight[]>('/insights', { query: { rootId } }) })
+  const plan = planOverlay.value ? insights.data?.find((i) => i.key === planOverlay.value) : undefined
   const growth = useQuery({ queryKey: ['growth', rootId], queryFn: () => api<Growth>('/insights/growth', { query: { rootId } }) })
 
   return (
@@ -58,7 +60,7 @@ export default function Insights() {
                   View
                 </button>
                 {i.suggestedOp && (
-                  <button className="btn-secondary px-2 py-1 text-xs" onClick={() => setPlan(i)}>
+                  <button className="btn-secondary px-2 py-1 text-xs" onClick={() => planOverlay.open(i.key)}>
                     Clean up…
                   </button>
                 )}
@@ -93,7 +95,7 @@ export default function Insights() {
       {plan && (
         <PlanDialog
           open
-          onClose={() => setPlan(null)}
+          onClose={planOverlay.close}
           filter={plan.filter}
           count={plan.count}
           size={plan.bytes}

@@ -44,6 +44,7 @@
 | 🔌 | **Integrations** | **Plex**, **Jellyfin**, **Emby**, **Sonarr**, **Radarr**, **Lidarr**, **qBittorrent**, **Transmission**, **SABnzbd**, **Immich**, **PhotoPrism**, plus **Docker** (works out the path mappings between containers) and **ANalyze parent** (checks a backup kept on another ANalyze instance). |
 | 🛡️ | **Integrity** *(optional)* | Hash every file and re-verify old hashes to catch bit rot: files whose content changed while size and date stayed the same are flagged as *possibly corrupted*. |
 | 📜 | **Activity log** | What ANalyze is doing, step by step and live: scan phases with counts and times, skipped folders and why, unreadable files, integration syncs, plans and AI runs. Hover a step name in the sidebar for a short explanation. |
+| 🔗 | **Links to every view** | Tabs, filters, pages, dialogs and the file panel are part of the URL: the browser's Back and Forward buttons work everywhere (Back closes a dialog first), and any view can be bookmarked or shared. |
 | 📝 | **Release notes** | What changed in each version, right in the UI (click the version next to the logo). |
 
 ## Quick start

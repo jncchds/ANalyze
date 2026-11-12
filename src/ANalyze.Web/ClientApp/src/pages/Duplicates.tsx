@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api, fileUrl } from '../api/client'
 import type { DedupeKeep } from '../api/types'
@@ -7,6 +7,7 @@ import { EntryDrawer } from '../components/EntryDrawer'
 import { ExtractedArchives } from '../components/ExtractedArchives'
 import { Empty, ErrorBox, Field, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../components/ui'
 import { useScope } from '../hooks/useScope'
+import { leaveOverlay, useEntryPreview, useUrlEnum, useUrlNumber, useUrlOverlay, useUrlParam } from '../hooks/useUrlState'
 import { bytes, count, date } from '../lib/format'
 
 interface Member {
@@ -39,13 +40,14 @@ const IMAGE_EXT = /\.(jpe?g|png|gif|webp|bmp|heic|avif|tiff?)$/i
 
 export default function Duplicates() {
   const { rootId } = useScope()
-  const [params] = useSearchParams()
-  const [tab, setTab] = useState<'groups' | 'folders' | 'archives'>(params.get('tab') === 'archives' ? 'archives' : 'groups')
-  const [sort, setSort] = useState('wasted')
-  const [offset, setOffset] = useState(0)
-  const [q, setQ] = useState(params.get('q') ?? '')
-  const [preview, setPreview] = useState<number | null>(null)
-  const [wizard, setWizard] = useState<{ hashes?: string[] } | null>(null)
+  // Tab, sort, page, filter, the file panel and the dedupe dialog (`?dedupe=all|<hash>`) are in the URL, so Back steps through them.
+  const [tab, setTab] = useUrlEnum('tab', ['groups', 'folders', 'archives'] as const, 'groups')
+  const [sort, setSort] = useUrlParam('sort', 'wasted')
+  const [offset, setOffset] = useUrlNumber('offset')
+  const [q, setQ] = useUrlParam('q')
+  const preview = useEntryPreview()
+  const dedupe = useUrlOverlay('dedupe')
+  const wizard = dedupe.value === null ? null : dedupe.value === 'all' ? {} : { hashes: [dedupe.value] }
 
   const groups = useQuery({
     queryKey: ['duplicates', rootId, sort, offset, q],
@@ -59,7 +61,7 @@ export default function Duplicates() {
       <PageTitle
         subtitle="Identical content (same full hash). Hard links already share storage and are not counted."
         actions={
-          <button className="btn-primary" disabled={!d?.total} onClick={() => setWizard({})}>
+          <button className="btn-primary" disabled={!d?.total} onClick={() => dedupe.open('all')}>
             Dedupe all…
           </button>
         }
@@ -87,12 +89,9 @@ export default function Duplicates() {
               className="input max-w-xs"
               placeholder="File name contains…"
               value={q}
-              onChange={(e) => {
-                setQ(e.target.value)
-                setOffset(0)
-              }}
+              onChange={(e) => setQ(e.target.value, { replace: true, also: { offset: null } })}
             />
-            <select className="input w-auto" value={sort} onChange={(e) => setSort(e.target.value)}>
+            <select className="input w-auto" value={sort} onChange={(e) => setSort(e.target.value, { also: { offset: null } })}>
               <option value="wasted">Most wasted space</option>
               <option value="size">Largest files</option>
               <option value="copies">Most copies</option>
@@ -113,7 +112,7 @@ export default function Duplicates() {
                     <span className="muted">· {bytes(g.size)} each</span>
                     <span className="pill-amber">{bytes(g.wasted)} wasted</span>
                     <span className="flex-1" />
-                    <button className="btn-secondary px-2.5 py-1 text-xs" onClick={() => setWizard({ hashes: [g.hash] })}>
+                    <button className="btn-secondary px-2.5 py-1 text-xs" onClick={() => dedupe.open(g.hash)}>
                       Dedupe this…
                     </button>
                   </div>
@@ -121,7 +120,7 @@ export default function Duplicates() {
                     {g.members.map((m) => (
                       <li key={m.id} className="flex items-center gap-2 rounded px-1 py-0.5 text-sm hover:bg-accent-faint">
                         {IMAGE_EXT.test(m.relPath) && <img src={fileUrl(m.id, "thumb", { size: 96 })} alt="" className="h-8 w-8 shrink-0 rounded object-cover" loading="lazy" onError={(e) => (e.currentTarget.style.visibility = "hidden")} />}
-                        <button className="min-w-0 flex-1 truncate text-left" title={m.relPath} onClick={() => setPreview(m.id)}>
+                        <button className="min-w-0 flex-1 truncate text-left" title={m.relPath} onClick={() => preview.open(m.id)}>
                           <span className="muted">{m.rootName}/</span>
                           {m.relPath}
                         </button>
@@ -175,8 +174,8 @@ export default function Duplicates() {
         </Section>
       )}
 
-      <EntryDrawer id={preview} onClose={() => setPreview(null)} list={d?.groups.flatMap((g) => g.members.map((m) => m.id))} onNavigate={setPreview} />
-      {wizard && <DedupeWizard hashes={wizard.hashes} onClose={() => setWizard(null)} />}
+      <EntryDrawer preview={preview} list={d?.groups.flatMap((g) => g.members.map((m) => m.id))} />
+      {wizard && <DedupeWizard key={dedupe.value} hashes={wizard.hashes} onClose={dedupe.close} />}
     </>
   )
 }
@@ -202,7 +201,7 @@ function DedupeWizard({ hashes, onClose }: { hashes?: string[]; onClose: () => v
           preferredFolders: preferred.split('\n').map((s) => s.trim()).filter(Boolean),
         },
       }),
-    onSuccess: (p) => navigate(`/actions/${p.id}`),
+    onSuccess: (p) => leaveOverlay(navigate, `/actions/${p.id}`),
   })
   return (
     <Modal open onClose={onClose} title={hashes ? 'Dedupe this group' : 'Dedupe all duplicates'}>
