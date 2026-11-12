@@ -152,7 +152,7 @@ Build without ffmpeg (no video thumbnails, smaller image): `docker build -f dock
 3. **Apply** re-checks each item right before it runs: still there, same size and mtime. Duplicate removals also re-hash
    both copies, so a file that changed since the scan is skipped.
 4. **Trash** moves items to `<root>/.analyze-trash/<plan>/…` (an instant rename on the same disk). It is emptied after
-   the retention period (Settings) or from **Actions → Trash**. **Undo** restores trashed and moved items.
+   the retention period (Settings) or from **Actions → Trash**. **Undo** restores trashed and moved items, and files replaced with the backup's copy.
 
 ## Duplicates
 
@@ -299,6 +299,13 @@ streamed from the backup server through this instance:
   ranges *What happened?* found
 
 The file panel also has **‹ ›** buttons (and the ← → keys) to step through the files of the list it was opened from.
+
+**Replace with the backup's copy** repairs damaged files: *Replace all with the backup's copy…* on the Backup page's
+*Corrupted* tab, the link next to a corrupted file in the file panel, or the action of that name in **Clean up…** (for a
+selection, a search such as *Possibly corrupted*, or folders, which stand for the damaged files inside them). It is a plan
+like any other: each file's copy is downloaded from the backup server next to it and checked against the backup's size
+and content hash, keeps the owner, permissions and date of the file it replaces, and the damaged file goes to the trash
+— so **Undo** puts it back. Files that are not damaged, identical or not on the backup are listed but left out.
 
 ### Plex
 

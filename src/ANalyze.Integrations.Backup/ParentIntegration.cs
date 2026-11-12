@@ -333,6 +333,7 @@ public static class BackupDependencyInjection
         services.AddSingleton<ANalyze.Scanner.IHashListener, BackupHashListener>();
         services.AddHostedService<BackupHashRefresh>();
         services.AddSingleton<BackupCompare>();
+        services.AddSingleton<ANalyze.Scanner.IBackupSource, BackupRestoreSource>();
         return services.AddIntegration<ParentIntegration>();
     }
 }

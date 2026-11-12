@@ -3,7 +3,7 @@ export type FileKind =
   | 'diskImage' | 'executable' | 'font' | 'database' | 'ebook' | 'model3D' | 'other'
 
 export type CategorySource = 'none' | 'rule' | 'ai' | 'manual'
-export type ActionOp = 'trash' | 'delete' | 'move' | 'hardlink'
+export type ActionOp = 'trash' | 'delete' | 'move' | 'hardlink' | 'restore'
 export type ConflictPolicy = 'skip' | 'rename' | 'overwrite'
 export type PlanStatus = 'draft' | 'running' | 'done' | 'failed' | 'undone' | 'cancelled'
 export type ItemStatus = 'pending' | 'done' | 'skipped' | 'failed' | 'undone'

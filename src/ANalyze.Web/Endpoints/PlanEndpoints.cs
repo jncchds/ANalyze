@@ -12,6 +12,8 @@ public static class PlanEndpoints
 
     public sealed record ManualPlanBody(long[] EntryIds, ActionOp Op, string? Destination, ConflictPolicy? Conflict, string? Name, int? TemplateId);
 
+    public sealed record RestorePlanBody(string? Name);
+
     public sealed record ItemsBody(long[]? Ids, bool Included, string? Filter);
 
     public static void MapPlanEndpoints(this RouteGroupBuilder api)
@@ -67,7 +69,7 @@ public static class PlanEndpoints
                 skipped = await all.CountAsync(i => i.Status == ItemStatus.Skipped, ct),
                 failed = await all.CountAsync(i => i.Status == ItemStatus.Failed, ct),
                 undone = await all.CountAsync(i => i.Status == ItemStatus.Undone, ct),
-                undoable = await all.CountAsync(i => i.Status == ItemStatus.Done && (i.Op == ActionOp.Trash || i.Op == ActionOp.Move), ct),
+                undoable = await all.CountAsync(i => i.Status == ItemStatus.Done && (i.Op == ActionOp.Trash || i.Op == ActionOp.Move || i.Op == ActionOp.Restore), ct),
             };
             return Results.Ok(new { plan, summary, page = new Page<ActionItem>(page, total) });
         });
@@ -92,6 +94,23 @@ public static class PlanEndpoints
 
         api.MapPost("/plans/dedupe", async (DedupePlanRequest req, PlanBuilder builder, CancellationToken ct) =>
             await Run(() => builder.CreateDedupeAsync(req, ct)));
+
+        // Every file the backup comparison found damaged here, replaced with the backup's copy (draft plan for review).
+        api.MapPost("/plans/restore-damaged", async (RestorePlanBody? b, PlanBuilder builder, IEnumerable<ANalyze.Scanner.IBackupSource> backups, CancellationToken ct) =>
+        {
+            var ids = new HashSet<long>();
+            foreach (var source in backups)
+            {
+                ids.UnionWith(await source.DamagedAsync(ct));
+            }
+
+            if (ids.Count == 0)
+            {
+                return Results.Problem("No damaged files with a copy on the backup.", statusCode: 400);
+            }
+
+            return await Run(() => builder.CreateAsync(new ManualPlanRequest(b?.Name ?? $"Restore {ids.Count} damaged file(s) from the backup", ActionOp.Restore, [.. ids.Take(PlanBuilder.MaxItems)], null), ct));
+        });
 
         api.MapPatch("/plans/{id:int}/items", async (int id, ItemsBody b, AnalyzeDbContext db, CancellationToken ct) =>
         {
@@ -168,7 +187,7 @@ public static class PlanEndpoints
                 return Results.Problem("The plan is running", statusCode: 409);
             }
 
-            var hasTrash = plan.TrashPurgedAt is null && await db.ActionItems.AnyAsync(i => i.PlanId == id && i.Op == ActionOp.Trash && i.Status == ItemStatus.Done, ct);
+            var hasTrash = plan.TrashPurgedAt is null && await db.ActionItems.AnyAsync(i => i.PlanId == id && (i.Op == ActionOp.Trash || i.Op == ActionOp.Restore) && i.Status == ItemStatus.Done, ct);
             if (hasTrash)
             {
                 return Results.Problem("Empty this plan's trash first (or undo it)", statusCode: 409);

@@ -25,7 +25,7 @@ public sealed record DedupePlanRequest(
     long MinSize = 0);
 
 /// <summary>Builds draft plans. Nothing touches the disk until a plan is applied.</summary>
-public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootRegistry roots)
+public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootRegistry roots, IEnumerable<IBackupSource> backups)
 {
     public const int MaxItems = 200_000;
 
@@ -56,6 +56,18 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
 
         // Selecting a folder covers everything inside it.
         entries = RemoveNested(entries.Where(e => e.RelPath.Length > 0).ToList());
+        var copies = new Dictionary<long, BackupCopy>();
+        if (req.Op == ActionOp.Restore)
+        {
+            entries = await DamagedInsideAsync(db, entries, ct);
+            foreach (var b in backups)
+            {
+                foreach (var (id, copy) in await b.FindAsync(entries.Select(e => e.Id).ToList(), ct))
+                {
+                    copies.TryAdd(id, copy);
+                }
+            }
+        }
 
         var plan = new ActionPlan
         {
@@ -79,6 +91,11 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
                 ExpectedSize = e.IsDir ? e.TotalSize : e.Size,
                 ExpectedMTime = e.MTime,
             };
+
+            if (req.Op == ActionOp.Restore)
+            {
+                CheckRestore(item, e, copies.GetValueOrDefault(e.Id));
+            }
 
             if (req.Op == ActionOp.Move)
             {
@@ -114,6 +131,49 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
         db.ActionPlans.Add(plan);
         await db.SaveChangesAsync(ct);
         return plan;
+    }
+
+    /// <summary>
+    /// A restore replaces files only: a selected folder stands for the damaged files inside it that the backup has. A selection without
+    /// any folder stays as it is (each file is checked by <see cref="CheckRestore"/>).
+    /// </summary>
+    private async Task<List<Entry>> DamagedInsideAsync(AnalyzeDbContext db, List<Entry> entries, CancellationToken ct)
+    {
+        var dirs = entries.Where(e => e.IsDir).ToList();
+        if (dirs.Count == 0)
+        {
+            return entries;
+        }
+
+        var damaged = new HashSet<long>();
+        foreach (var b in backups)
+        {
+            damaged.UnionWith(await b.DamagedAsync(ct));
+        }
+
+        var files = entries.Where(e => !e.IsDir).ToList();
+        var seen = files.Select(e => e.Id).ToHashSet();
+        foreach (var chunk in damaged.Where(id => !seen.Contains(id)).Chunk(5000))
+        {
+            var inside = await db.Entries.AsNoTracking().Where(e => chunk.Contains(e.Id)).ToListAsync(ct);
+            files.AddRange(inside.Where(f => dirs.Any(d => d.RootId == f.RootId && (d.RelPath.Length == 0 || f.RelPath.StartsWith(d.RelPath + "/", StringComparison.Ordinal)))));
+        }
+
+        return files;
+    }
+
+    /// <summary>Only damaged files with a copy on the backup are restored by default; the others are listed but left out.</summary>
+    private static void CheckRestore(ActionItem item, Entry e, BackupCopy? copy)
+    {
+        item.TargetPath = copy?.Location;
+        (item.Included, item.Warning) = (e, copy) switch
+        {
+            ({ IsSymlink: true }, _) => (false, "A symbolic link: nothing to restore"),
+            (_, null) => (false, "Not on the backup"),
+            (_, { Identical: true }) => (false, "Same content as the backup's copy"),
+            (_, { Corrupt: false }) => (false, "Not damaged — include it to replace it with the backup's copy anyway"),
+            _ => (true, null),
+        };
     }
 
     /// <summary>Badges integrations put on files another app is using right now (download clients).</summary>
@@ -327,6 +387,7 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
         ActionOp.Trash => $"Trash {count} item(s)",
         ActionOp.Delete => $"Delete {count} item(s)",
         ActionOp.Move => $"Move {count} item(s)",
+        ActionOp.Restore => $"Restore {count} file(s) from the backup",
         _ => $"{op} {count} item(s)",
     };
 }

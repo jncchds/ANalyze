@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
-import { useConfig, useTemplates } from '../api/hooks'
+import { useConfig, useIntegrations, useTemplates } from '../api/hooks'
 import type { ActionOp, ConflictPolicy, SearchFilter } from '../api/types'
 import { bytes } from '../lib/format'
 import { leaveOverlay } from '../hooks/useUrlState'
@@ -26,6 +26,9 @@ export function PlanDialog({ open, onClose, entryIds, filter, count, size, defau
   const config = useConfig()
   const navigate = useNavigate()
   const qc = useQueryClient()
+  // "Replace with the backup's copy" needs the backup server (the ANalyze parent integration).
+  const backup = !!useIntegrations().data?.some((i) => i.id === 'parent' && i.settings.enabled)
+  const ops: ActionOp[] = ['trash', 'move', 'delete', ...(backup || defaultOp === 'restore' ? ['restore' as const] : [])]
   const [templateId, setTemplateId] = useState<number | ''>('')
   const [op, setOp] = useState<ActionOp>(defaultOp)
   const [destination, setDestination] = useState('Archive/{relDir}/{name}')
@@ -70,10 +73,10 @@ export function PlanDialog({ open, onClose, entryIds, filter, count, size, defau
           <>
             <Field label="Action">
               <div className="flex flex-wrap gap-2">
-                {(['trash', 'move', 'delete'] as ActionOp[]).map((o) => (
+                {ops.map((o) => (
                   <label key={o} className={`btn ${op === o ? 'btn-primary' : 'btn-secondary'} cursor-pointer`}>
                     <input type="radio" className="sr-only" checked={op === o} onChange={() => setOp(o)} />
-                    {o === 'trash' ? '🗑️ Move to trash' : o === 'move' ? '📦 Move / rename' : '⚠️ Delete permanently'}
+                    {o === 'trash' ? '🗑️ Move to trash' : o === 'move' ? '📦 Move / rename' : o === 'delete' ? '⚠️ Delete permanently' : "🛟 Replace with the backup's copy"}
                   </label>
                 ))}
               </div>
@@ -82,6 +85,13 @@ export function PlanDialog({ open, onClose, entryIds, filter, count, size, defau
               <Field label="Destination (relative to the root)" hint={<>Tokens: {config.data?.pathTokens.map((t) => `{${t}}`).join(' ')} — e.g. {'{mtime:yyyy}'}. A plain folder keeps the names.</>}>
                 <input className="input font-mono" value={destination} onChange={(e) => setDestination(e.target.value)} />
               </Field>
+            )}
+            {op === 'restore' && (
+              <p className="rounded-md bg-surface-2 p-2 text-sm muted">
+                Damaged files (other size or content than on the backup, or flagged by the integrity check) are replaced with the backup server's copy, checked
+                against its size and content hash. The damaged file goes to the trash, so the plan can be undone. Selected folders stand for the damaged files
+                inside them; files that are not damaged are listed but left out.
+              </p>
             )}
             {op === 'delete' && <p className="rounded-md bg-danger/10 p-2 text-sm text-danger">Permanent deletion cannot be undone. Prefer the trash unless space is needed right now.</p>}
           </>

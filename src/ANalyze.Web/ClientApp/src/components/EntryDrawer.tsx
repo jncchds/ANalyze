@@ -102,6 +102,8 @@ export function EntryDrawer({ preview, list }: { preview: EntryPreview; list?: n
   const cat = e?.categoryId ? catMap.get(e.categoryId) : undefined
   // Files the backup has get a side-by-side comparison with its copy.
   const onBackup = !!d?.backup && !d.backup.isDir && (d.backup.state === 'synced' || d.backup.state === 'corrupt')
+  // A damaged file the backup has a copy of can be replaced with it (a restore plan).
+  const restorable = !!e && !!d?.backup && !d.backup.isDir && d.backup.parentSize !== undefined && (d.backup.state === 'corrupt' || !!e.corruptAt)
   const tabs = e && !e.isDir ? [...previewTabs(e), ...(onBackup ? [{ id: 'backup', label: 'Compare with backup' }] : [])] : []
   const shown = tabs.some((t) => t.id === tab) ? tab : 'preview'
 
@@ -190,6 +192,14 @@ export function EntryDrawer({ preview, list }: { preview: EntryPreview; list?: n
                 {d.backup && (
                   <div className={clsx('text-xs', d.backup.state === 'synced' ? 'text-accent' : d.backup.state === 'corrupt' ? 'text-danger' : 'text-amber')}>
                     🛟 {backupText(d.backup, e.size)}
+                    {restorable && (
+                      <>
+                        {' '}
+                        <button className="link" disabled={d.root?.readOnly} onClick={() => plan.open('restore')} title={d.root?.readOnly ? 'Root is read-only' : undefined}>
+                          Replace with the backup's copy…
+                        </button>
+                      </>
+                    )}
                   </div>
                 )}
                 {!e.isDir && e.hashedAt && !e.corruptAt && <div className="text-xs muted">Content hash checked {date(e.hashedAt)}</div>}
@@ -253,7 +263,18 @@ export function EntryDrawer({ preview, list }: { preview: EntryPreview; list?: n
           )}
         </div>
       </aside>
-      {e && <PlanDialog open={plan.value !== null} onClose={plan.close} entryIds={[e.id]} count={1} size={e.size} />}
+      {e && (
+        <PlanDialog
+          key={plan.value === 'restore' ? 'restore' : 'plan'}
+          open={plan.value !== null}
+          onClose={plan.close}
+          entryIds={[e.id]}
+          count={1}
+          size={e.size}
+          defaultOp={plan.value === 'restore' ? 'restore' : undefined}
+          title={plan.value === 'restore' ? "Replace with the backup's copy" : undefined}
+        />
+      )}
     </>
   )
 }

@@ -177,7 +177,7 @@ export default function PlanPage() {
                   {i.isDir ? '📁 ' : ''}
                   {i.sourcePath}
                 </div>
-                {i.targetPath && <div className="break-all text-xs text-accent">→ {i.targetPath}</div>}
+                {i.targetPath && <div className="break-all text-xs text-accent">{i.op === 'restore' ? '← from ' : '→ '}{i.targetPath}</div>}
                 {i.keepPath && (
                   <div className="break-all text-xs muted">
                     {i.op === 'hardlink' ? 'linked to' : 'kept copy:'} {i.keepPath}

@@ -60,6 +60,8 @@ public sealed class PlanExecutor(
     SettingsStore settings,
     ScanService scanner,
     JobBoard board,
+    IEnumerable<IBackupSource> backups,
+    IEnumerable<IHashListener> hashListeners,
     ILogger<PlanExecutor> log)
 {
     public async Task RunAsync(PlanJob job, CancellationToken ct)
@@ -72,7 +74,7 @@ public sealed class PlanExecutor(
         }
 
         var items = job.Undo
-            ? plan.Items.Where(i => i.Status == ItemStatus.Done && i.Op is ActionOp.Trash or ActionOp.Move).ToList()
+            ? plan.Items.Where(i => i.Status == ItemStatus.Done && i.Op is ActionOp.Trash or ActionOp.Move or ActionOp.Restore).ToList()
             : plan.Items.Where(i => i.Included && i.Status == ItemStatus.Pending).ToList();
         var title = (job.Undo ? "Undo: " : "") + plan.Name;
         var started = DateTimeOffset.UtcNow;
@@ -83,6 +85,8 @@ public sealed class PlanExecutor(
         var writable = items.Select(i => i.RootId).Distinct().ToDictionary(r => r, roots.IsWritable);
         long done = 0, bytes = 0, failed = 0, skipped = 0;
         var rescan = new HashSet<(int Root, string Dir)>();
+        // Files whose content an item replaced: the backup comparison re-checks them (IHashListener).
+        var replaced = new List<long>();
         var cancelled = false;
         using var conn = sqlite.Open();
 
@@ -122,12 +126,12 @@ public sealed class PlanExecutor(
 
                 if (job.Undo)
                 {
-                    Undo(item, conn, rescan);
+                    Undo(item, conn, rescan, replaced);
                     item.Status = ItemStatus.Undone;
                 }
                 else
                 {
-                    await ApplyAsync(plan, item, conn, rescan, ct);
+                    await ApplyAsync(plan, item, conn, rescan, replaced, ct);
                     item.Status = ItemStatus.Done;
                     bytes += item.ExpectedSize;
                 }
@@ -173,6 +177,21 @@ public sealed class PlanExecutor(
         plan.Message = $"{done - failed - skipped} done, {skipped} skipped, {failed} failed" + (cancelled ? " (cancelled)" : "");
         await db.SaveChangesAsync(CancellationToken.None);
 
+        if (replaced.Count > 0)
+        {
+            foreach (var l in hashListeners)
+            {
+                try
+                {
+                    l.OnHashed(conn, replaced);
+                }
+                catch (Exception e) when (e is Microsoft.Data.Sqlite.SqliteException or InvalidOperationException)
+                {
+                    log.LogWarning(e, "Re-check after plan {Plan} failed", plan.Id);
+                }
+            }
+        }
+
         // Bring the index up to date for folders that received files.
         foreach (var (root, dir) in Minimal(rescan))
         {
@@ -190,7 +209,7 @@ public sealed class PlanExecutor(
         Report(cancelled ? JobStates.Cancelled : JobStates.Completed, message: plan.Message);
     }
 
-    private async Task ApplyAsync(ActionPlan plan, ActionItem item, Microsoft.Data.Sqlite.SqliteConnection conn, HashSet<(int, string)> rescan, CancellationToken ct)
+    private async Task ApplyAsync(ActionPlan plan, ActionItem item, Microsoft.Data.Sqlite.SqliteConnection conn, HashSet<(int, string)> rescan, List<long> replaced, CancellationToken ct)
     {
         var root = roots.Require(item.RootId);
         var src = RootRegistry.Combine(root.Path, item.SourcePath);
@@ -266,6 +285,11 @@ public sealed class PlanExecutor(
                 break;
             }
 
+            case ActionOp.Restore:
+                await RestoreAsync(plan, item, root.Path, src, st, conn, ct);
+                replaced.Add(item.EntryId!.Value);
+                break;
+
             case ActionOp.Hardlink:
             {
                 var keepRoot = roots.Require(item.KeepRootId ?? item.RootId);
@@ -295,6 +319,114 @@ public sealed class PlanExecutor(
                 }
 
                 break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Replaces a damaged file with the backup's copy: the copy is downloaded next to it and checked (size, and content hash when the
+    /// backup has one), gets the owner, permissions and modification time of the file it replaces, then the damaged file goes to the
+    /// trash (so the plan can be undone) and the copy takes its place.
+    /// </summary>
+    private async Task RestoreAsync(ActionPlan plan, ActionItem item, string rootPath, string src, FileStat st, Microsoft.Data.Sqlite.SqliteConnection conn, CancellationToken ct)
+    {
+        if (item.EntryId is not { } id || item.IsDir || !st.IsRegular)
+        {
+            throw new SkipException("Only files can be restored");
+        }
+
+        IBackupSource? source = null;
+        BackupCopy? copy = null;
+        foreach (var b in backups)
+        {
+            if ((await b.FindAsync([id], ct)).TryGetValue(id, out var c))
+            {
+                (source, copy) = (b, c);
+                break;
+            }
+        }
+
+        if (source is null || copy is null)
+        {
+            throw new SkipException("The backup does not have this file (any more)");
+        }
+
+        var tmp = Path.Combine(Path.GetDirectoryName(src)!, $".{Path.GetFileName(src)}.analyze-restore-{Guid.NewGuid():N}");
+        try
+        {
+            string hash;
+            long written = 0;
+            await using (var input = await source.OpenAsync(id, ct))
+            await using (var output = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.Asynchronous))
+            {
+                var h = new System.IO.Hashing.XxHash128();
+                var buf = new byte[1 << 20];
+                int n;
+                while ((n = await input.ReadAsync(buf, ct)) > 0)
+                {
+                    h.Append(buf.AsSpan(0, n));
+                    await output.WriteAsync(buf.AsMemory(0, n), ct);
+                    written += n;
+                }
+
+                await output.FlushAsync(ct);
+                hash = Convert.ToHexStringLower(h.GetCurrentHash());
+            }
+
+            if (written != copy.Size)
+            {
+                throw new SkipException($"The backup's copy has {written:N0} bytes, not {copy.Size:N0} as at the last comparison: compare the backup again");
+            }
+
+            if (copy.Hash is not null && copy.Hash != hash)
+            {
+                throw new SkipException("The downloaded copy does not match the backup's content hash");
+            }
+
+            // Like the file it replaces.
+            if (st.Uid >= 0)
+            {
+                Native.SetOwner(tmp, st.Uid, st.Gid);
+            }
+
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(tmp, File.GetUnixFileMode(src));
+            }
+
+            File.SetLastWriteTimeUtc(tmp, File.GetLastWriteTimeUtc(src));
+
+            var dest = RootRegistry.TrashPath(rootPath, plan.Id, item.SourcePath);
+            if (Path.Exists(dest))
+            {
+                throw new SkipException("The trash of this plan already holds a file at that path");
+            }
+
+            Native.CreateDirectoryLikeParent(Path.GetDirectoryName(dest)!);
+            MovePath(src, dest, isDir: false, overwrite: false);
+            try
+            {
+                File.Move(tmp, src);
+            }
+            catch
+            {
+                MovePath(dest, src, isDir: false, overwrite: false);
+                throw;
+            }
+
+            item.UndoPath = Path.GetRelativePath(rootPath, dest).Replace('\\', '/');
+            var after = Native.LStat(src);
+            EntryMaintenance.UpdateContent(conn, id, after, Hashing.QuickHash(src, after.Size), hash);
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(tmp);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // best effort
             }
         }
     }
@@ -332,7 +464,7 @@ public sealed class PlanExecutor(
         }
     }
 
-    private void Undo(ActionItem item, Microsoft.Data.Sqlite.SqliteConnection conn, HashSet<(int, string)> rescan)
+    private void Undo(ActionItem item, Microsoft.Data.Sqlite.SqliteConnection conn, HashSet<(int, string)> rescan, List<long> replaced)
     {
         var root = roots.Require(item.RootId);
         if (item.UndoPath is null)
@@ -345,6 +477,13 @@ public sealed class PlanExecutor(
         if (!Path.Exists(from))
         {
             throw new SkipException("The moved/trashed copy is gone (trash emptied?)");
+        }
+
+        if (item.Op == ActionOp.Restore)
+        {
+            UndoRestore(item, from, to, root.Path, conn);
+            replaced.Add(item.EntryId!.Value);
+            return;
         }
 
         if (Path.Exists(to))
@@ -368,6 +507,32 @@ public sealed class PlanExecutor(
             {
                 EntryMaintenance.DeleteEntry(conn, goneId);
             }
+        }
+    }
+
+    /// <summary>
+    /// Puts the damaged file back in place of the backup's copy, unless the copy was changed since (it carries the damaged file's
+    /// modification time until then). The file is hashed again by the background hashing.
+    /// </summary>
+    private static void UndoRestore(ActionItem item, string from, string to, string rootPath, Microsoft.Data.Sqlite.SqliteConnection conn)
+    {
+        if (File.Exists(to))
+        {
+            if (File.GetLastWriteTimeUtc(to) != File.GetLastWriteTimeUtc(from))
+            {
+                throw new SkipException("The restored file was changed since; it is left as it is");
+            }
+
+            File.Delete(to);
+        }
+
+        Native.CreateDirectoryLikeParent(Path.GetDirectoryName(to)!);
+        MovePath(from, to, isDir: false, overwrite: false);
+        PruneEmptyParents(Path.GetDirectoryName(from)!, rootPath);
+        if (item.EntryId is { } id)
+        {
+            var st = Native.LStat(to);
+            EntryMaintenance.UpdateContent(conn, id, st, Hashing.QuickHash(to, st.Size), fullHash: null);
         }
     }
 

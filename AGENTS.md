@@ -191,9 +191,18 @@ kept copy), then:
 - **Delete**: remove file or folder.
 - **Move**: create parents (owner copied from the parent folder), `File.Move` (copy+delete across filesystems, owner restored), directory copy fallback.
 - **Hardlink**: `link(keep, tmp)` then atomic rename over the duplicate (same device only).
+- **Restore**: replace a damaged file with the backup's copy through `Scanner.IBackupSource` (implemented by the parent integration,
+  `BackupRestoreSource`: `FindAsync` from `BackupFiles`, `DamagedAsync` = corrupt there or `CorruptAt` set, `OpenAsync` streams the parent's
+  `/backup/content`). The copy is downloaded to `.<name>.analyze-restore-<guid>` next to the file while hashing it (XxHash128), checked
+  against the backup's size and `ParentHash`, given the replaced file's owner, mode and mtime; then the damaged file is renamed into the
+  trash (like Trash) and the copy over its path. The entry gets the new size, identity, hashes and no `CorruptAt`
+  (`EntryMaintenance.UpdateContent`), and the `IHashListener`s re-check it (the backup state becomes synced). Undo deletes the copy unless it
+  was changed since (its mtime still equals the trashed file's), moves the damaged file back and clears its hash for re-hashing. Plans:
+  `PlanBuilder` with `ActionOp.Restore` (folders stand for the damaged files inside; not damaged, identical, not on the backup → excluded
+  with a warning; `TargetPath` = the copy's location for display), or `POST /plans/restore-damaged` for every damaged file.
 
 The index is updated directly (`EntryMaintenance.DeleteEntry`, `UpdateIdentity`) and folders that received files are rescanned as subtrees.
-Undo moves items back, prunes folders left empty, and drops the moved copies from the index.
+Undo moves items back (trash, move, restore), prunes folders left empty, and drops the moved copies from the index.
 
 ## Safety rules
 

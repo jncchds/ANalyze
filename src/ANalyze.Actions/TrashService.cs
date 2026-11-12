@@ -20,7 +20,7 @@ public sealed class TrashService(IDbContextFactory<AnalyzeDbContext> dbf, RootRe
         await using var db = await dbf.CreateDbContextAsync(ct);
         var retention = settings.Current.TrashRetentionDays;
         var rows = await db.ActionItems.AsNoTracking()
-            .Where(i => i.Op == ActionOp.Trash && i.Status == ItemStatus.Done)
+            .Where(i => (i.Op == ActionOp.Trash || i.Op == ActionOp.Restore) && i.Status == ItemStatus.Done)
             .GroupBy(i => i.PlanId)
             .Select(g => new { PlanId = g.Key, Items = g.LongCount(), Bytes = g.Sum(i => i.ExpectedSize) })
             .ToListAsync(ct);

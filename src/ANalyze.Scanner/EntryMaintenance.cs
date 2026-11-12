@@ -62,6 +62,43 @@ public static class EntryMaintenance
         ScanService.RecomputeAncestors(conn, dirId);
     }
 
+    /// <summary>
+    /// Records new content of a file put in place by an action (a restore from the backup, or its undo): size, identity and times
+    /// from <paramref name="st"/>, the quick hash, and the full hash when known (null: the background hashing computes it again).
+    /// Clears the "possibly corrupted" flag and refreshes the folder sizes above it.
+    /// </summary>
+    public static void UpdateContent(SqliteConnection conn, long entryId, ANalyze.Infrastructure.FileStat st, long quickHash, string? fullHash)
+    {
+        using (var u = conn.CreateCommand())
+        {
+            u.CommandText = """
+                UPDATE Entries SET Size = $s, AllocSize = $a, TotalSize = $s, TotalAlloc = $a, MTime = $m, CTime = $c, Inode = $i, Dev = $d,
+                    NLink = $n, QuickHash = $q, FullHash = $f, HashedAt = CASE WHEN $f IS NULL THEN NULL ELSE $now END, CorruptAt = NULL
+                WHERE Id = $id
+                """;
+            u.Parameters.AddWithValue("$s", st.Size);
+            u.Parameters.AddWithValue("$a", st.AllocSize);
+            u.Parameters.AddWithValue("$m", st.MTime);
+            u.Parameters.AddWithValue("$c", st.CTime);
+            u.Parameters.AddWithValue("$i", st.Inode);
+            u.Parameters.AddWithValue("$d", st.Dev);
+            u.Parameters.AddWithValue("$n", st.NLink);
+            u.Parameters.AddWithValue("$q", quickHash);
+            u.Parameters.AddWithValue("$f", (object?)fullHash ?? DBNull.Value);
+            u.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            u.Parameters.AddWithValue("$id", entryId);
+            u.ExecuteNonQuery();
+        }
+
+        using var q = conn.CreateCommand();
+        q.CommandText = "SELECT ParentId FROM Entries WHERE Id = $id";
+        q.Parameters.AddWithValue("$id", entryId);
+        if (q.ExecuteScalar() is long parent)
+        {
+            RecomputeDir(conn, parent);
+        }
+    }
+
     /// <summary>Refreshes inode/link data of a file after it was replaced by a hard link.</summary>
     public static void UpdateIdentity(SqliteConnection conn, long entryId, long inode, long dev, int nlink, long mtime)
     {

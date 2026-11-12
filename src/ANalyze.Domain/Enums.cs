@@ -73,6 +73,8 @@ public enum ActionOp
     Move,
     /// <summary>Replace a duplicate with a hard link to the kept copy.</summary>
     Hardlink,
+    /// <summary>Replace a damaged file with its copy on the backup server; the damaged file goes to the trash (undoable).</summary>
+    Restore,
 }
 
 public enum ConflictPolicy

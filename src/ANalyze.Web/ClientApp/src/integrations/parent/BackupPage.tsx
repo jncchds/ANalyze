@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Link } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { api } from '../../api/client'
@@ -431,6 +431,12 @@ function Files({ state }: { state: FileState }) {
   const [q, setQParam] = useUrlParam('q')
   const setQ = (v: string) => setQParam(v, { replace: true })
   const [preview, open] = useFilePreview()
+  const navigate = useNavigate()
+  // Every damaged file (corrupt here, or flagged by the integrity check) replaced with the backup's copy: a draft plan to review.
+  const restore = useMutation({
+    mutationFn: () => api<{ id: number }>('/plans/restore-damaged', { method: 'POST', json: {} }),
+    onSuccess: (p) => navigate(`/actions/${p.id}`),
+  })
   const totals = useQuery({
     queryKey: ['parent', 'files', state, q, 'totals'],
     queryFn: () => api<{ total: number; totalSize: number }>('/integrations/parent/files', { query: { state, q, limit: 1 } }),
@@ -445,7 +451,18 @@ function Files({ state }: { state: FileState }) {
             {count(totals.data.total)} files · {bytes(totals.data.totalSize)}
           </span>
         )}
+        {state === 'corrupt' && (
+          <button
+            className="btn-primary ml-auto"
+            disabled={restore.isPending || !totals.data?.total}
+            onClick={() => restore.mutate()}
+            title="Creates a plan to review: each damaged file is replaced with the backup's copy (checked against its size and hash), the damaged one goes to the trash"
+          >
+            🛟 Replace all with the backup's copy…
+          </button>
+        )}
       </div>
+      {restore.error && <ErrorBox error={restore.error} />}
       <div className="card px-3 py-1">
         <FileList state={state} q={q} onOpen={open} />
       </div>
