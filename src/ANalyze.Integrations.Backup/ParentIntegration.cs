@@ -45,6 +45,7 @@ public sealed class ParentIntegration(
 {
     public const string SnapshotKey = "backup:parent";
     public const string IntegrationId = "parent";
+    public const string NotBackupsKey = "notBackups";
 
     public string Id => IntegrationId;
 
@@ -72,6 +73,8 @@ public sealed class ParentIntegration(
         new("token", "Parent API token", "password", "The parent's ANalyze__ApiToken. Needed when the parent has a password."),
         new("mappings", "Path mappings", "mappings",
             "Parent path → path here, e.g. /backup/nas1 → /library. Leave empty when the backup has the same paths; otherwise it is detected from sample files (\"Suggest\" fills it in)."),
+        new(NotBackupsKey, "Not backups of each other", "mappings",
+            "Parent folder → folder here that the comparison must never match (nothing below one is compared with anything below the other). The Backup page adds pairs with \"Not a backup of this\"."),
         IntegrationHttp.AllowInvalidCertificate(),
     ];
 
@@ -135,7 +138,7 @@ public sealed class ParentIntegration(
             };
 
         using var conn = sqlite.Open();
-        var result = await new BackupSync(conn, roots).RunAsync(info, settings.GetMappings("mappings"), fetch, progress, ct,
+        var result = await new BackupSync(conn, roots, settings.GetMappings(NotBackupsKey)).RunAsync(info, settings.GetMappings("mappings"), fetch, progress, ct,
             async c =>
             {
                 if (jobLock.ExclusiveWanted)
@@ -319,7 +322,8 @@ public sealed class ParentIntegration(
             matcher.Detect(page.Items.Where(f => !f.D).Take(200).Select(f => (prefix + "/" + f.P, f.S)), 200);
         }
 
-        return matcher.Detected.DistinctBy(m => m.From).ToList();
+        var notBackups = settings.GetMappings(NotBackupsKey);
+        return matcher.Detected.Where(m => !BackupSync.IsNotBackup(notBackups, m.From, m.To)).DistinctBy(m => m.From).ToList();
     }
 
     public void MapEndpoints(RouteGroupBuilder group) => BackupEndpoints.Map(group, this);

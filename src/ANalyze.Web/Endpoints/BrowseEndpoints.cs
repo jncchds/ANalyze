@@ -50,6 +50,13 @@ public static class BrowseEndpoints
             var ai = await db.AiResults.AsNoTracking().Where(r => r.EntryId == id).OrderByDescending(r => r.Id).FirstOrDefaultAsync(ct);
             // How this file compares with the parent ANalyze, when this instance is its backup.
             var backup = await db.BackupFiles.AsNoTracking().Where(b => b.EntryId == id).FirstOrDefaultAsync(ct);
+            // Draft plans that already have this entry, with the action they plan for it.
+            var planned = await (from i in db.ActionItems.AsNoTracking()
+                                 join p in db.ActionPlans.AsNoTracking() on i.PlanId equals p.Id
+                                 where i.EntryId == id && p.Status == PlanStatus.Draft
+                                 orderby p.Id descending
+                                 select new { planId = p.Id, planName = p.Name, itemId = i.Id, op = i.Op, i.Included, i.TargetPath, i.KeepPath, i.Warning })
+                .Take(10).ToListAsync(ct);
             return Results.Ok(new
             {
                 entry = EntryDto.From(e),
@@ -61,6 +68,7 @@ public static class BrowseEndpoints
                 ai = ai is null ? null : new { ai.Id, ai.Category, ai.Tags, ai.Confidence, ai.Reason, ai.Applied, ai.Model },
                 backup = backup is null ? null : new { backup.State, backup.IsDir, backup.ParentSize, backup.Verified, backup.Children, backup.SyncedChildren },
                 annotations = (await AnnotationsFor(db, [id], ct)).GetValueOrDefault(id) ?? [],
+                planned,
             });
         });
 

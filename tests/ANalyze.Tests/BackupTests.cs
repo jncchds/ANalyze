@@ -283,4 +283,38 @@ public class BackupSyncTests
         Assert.Equal(4, result.Files[BackupStates.Synced]);
         Assert.Equal(2, result.SyncedFolders); // copy and copy/music
     }
+
+    [Fact]
+    public async Task Folders_marked_as_not_backups_are_never_matched()
+    {
+        await using var app = new TestApp();
+        using var http = app.CreateClient();
+        for (var i = 0; i < 4; i++)
+        {
+            Write(app.Library, $"copy/music/song{i}.mp3", new string('x', 100 + i));
+            Write(app.Library, $"copy/other/doc{i}.txt", new string('y', 50 + i));
+        }
+
+        await app.ScanAsync(http);
+        var files = Enumerable.Range(0, 4).Select(i => new ExportFile($"media/music/song{i}.mp3", 100 + i, 0))
+            .Concat(Enumerable.Range(0, 4).Select(i => new ExportFile($"media/other/doc{i}.txt", 50 + i, 0)))
+            .Prepend(new ExportFile("media/other", 206, 0, D: true)).Prepend(new ExportFile("media/music", 406, 0, D: true)).Prepend(new ExportFile("media", 612, 0, D: true)).ToList();
+        var info = new ExportInfo("ANalyze", "test", "nas1", BackupExport.HashAlgorithm, false, 0, [new ExportRoot(1, "/srv", "srv", 8, 0, 0, null)]);
+        using var conn = app.Services.GetRequiredService<SqliteSetup>().Open();
+        var roots = app.Services.GetRequiredService<RootRegistry>();
+        Task<BackupSyncResult> Run(params PathMapping[] notBackups) => new BackupSync(conn, roots, notBackups)
+            .RunAsync(info, [], (_, _, _) => Task.FromResult(new ExportPage(files, null)), new Progress<IntegrationProgress>(), CancellationToken.None);
+
+        // A sub-folder pair: everything else is still compared.
+        var result = await Run(new PathMapping("/srv/media/other", app.Library + "/copy/other"));
+        Assert.Equal(4, result.Files[BackupStates.Synced]);
+        Assert.Equal(4, result.Files[BackupStates.Unsynced]);
+
+        // The detected mapping itself: it is never used again, so nothing is backed up.
+        result = await Run(new PathMapping("/srv/media", app.Library + "/copy"));
+        Assert.Empty(result.Detected);
+        Assert.Equal(0, result.Files.GetValueOrDefault(BackupStates.Synced));
+        Assert.True(BackupSync.IsNotBackup([new PathMapping("/srv/media/", app.Library + "/copy")], "/srv/media/x", app.Library + "/copy/x"));
+        Assert.False(BackupSync.IsNotBackup([new PathMapping("/srv/media", app.Library + "/copy")], "/srv/mediaX", app.Library + "/copy"));
+    }
 }

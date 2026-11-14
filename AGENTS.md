@@ -199,7 +199,19 @@ kept copy), then:
   (`EntryMaintenance.UpdateContent`), and the `IHashListener`s re-check it (the backup state becomes synced). Undo deletes the copy unless it
   was changed since (its mtime still equals the trashed file's), moves the damaged file back and clears its hash for re-hashing. Plans:
   `PlanBuilder` with `ActionOp.Restore` (folders stand for the damaged files inside; not damaged, identical, not on the backup → excluded
-  with a warning; `TargetPath` = the copy's location for display), or `POST /plans/restore-damaged` for every damaged file.
+  with a warning; `TargetPath` = the copy's location for display), or `POST /plans/restore-damaged` for every damaged file (any `op`,
+  restore by default). The request's `Destination` of a restore is a `PathTemplate` (e.g. `{relDir}/~{name}`) for keeping the damaged
+  file instead of trashing it: expanded into `KeepPath` (same root, " (2)" on clashes with the disk or the plan); apply moves the file
+  there (its folder is rescanned, nothing goes to the trash, so such items don't count for trash bins), undo moves it back and drops it
+  from the index.
+
+Draft plans grow and change through `PlanBuilder.AddAsync` (`planId` on `POST /plans`, `/plans/from-filter`, `/plans/restore-damaged`):
+items are built like a new plan's (move targets with the plan's conflict policy, clashing with the plan's other targets), an entry the
+plan has already gets the new item instead, a new folder replaces the items inside it, a new item inside a folder of the plan is
+excluded with a warning. `POST /plans/{id}/items/change {ids | filter, q, op, destination}` re-plans items from their entries the same
+way. `GET /plans/{id}` adds `parents` (entry id → folder id) for Browse links; `GET /entries/{id}` adds `planned` (draft plans with
+the entry). UI: `PlanDialog` (plan picker, the last target remembered per tab in sessionStorage; `stay` keeps the file panel open;
+`ActionFields` + `useKeepLocal`, the keep template remembered in localStorage) and `PlanPage` (`ChangeAction`).
 
 The index is updated directly (`EntryMaintenance.DeleteEntry`, `UpdateIdentity`) and folders that received files are rescanned as subtrees.
 Undo moves items back (trash, move, restore), prunes folders left empty, and drops the moved copies from the index.
@@ -311,7 +323,12 @@ Hashes need not exist when the sync runs (it compares sizes where a hash is miss
 - hashed **here**: `BackupHashListener` (an `IHashListener`) re-checks every batch the background hashing stores;
 - hashed on the **parent**: `BackupHashRefresh` reads the parent's hash feed every 15 minutes from the cursors the last sync saved (the
   parent's clock at the sync's start), stores `ParentHash`/`ParentSize` and re-checks those files; older parents without a feed are skipped.
-The integration also syncs again after the processing that follows a scan (`SyncAfterProcessing`), which settles folder states. Plugin routes: `summary`, `folders?rootId&path` (the folder, its sub-folders, its direct
+The integration also syncs again after the processing that follows a scan (`SyncAfterProcessing`), which settles folder states.
+**Not backups of each other**: the `notBackups` field (mappings-shaped pairs parent folder → local folder, also added by
+`POST /integrations/parent/not-backup {parentPath, localPath}`, which saves the settings and starts a sync) is passed to `BackupSync`:
+a parent entry whose path and mapped local path lie inside a pair is not staged (counted as unmapped), a backed-up folder inside one
+is dropped, detected mappings inside one are discarded (also from `suggest-mappings`), and the sample check that triggers detection
+ignores them (`BackupSync.IsNotBackup`). `folders` returns the folder's `localPath`/`parentPath`, `summary` the pairs. Plugin routes: `summary`, `folders?rootId&path` (the folder, its sub-folders, its direct
 files by state), `files?state&rootId&path&direct&q&sort` (with the parent path, mapped back), `suggest-mappings`, `compare?entryId=` (POST start, GET poll, DELETE cancel). UI: `integrations/parent/BackupPage.tsx` (+ `ComparePanel.tsx`).
 
 **Why a file differs** ("What happened?" on a corrupt file): `BackupCompare` (singleton, results in memory, last 100) reads the local copy

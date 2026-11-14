@@ -25,7 +25,7 @@ export const STATUS_STYLE: Record<string, string> = {
   cancelled: 'bg-muted/10 text-muted',
 }
 
-const OP_LABEL: Record<string, string> = { trash: '🗑️ Trash', delete: '⚠️ Delete', move: '📦 Move', hardlink: '🔗 Hard link', restore: '🛟 Restore from backup' }
+export const OP_LABEL: Record<string, string> ={ trash: '🗑️ Trash', delete: '⚠️ Delete', move: '📦 Move', hardlink: '🔗 Hard link', restore: '🛟 Restore from backup' }
 
 export default function Actions() {
   const [tab, setTab] = useUrlEnum('tab', ['plans', 'trash'] as const, 'plans')

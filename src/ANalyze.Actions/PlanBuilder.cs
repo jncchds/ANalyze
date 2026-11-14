@@ -6,6 +6,10 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ANalyze.Actions;
 
+/// <summary>
+/// A selection to plan. <see cref="Destination"/> is the move target template; for a restore it is where the local file is kept
+/// instead of going to the trash (e.g. <c>{relDir}/~{name}</c>; null = the trash).
+/// </summary>
 public sealed record ManualPlanRequest(
     string? Name,
     ActionOp Op,
@@ -24,12 +28,87 @@ public sealed record DedupePlanRequest(
     string? PathPrefix,
     long MinSize = 0);
 
+/// <summary>What adding a selection to a plan did: items now in the plan, items added, items they replaced.</summary>
+public sealed record PlanAddResult(int Id, string Name, int Items, int Added, int Replaced);
+
 /// <summary>Builds draft plans. Nothing touches the disk until a plan is applied.</summary>
 public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootRegistry roots, IEnumerable<IBackupSource> backups)
 {
     public const int MaxItems = 200_000;
 
     public async Task<ActionPlan> CreateAsync(ManualPlanRequest req, CancellationToken ct)
+    {
+        Validate(req);
+        await using var db = await dbf.CreateDbContextAsync(ct);
+        var items = await BuildItemsAsync(db, req, req.Conflict, new HashSet<string>(StringComparer.Ordinal), ct);
+        var plan = new ActionPlan
+        {
+            Name = string.IsNullOrWhiteSpace(req.Name) ? DefaultName(req.Op, items.Count) : req.Name.Trim(),
+            Source = req.Source,
+            Status = PlanStatus.Draft,
+            Conflict = req.Conflict,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        plan.Items.AddRange(items);
+        await MarkInUseAsync(db, plan.Items, ct);
+        db.ActionPlans.Add(plan);
+        await db.SaveChangesAsync(ct);
+        return plan;
+    }
+
+    /// <summary>
+    /// Adds a selection to a draft plan. An entry the plan already has gets the new action instead (this is also how an item's action
+    /// is changed); a new folder replaces the plan's items inside it, and a new item inside a folder the plan already covers is left
+    /// out with a warning. Move targets follow the plan's conflict policy.
+    /// </summary>
+    public async Task<PlanAddResult> AddAsync(int planId, ManualPlanRequest req, CancellationToken ct)
+    {
+        Validate(req);
+        await using var db = await dbf.CreateDbContextAsync(ct);
+        var plan = await db.ActionPlans.Include(p => p.Items).FirstOrDefaultAsync(p => p.Id == planId, ct)
+            ?? throw new KeyNotFoundException($"Plan {planId} not found.");
+        if (plan.Status != PlanStatus.Draft)
+        {
+            throw new InvalidOperationException("Only draft plans can be changed.");
+        }
+
+        var selected = req.EntryIds.ToHashSet();
+        bool Kept(ActionItem i) => !(i.EntryId is { } e && selected.Contains(e));
+        var taken = plan.Items.Where(i => i.Op == ActionOp.Move && i.TargetPath is not null && Kept(i)).Select(i => i.TargetPath!)
+            .Concat(plan.Items.Where(i => i.Op == ActionOp.Restore && i.KeepPath is not null && Kept(i)).Select(i => i.KeepPath!))
+            .ToHashSet(StringComparer.Ordinal);
+
+        var items = await BuildItemsAsync(db, req, plan.Conflict, taken, ct);
+        var ids = items.Where(i => i.EntryId is not null).Select(i => i.EntryId!.Value).Concat(selected).ToHashSet();
+        var dirs = items.Where(i => i.IsDir).Select(i => (i.RootId, i.SourcePath)).ToList();
+        var replaced = plan.Items
+            .Where(i => (i.EntryId is { } e && ids.Contains(e)) || dirs.Any(d => d.RootId == i.RootId && Inside(i.SourcePath, d.SourcePath)))
+            .ToList();
+        foreach (var r in replaced)
+        {
+            plan.Items.Remove(r);
+            db.ActionItems.Remove(r);
+        }
+
+        var covering = plan.Items.Where(i => i.IsDir).ToList();
+        foreach (var item in items)
+        {
+            if (covering.FirstOrDefault(d => d.RootId == item.RootId && Inside(item.SourcePath, d.SourcePath)) is { } d)
+            {
+                item.Included = false;
+                item.Warning = $"Inside {d.SourcePath}, which this plan already covers ({d.Op.ToString().ToLowerInvariant()})";
+            }
+        }
+
+        await MarkInUseAsync(db, items, ct);
+        plan.Items.AddRange(items);
+        await db.SaveChangesAsync(ct);
+        return new PlanAddResult(plan.Id, plan.Name, plan.Items.Count, items.Count, replaced.Count);
+    }
+
+    private static bool Inside(string path, string dir) => dir.Length == 0 || path.StartsWith(dir + "/", StringComparison.Ordinal);
+
+    private static void Validate(ManualPlanRequest req)
     {
         if (req.Op == ActionOp.Hardlink)
         {
@@ -45,8 +124,11 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
         {
             throw new ArgumentException($"Too many items (max {MaxItems}).");
         }
+    }
 
-        await using var db = await dbf.CreateDbContextAsync(ct);
+    /// <summary>The items for a selection, not yet in a plan. <paramref name="taken"/> holds paths other items of the plan will create.</summary>
+    private async Task<List<ActionItem>> BuildItemsAsync(AnalyzeDbContext db, ManualPlanRequest req, ConflictPolicy conflict, HashSet<string> taken, CancellationToken ct)
+    {
         var categories = await db.Categories.AsNoTracking().ToDictionaryAsync(c => c.Id, c => c.Name, ct);
         var entries = new List<Entry>(req.EntryIds.Count);
         foreach (var chunk in req.EntryIds.Distinct().Chunk(5000))
@@ -69,16 +151,7 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
             }
         }
 
-        var plan = new ActionPlan
-        {
-            Name = string.IsNullOrWhiteSpace(req.Name) ? DefaultName(req.Op, entries.Count) : req.Name.Trim(),
-            Source = req.Source,
-            Status = PlanStatus.Draft,
-            Conflict = req.Conflict,
-            CreatedAt = DateTimeOffset.UtcNow,
-        };
-
-        var targets = new HashSet<string>(StringComparer.Ordinal);
+        var items = new List<ActionItem>(entries.Count);
         foreach (var e in entries)
         {
             var item = new ActionItem
@@ -92,14 +165,18 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
                 ExpectedMTime = e.MTime,
             };
 
+            var facts = new TemplateFacts(e.Name, e.RelPath, e.Ext, e.CategoryId is { } c && categories.TryGetValue(c, out var n) ? n : null, e.Kind.ToString(), e.MTime, e.IsDir ? e.TotalSize : e.Size);
             if (req.Op == ActionOp.Restore)
             {
                 CheckRestore(item, e, copies.GetValueOrDefault(e.Id));
+                if (!string.IsNullOrWhiteSpace(req.Destination) && !e.IsDir)
+                {
+                    KeepLocal(item, req.Destination, facts, taken);
+                }
             }
 
             if (req.Op == ActionOp.Move)
             {
-                var facts = new TemplateFacts(e.Name, e.RelPath, e.Ext, e.CategoryId is { } c && categories.TryGetValue(c, out var n) ? n : null, e.Kind.ToString(), e.MTime, e.IsDir ? e.TotalSize : e.Size);
                 var dest = req.Destination!;
                 // A plain folder ("Archive/old") means "move into it, keep the name".
                 if (!dest.Contains('{'))
@@ -119,18 +196,60 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
 
                 if (item.TargetPath is { } t)
                 {
-                    ResolveTarget(item, t, req.Conflict, targets);
+                    ResolveTarget(item, t, conflict, taken);
                 }
             }
 
             MarkReadOnly(item);
-            plan.Items.Add(item);
+            items.Add(item);
         }
 
-        await MarkInUseAsync(db, plan.Items, ct);
-        db.ActionPlans.Add(plan);
-        await db.SaveChangesAsync(ct);
-        return plan;
+        return items;
+    }
+
+    /// <summary>
+    /// A restore that keeps the local file: it is moved to the expanded template (e.g. <c>{relDir}/~{name}</c>) instead of the trash.
+    /// A path that exists already (on disk or in the plan) gets a " (2)" suffix.
+    /// </summary>
+    private void KeepLocal(ActionItem item, string template, TemplateFacts facts, HashSet<string> taken)
+    {
+        string keep;
+        try
+        {
+            keep = PathTemplate.Expand(template, facts);
+        }
+        catch (ArgumentException ex)
+        {
+            item.Included = false;
+            item.Warning = ex.Message;
+            return;
+        }
+
+        if (keep == item.SourcePath)
+        {
+            item.Included = false;
+            item.Warning = "The kept copy would take the file's own place";
+            return;
+        }
+
+        var root = roots.Get(item.RootId);
+        bool Exists(string rel) => taken.Contains(rel) || (root is not null && Path.Exists(RootRegistry.Combine(root.Path, rel)));
+        if (Exists(keep))
+        {
+            var n = 2;
+            var candidate = PathTemplate.WithSuffix(keep, n);
+            while (Exists(candidate) && n < 10_000)
+            {
+                candidate = PathTemplate.WithSuffix(keep, ++n);
+            }
+
+            keep = candidate;
+            item.Warning ??= "Kept copy renamed to avoid a name clash";
+        }
+
+        item.KeepPath = keep;
+        item.KeepRootId = item.RootId;
+        taken.Add(keep);
     }
 
     /// <summary>

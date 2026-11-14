@@ -1,6 +1,13 @@
 # Release Notes
 
-## v0.1.12 — 2026-11-12
+## v0.1.12 — 2026-11-14
+
+- feat: add a selection to an existing draft plan from the Clean up… dialog, next to creating a new one (the last plan used is preselected); a file the plan already has gets the new action
+- feat: planning from the file panel keeps the panel open, so damaged files can be compared and planned one by one (‹ › or ← →); the panel shows which draft plan has the file and its planned action, with Change…
+- feat: "Replace with the backup's copy" can keep the local file instead of trashing it, as `{relDir}/~{name}` by default (any path template; the choice is remembered); undo puts it back
+- feat: damaged files can get any action, not just the backup's copy: "Another action for all…" on the Backup page's Corrupted tab, "another action…" in the file panel
+- feat: change the action of a plan item, or of every item shown, on the plan's review page; "Show" opens each item's file in Browse
+- feat: "Not a backup of this" on the Backup page (backed-up folders, the folder view, "Wrong match" on detected mappings): the folders are never matched again (listed as "Not backups of each other" in the integration's settings) and the comparison runs again
 
 - feat: "Replace with the backup's copy" repairs damaged files from the backup server: on the Backup page's Corrupted tab (all of them), next to a corrupted file in the file panel, or as an action in Clean up… (selections, searches, folders). Each copy is downloaded next to the file and checked against the backup's size and content hash, keeps the owner, permissions and date of the file it replaces, and the damaged file goes to the trash, so the plan can be undone
 - feat: every view has its own URL, so the browser's Back and Forward buttons work everywhere: tabs, filters, sorting, pages, the map/list view, opened titles and dialogs (cleanup, dedupe, rule/category/template editors), the file panel with its tab, the Backup folder you are in and opened comparisons. Back closes a dialog or the file panel instead of leaving the page, and a reload or bookmark reopens the same view

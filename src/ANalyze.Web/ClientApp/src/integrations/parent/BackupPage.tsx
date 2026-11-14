@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Link, useNavigate } from 'react-router'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { Link } from 'react-router'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { api } from '../../api/client'
 import { BarList } from '../../components/charts'
 import { EntryDrawer } from '../../components/EntryDrawer'
 import { PathText } from '../../components/PathText'
-import { Empty, ErrorBox, Loading, PageTitle, Section, ShareBar, Stat, Tabs } from '../../components/ui'
+import { PlanDialog } from '../../components/PlanDialog'
+import { ConfirmButton, Empty, ErrorBox, Loading, PageTitle, Section, ShareBar, Stat, Tabs } from '../../components/ui'
 import { useLocate } from '../../hooks/useLocate'
-import { useEntryPreview, useUrlEnum, useUrlNumber, useUrlParam, useUrlParams } from '../../hooks/useUrlState'
+import { useEntryPreview, useUrlEnum, useUrlNumber, useUrlOverlay, useUrlParam, useUrlParams } from '../../hooks/useUrlState'
 import { ago, bytes, count, pct } from '../../lib/format'
 import { ComparePanel } from './ComparePanel'
 
@@ -46,6 +47,38 @@ interface Summary {
   folders: { total: number; synced: number }
   threshold: number
   local: { hashAllFiles: boolean }
+  /** Folder pairs (backup → here) that are never matched. */
+  notBackups: { from: string; to: string }[]
+}
+
+/** "These folders are not backups of each other": stored with the integration's settings, then compared again. */
+function useNotBackup() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (pair: { parentPath: string; localPath: string }) => api<{ syncing: boolean }>('/integrations/parent/not-backup', { method: 'POST', json: pair }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['parent'] })
+      qc.invalidateQueries({ queryKey: ['integrations'] })
+    },
+  })
+}
+
+function NotBackupButton({ parentPath, localPath, label = 'Not a backup of this' }: { parentPath: string; localPath: string; label?: string }) {
+  const m = useNotBackup()
+  if (m.isSuccess) return <span className="text-xs muted">Never matched again{m.data.syncing ? ' — comparing again…' : ' — compare again to apply'}</span>
+  return (
+    <>
+      <ConfirmButton
+        className="btn-ghost px-2 py-0.5 text-xs"
+        confirmLabel="Never match these folders?"
+        disabled={m.isPending}
+        onConfirm={() => m.mutate({ parentPath, localPath })}
+      >
+        {label}
+      </ConfirmButton>
+      {m.error && <ErrorBox error={m.error} />}
+    </>
+  )
 }
 
 interface FolderRow {
@@ -63,6 +96,9 @@ interface FolderView {
   self?: Omit<FolderRow, 'name' | 'path'>
   folders: FolderRow[]
   files: { state: FileState; files: number; size: number }[]
+  /** This folder's full path here and where the comparison looks for it on the backup. */
+  localPath?: string
+  parentPath?: string
 }
 
 interface FileRow {
@@ -150,8 +186,22 @@ export default function BackupPage() {
         )}
         {snap.detected.length > 0 && (
           <Notice muted>
-            Paths were detected from sample files: {snap.detected.map((m) => `${m.from} → ${m.to}`).join(', ')}. Save them as path mappings on the{' '}
-            <Link to="/integrations" className="link">Integrations</Link> page to make them permanent.
+            Paths were detected from sample files:{' '}
+            {snap.detected.map((m) => (
+              <span key={m.from + m.to} className="mr-2 inline-flex flex-wrap items-center gap-1">
+                <span className="font-mono">
+                  {m.from} → {m.to}
+                </span>
+                <NotBackupButton parentPath={m.from} localPath={m.to} label="Wrong match" />
+              </span>
+            ))}
+            . Save them as path mappings on the <Link to="/integrations" className="link">Integrations</Link> page to make them permanent.
+          </Notice>
+        )}
+        {s.notBackups?.length > 0 && (
+          <Notice muted>
+            Never matched (not backups of each other): {s.notBackups.map((m) => `${m.from} ↮ ${m.to}`).join(', ')}. Edit the list on the{' '}
+            <Link to="/integrations" className="link">Integrations</Link> page.
           </Notice>
         )}
         {s.targets?.some((t) => !t.entryId) && (
@@ -196,9 +246,12 @@ export default function BackupPage() {
                 </div>
                 <PathText path={t.localPath} label="ANalyze checks" className="muted" />
                 {t.entryId ? (
-                  <Link to={`/browse/${t.entryId}`} className="link text-xs">
-                    Open in Browse
-                  </Link>
+                  <span className="flex flex-wrap items-center gap-2">
+                    <Link to={`/browse/${t.entryId}`} className="link text-xs">
+                      Open in Browse
+                    </Link>
+                    <NotBackupButton parentPath={t.parentPath} localPath={t.localPath} />
+                  </span>
                 ) : (
                   <span className="text-xs text-amber">Not found here — add a path mapping.</span>
                 )}
@@ -294,8 +347,19 @@ function Folders({ targets, threshold }: { targets: Target[]; threshold: number 
         )}
       </div>
       {self && (
-        <p className="mb-3 text-xs muted">
-          {count(self.synced)} of {count(self.children)} direct items are on the backup — a folder is synchronized at {threshold}% or when it is identical.
+        <p className="mb-3 flex flex-wrap items-center gap-x-2 text-xs muted">
+          <span>
+            {count(self.synced)} of {count(self.children)} direct items are on the backup — a folder is synchronized at {threshold}% or when it is identical.
+            {q.data?.parentPath && (
+              <>
+                {' '}
+                Compared with <span className="font-mono">{q.data.parentPath}</span> on the backup.
+              </>
+            )}
+          </span>
+          {q.data?.parentPath && q.data.localPath && (
+            <NotBackupButton key={q.data.localPath} parentPath={q.data.parentPath} localPath={q.data.localPath} label="Not a backup of this folder" />
+          )}
         </p>
       )}
       {q.isLoading ? (
@@ -431,12 +495,8 @@ function Files({ state }: { state: FileState }) {
   const [q, setQParam] = useUrlParam('q')
   const setQ = (v: string) => setQParam(v, { replace: true })
   const [preview, open] = useFilePreview()
-  const navigate = useNavigate()
-  // Every damaged file (corrupt here, or flagged by the integrity check) replaced with the backup's copy: a draft plan to review.
-  const restore = useMutation({
-    mutationFn: () => api<{ id: number }>('/plans/restore-damaged', { method: 'POST', json: {} }),
-    onSuccess: (p) => navigate(`/actions/${p.id}`),
-  })
+  // Every damaged file (corrupt here, or flagged by the integrity check): replaced with the backup's copy, or any other action.
+  const plan = useUrlOverlay('plan')
   const totals = useQuery({
     queryKey: ['parent', 'files', state, q, 'totals'],
     queryFn: () => api<{ total: number; totalSize: number }>('/integrations/parent/files', { query: { state, q, limit: 1 } }),
@@ -452,21 +512,34 @@ function Files({ state }: { state: FileState }) {
           </span>
         )}
         {state === 'corrupt' && (
-          <button
-            className="btn-primary ml-auto"
-            disabled={restore.isPending || !totals.data?.total}
-            onClick={() => restore.mutate()}
-            title="Creates a plan to review: each damaged file is replaced with the backup's copy (checked against its size and hash), the damaged one goes to the trash"
-          >
-            🛟 Replace all with the backup's copy…
-          </button>
+          <span className="ml-auto flex flex-wrap gap-2">
+            <button className="btn-secondary" disabled={!totals.data?.total} onClick={() => plan.open('other')} title="Trash, move or delete every damaged file">
+              Another action for all…
+            </button>
+            <button
+              className="btn-primary"
+              disabled={!totals.data?.total}
+              onClick={() => plan.open('restore')}
+              title="Plans to review: each damaged file is replaced with the backup's copy (checked against its size and hash); the local file is kept aside or trashed"
+            >
+              🛟 Replace all with the backup's copy…
+            </button>
+          </span>
         )}
       </div>
-      {restore.error && <ErrorBox error={restore.error} />}
+      <p className="mb-3 text-xs muted">Open a file to compare it with the backup and plan an action for it alone; the panel stays open, so ← / → go on with the next file.</p>
       <div className="card px-3 py-1">
         <FileList state={state} q={q} onOpen={open} />
       </div>
       {preview}
+      <PlanDialog
+        key={plan.value ?? ''}
+        open={plan.value !== null}
+        onClose={plan.close}
+        damaged
+        defaultOp={plan.value === 'restore' ? 'restore' : 'trash'}
+        title={plan.value === 'restore' ? "Replace every damaged file with the backup's copy" : 'Plan an action for every damaged file'}
+      />
     </>
   )
 }

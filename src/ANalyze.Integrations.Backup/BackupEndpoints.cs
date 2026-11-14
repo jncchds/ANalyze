@@ -11,10 +11,13 @@ namespace ANalyze.Integrations.Backup;
 /// <summary>Child-side views of the comparison, under /api/v1/integrations/parent/…</summary>
 internal static class BackupEndpoints
 {
+    public sealed record NotBackupBody(string ParentPath, string LocalPath);
+
     public static void Map(RouteGroupBuilder g, ParentIntegration plugin)
     {
-        g.MapGet("/summary", async (SqliteSetup sqlite, RootRegistry roots, SettingsStore settings, CancellationToken ct) =>
+        g.MapGet("/summary", async (SqliteSetup sqlite, RootRegistry roots, SettingsStore settings, IntegrationHost host, CancellationToken ct) =>
         {
+            var notBackups = (await host.LoadAsync(plugin.Id, ct)).GetMappings(ParentIntegration.NotBackupsKey);
             var snap = await plugin.LoadSnapshotAsync(ct);
             using var c = sqlite.Open();
             var files = Db.Query(c, "SELECT State, COUNT(*), COALESCE(SUM(Size), 0) FROM BackupFiles WHERE IsDir = 0 GROUP BY State",
@@ -36,12 +39,14 @@ internal static class BackupEndpoints
                 folders,
                 threshold = BackupStates.FolderThreshold,
                 local = new { s.HashAllFiles, s.VerifyAfterDays },
+                notBackups,
             };
         });
 
         // One folder: its own state, its sub-folders with their state, and its direct files counted by state.
-        g.MapGet("/folders", (int rootId, string? path, SqliteSetup sqlite) =>
+        g.MapGet("/folders", async (int rootId, string? path, SqliteSetup sqlite, RootRegistry roots, CancellationToken ct) =>
         {
+            var snap = await plugin.LoadSnapshotAsync(ct);
             var p = (path ?? "").Trim('/');
             var prefix = p.Length == 0 ? "" : p + "/";
             using var c = sqlite.Open();
@@ -57,7 +62,9 @@ internal static class BackupEndpoints
                 """, r => new { entryId = r.GetInt64(0), name = r.GetString(1), path = r.GetString(2), state = r.GetString(3), children = r.GetInt32(4), synced = r.GetInt32(5), size = r.GetInt64(6) }, args);
             var files = Db.Query(c, $"SELECT State, COUNT(*), COALESCE(SUM(Size), 0) FROM BackupFiles WHERE IsDir = 0 AND {direct} GROUP BY State",
                 r => new { state = r.GetString(0), files = r.GetInt64(1), size = r.GetInt64(2) }, args);
-            return new { path = p, self, folders, files };
+            // Both full paths, for "not a backup of this".
+            var localPath = roots.Get(rootId) is { } root ? RootRegistry.Combine(root.Path, p) : null;
+            return new { path = p, self, folders, files, localPath, parentPath = ParentPath(roots, snap, rootId, p) };
         });
 
         // Where a labelled file or folder is in the folder view (from a label in the browser): the folder itself, or a file's folder.
@@ -178,6 +185,28 @@ internal static class BackupEndpoints
             }
 
             return Results.Empty;
+        });
+
+        // "These are not backups of each other": stored with the settings (Integrations page) and compared again without them.
+        g.MapPost("/not-backup", async (NotBackupBody b, IntegrationHost host, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(b.ParentPath) || string.IsNullOrWhiteSpace(b.LocalPath))
+            {
+                return Results.Problem("Both folders are needed.", statusCode: 400);
+            }
+
+            var settings = await host.LoadAsync(plugin.Id, ct);
+            var list = settings.GetMappings(ParentIntegration.NotBackupsKey).ToList();
+            if (!BackupSync.IsNotBackup(list, b.ParentPath, b.LocalPath))
+            {
+                list.Add(new PathMapping(b.ParentPath.Trim(), b.LocalPath.Trim()));
+            }
+
+            settings.Values[ParentIntegration.NotBackupsKey] = new System.Text.Json.Nodes.JsonArray(
+                [.. list.Select(m => (System.Text.Json.Nodes.JsonNode)new System.Text.Json.Nodes.JsonObject { ["from"] = m.From, ["to"] = m.To })]);
+            await host.SaveAsync(plugin.Id, settings, ct);
+            var syncing = settings.Enabled && host.StartSync(plugin.Id);
+            return Results.Ok(new { notBackups = list, syncing });
         });
 
         g.MapPost("/suggest-mappings", async (IntegrationSettings? body, IntegrationHost host, CancellationToken ct) =>

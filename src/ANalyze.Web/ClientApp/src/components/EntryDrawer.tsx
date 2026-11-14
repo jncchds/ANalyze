@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { api, fileUrl } from '../api/client'
 import { useCategories, useCategoryMap, useSummary, useToHostPath } from '../api/hooks'
-import type { Annotation, Entry } from '../api/types'
+import type { Annotation, Entry, PlannedAction } from '../api/types'
 import { bytes, date, kindLabel } from '../lib/format'
 import { PlanDialog } from './PlanDialog'
 import { AnnotationBadges, CategoryPill, ErrorBox, Loading, Tabs } from './ui'
@@ -23,7 +23,11 @@ interface EntryDetail {
   annotations: Annotation[]
   /** How this entry compares with the backup server (the parent ANalyze integration). */
   backup?: { state: string; isDir: boolean; parentSize?: number; verified: boolean; children: number; syncedChildren: number }
+  /** Draft plans that already have this entry. */
+  planned: PlannedAction[]
 }
+
+const PLANNED_TEXT: Record<string, string> = { trash: 'to the trash', delete: 'deleted permanently', move: 'moved', hardlink: 'hard-linked', restore: "replaced with the backup's copy" }
 
 function backupText(b: NonNullable<EntryDetail['backup']>, size: number) {
   if (b.isDir)
@@ -198,10 +202,29 @@ export function EntryDrawer({ preview, list }: { preview: EntryPreview; list?: n
                         <button className="link" disabled={d.root?.readOnly} onClick={() => plan.open('restore')} title={d.root?.readOnly ? 'Root is read-only' : undefined}>
                           Replace with the backup's copy…
                         </button>
+                        {' · '}
+                        <button className="link" disabled={d.root?.readOnly} onClick={() => plan.open(1)} title="Trash, move or delete it instead">
+                          another action…
+                        </button>
                       </>
                     )}
                   </div>
                 )}
+                {d.planned?.map((p) => (
+                  <div key={p.itemId} className={clsx('rounded-md px-3 py-2 text-xs', p.included ? 'bg-accent-faint text-accent' : 'bg-surface-2 muted')}>
+                    📋 {p.included ? 'Planned' : 'Left out'} in the draft{' '}
+                    <Link className="link" to={`/actions/${p.planId}`}>
+                      “{p.planName}”
+                    </Link>
+                    : {PLANNED_TEXT[p.op] ?? p.op}
+                    {p.op === 'move' && p.targetPath ? ` to ${p.targetPath}` : ''}
+                    {p.op === 'restore' ? (p.keepPath ? `, the local file kept as ${p.keepPath}` : ', the local file to the trash') : ''}
+                    {p.warning ? ` — ${p.warning}` : ''}.{' '}
+                    <button className="link" disabled={d.root?.readOnly} onClick={() => plan.open(p.op === 'restore' ? 'restore' : 1)}>
+                      Change…
+                    </button>
+                  </div>
+                ))}
                 {!e.isDir && e.hashedAt && !e.corruptAt && <div className="text-xs muted">Content hash checked {date(e.hashedAt)}</div>}
                 {d.ai && !d.ai.applied && (
                   <p className="text-xs muted">
@@ -272,7 +295,9 @@ export function EntryDrawer({ preview, list }: { preview: EntryPreview; list?: n
           count={1}
           size={e.size}
           defaultOp={plan.value === 'restore' ? 'restore' : undefined}
-          title={plan.value === 'restore' ? "Replace with the backup's copy" : undefined}
+          title={plan.value === 'restore' ? "Replace with the backup's copy" : `Plan an action: ${e.name}`}
+          // The panel stays open (e.g. to go through damaged files one by one); it shows the plan the file is now in.
+          stay
         />
       )}
     </>

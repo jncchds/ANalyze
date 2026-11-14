@@ -46,10 +46,25 @@ public sealed record BackupSyncResult(
 /// <item>inside a synchronized folder, a file whose parent copy differs in size or hash is corrupt, and a file the parent lacks is missing.</item>
 /// </list>
 /// Paths are translated with the mappings (parent path → local path); a parent root whose sample files are mostly not found at the mapped
-/// path gets a mapping detected from file names and sizes.
+/// path gets a mapping detected from file names and sizes. <paramref name="notBackups"/> are pairs (parent folder → folder here) the user
+/// said are not backups of each other: nothing below the parent folder is ever matched with anything below the local one, neither by a
+/// mapping (configured or detected) nor as a backed-up folder.
 /// </summary>
-public sealed class BackupSync(SqliteConnection conn, RootRegistry roots)
+public sealed class BackupSync(SqliteConnection conn, RootRegistry roots, IReadOnlyList<PathMapping>? notBackups = null)
 {
+    private readonly IReadOnlyList<PathMapping> _notBackups = notBackups ?? [];
+
+    private bool NotBackup(string parentPath, string localPath) => _notBackups.Count > 0 && IsNotBackup(_notBackups, parentPath, localPath);
+
+    /// <summary>Whether a parent path and a local path lie inside a pair the user said are not backups of each other.</summary>
+    public static bool IsNotBackup(IEnumerable<PathMapping> pairs, string parentPath, string localPath)
+    {
+        static string Trim(string p) => p.Length > 1 ? p.Replace('\\', '/').TrimEnd('/') : p;
+        static bool Under(string path, string dir) => dir == "/" || path == dir || path.StartsWith(dir + "/", StringComparison.Ordinal);
+        var (p, l) = (Trim(parentPath), Trim(localPath));
+        return pairs.Any(n => !string.IsNullOrWhiteSpace(n.From) && !string.IsNullOrWhiteSpace(n.To) && Under(p, Trim(n.From.Trim())) && Under(l, Trim(n.To.Trim())));
+    }
+
     public delegate Task<ExportPage> FetchPage(int rootId, string? after, CancellationToken ct);
 
     private const int Sample = 200;
@@ -119,7 +134,7 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots)
                 // Mostly not where the mappings say: learn the prefix from files found by name and size.
                 var matcher = new PathMatcher(conn, roots, mappings);
                 matcher.Detect(sample.Select(f => (Abs(f.P), f.S)), Sample);
-                var better = matcher.Detected.Where(d => configured.All(c => c.From.TrimEnd('/') != d.From.TrimEnd('/'))).ToList();
+                var better = matcher.Detected.Where(d => configured.All(c => c.From.TrimEnd('/') != d.From.TrimEnd('/')) && !NotBackup(d.From, d.To)).ToList();
                 if (better.Count > 0 && Found(sample, Abs, [.. better, .. mappings]) > Found(sample, Abs, mappings))
                 {
                     detected.AddRange(better);
@@ -140,6 +155,11 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots)
             foreach (var start in starts)
             {
                 var localPath = IntegrationSettings.MapPath(start, mappings);
+                if (NotBackup(start, localPath))
+                {
+                    continue;
+                }
+
                 var (tRoot, tRel) = Resolve(localPath);
                 targets.Add(new BackupTarget(root.Id, start, localPath, tRoot, tRel, null));
                 if (tRoot is { } t)
@@ -158,7 +178,9 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots)
                     foreach (var f in page.Items)
                     {
                         seen += f.D ? 0 : 1;
-                        if (Resolve(IntegrationSettings.MapPath(Abs(f.P), mappings)) is ({ } r, { } rel))
+                        var abs = Abs(f.P);
+                        var local = IntegrationSettings.MapPath(abs, mappings);
+                        if (!NotBackup(abs, local) && Resolve(local) is ({ } r, { } rel))
                         {
                             Insert(ins, r, rel, Parent(rel), f.D, f.S, f.H);
                         }
@@ -306,7 +328,8 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots)
         var n = 0;
         foreach (var f in sample)
         {
-            if (Resolve(IntegrationSettings.MapPath(abs(f.P), mappings)) is ({ } r, { } rel))
+            var local = IntegrationSettings.MapPath(abs(f.P), mappings);
+            if (!NotBackup(abs(f.P), local) && Resolve(local) is ({ } r, { } rel))
             {
                 find.Parameters["$r"].Value = r;
                 find.Parameters["$p"].Value = rel;

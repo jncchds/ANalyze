@@ -201,6 +201,27 @@ export interface PlanRow {
   op?: ActionOp
 }
 
+/** What creating a plan or adding to one did. */
+export interface PlanAdded {
+  id: number
+  name: string
+  items: number
+  added: number
+  replaced: number
+}
+
+/** A draft plan that has an entry (entry panel). */
+export interface PlannedAction {
+  planId: number
+  planName: string
+  itemId: number
+  op: ActionOp
+  included: boolean
+  targetPath?: string
+  keepPath?: string
+  warning?: string
+}
+
 export interface PlanItem {
   id: number
   planId: number
@@ -233,6 +254,8 @@ export interface PlanDetail {
     undoable: number
   }
   page: Page<PlanItem>
+  /** Entry id → the folder it is in, for links to the browser (entries the plan removed are missing). */
+  parents: Record<string, number>
 }
 
 /** Same shape as the backend SearchFilter; every field optional. */

@@ -146,9 +146,13 @@ Build without ffmpeg (no video thumbnails, smaller image): `docker build -f dock
 
 ## How actions stay safe
 
-1. Selecting files and choosing **Clean up…** creates a **draft plan** — nothing changes yet.
-2. The review page lists every item with its target; untick anything to keep. Conflicts (destination exists) are
-   resolved by the chosen policy (rename/skip/overwrite); items on read-only roots are excluded.
+1. Selecting files and choosing **Clean up…** creates a **draft plan** — nothing changes yet. The dialog can also add the
+   selection to an existing draft plan (the last one used is preselected); a file the plan already has gets the new action.
+   From the file panel the panel stays open, so you can go through files one by one (‹ › or ← →) and plan each; the panel
+   says which draft plan has the file.
+2. The review page lists every item with its target; untick anything to keep, change an item's action (or the action of
+   every item shown), and **Show** opens the file in Browse. Conflicts (destination exists) are resolved by the chosen
+   policy (rename/skip/overwrite); items on read-only roots are excluded.
 3. **Apply** re-checks each item right before it runs: still there, same size and mtime. Duplicate removals also re-hash
    both copies, so a file that changed since the scan is skipped.
 4. **Trash** moves items to `<root>/.analyze-trash/<plan>/…` (an instant rename on the same disk). It is emptied after
@@ -305,7 +309,15 @@ The file panel also has **‹ ›** buttons (and the ← → keys) to step throu
 selection, a search such as *Possibly corrupted*, or folders, which stand for the damaged files inside them). It is a plan
 like any other: each file's copy is downloaded from the backup server next to it and checked against the backup's size
 and content hash, keeps the owner, permissions and date of the file it replaces, and the damaged file goes to the trash
-— so **Undo** puts it back. Files that are not damaged, identical or not on the backup are listed but left out.
+— or, with *Keep the local file as* `{relDir}/~{name}` (any path template), is kept next to it "just in case" — so
+**Undo** puts it back. Files that are not damaged, identical or not on the backup are listed but left out. Damaged files
+can get any other action too (*Another action for all…*, or *another action…* in the file panel).
+
+**Not a backup of this**: when the comparison matched folders that are not backups of each other (a wrong detected
+mapping, or a backed-up folder that only looks alike), press *Not a backup of this* next to the backed-up folder, the
+folder in the folder view, or *Wrong match* next to a detected mapping. The pair is stored with the integration
+(*Not backups of each other* on the Integrations page, where it can be removed) and nothing below one folder is ever
+compared with anything below the other; the comparison runs again at once.
 
 ### Plex
 

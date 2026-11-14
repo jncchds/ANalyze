@@ -8,13 +8,18 @@ namespace ANalyze.Web.Endpoints;
 
 public static class PlanEndpoints
 {
-    public sealed record FilterPlanBody(SearchFilter Filter, ActionOp Op, string? Destination, ConflictPolicy? Conflict, string? Name, int? TemplateId);
+    // PlanId: add to that draft plan instead of creating one. Destination of a restore: where the local file is kept (null = trash).
+    public sealed record FilterPlanBody(SearchFilter Filter, ActionOp Op, string? Destination, ConflictPolicy? Conflict, string? Name, int? TemplateId, int? PlanId);
 
-    public sealed record ManualPlanBody(long[] EntryIds, ActionOp Op, string? Destination, ConflictPolicy? Conflict, string? Name, int? TemplateId);
+    public sealed record ManualPlanBody(long[] EntryIds, ActionOp Op, string? Destination, ConflictPolicy? Conflict, string? Name, int? TemplateId, int? PlanId);
 
-    public sealed record RestorePlanBody(string? Name);
+    /// <summary>Every damaged file; any action (restore by default).</summary>
+    public sealed record DamagedPlanBody(string? Name, ActionOp? Op, string? Destination, ConflictPolicy? Conflict, int? TemplateId, int? PlanId);
 
     public sealed record ItemsBody(long[]? Ids, bool Included, string? Filter);
+
+    /// <summary>Gives items (by id, or the ones a filter shows) another action.</summary>
+    public sealed record ChangeItemsBody(long[]? Ids, string? Filter, string? Q, ActionOp Op, string? Destination, int? TemplateId);
 
     public static void MapPlanEndpoints(this RouteGroupBuilder api)
     {
@@ -71,13 +76,32 @@ public static class PlanEndpoints
                 undone = await all.CountAsync(i => i.Status == ItemStatus.Undone, ct),
                 undoable = await all.CountAsync(i => i.Status == ItemStatus.Done && (i.Op == ActionOp.Trash || i.Op == ActionOp.Move || i.Op == ActionOp.Restore), ct),
             };
-            return Results.Ok(new { plan, summary, page = new Page<ActionItem>(page, total) });
+            // The folder each item's entry is in, for links to the browser (entries removed by the plan are gone).
+            var entryIds = page.Where(i => i.EntryId is not null).Select(i => i.EntryId!.Value).ToList();
+            var parents = await db.Entries.AsNoTracking().Where(e => entryIds.Contains(e.Id) && e.ParentId != null)
+                .ToDictionaryAsync(e => e.Id, e => e.ParentId!.Value, ct);
+            return Results.Ok(new { plan, summary, page = new Page<ActionItem>(page, total), parents });
         });
 
         api.MapPost("/plans", async (ManualPlanBody b, PlanBuilder builder, AnalyzeDbContext db, CancellationToken ct) =>
         {
             var (op, dest, conflict) = await FromTemplateAsync(db, b.TemplateId, b.Op, b.Destination, b.Conflict, ct);
-            return await Run(() => builder.CreateAsync(new ManualPlanRequest(b.Name, op, b.EntryIds, dest, conflict, b.TemplateId is null ? PlanSource.Manual : PlanSource.Template), ct));
+            return await Run(builder, b.PlanId, new ManualPlanRequest(b.Name, op, b.EntryIds, dest, conflict, b.TemplateId is null ? PlanSource.Manual : PlanSource.Template), ct);
+        });
+
+        // Another action for some items of a draft plan: they are planned again from their entries.
+        api.MapPost("/plans/{id:int}/items/change", async (int id, ChangeItemsBody b, PlanBuilder builder, AnalyzeDbContext db, CancellationToken ct) =>
+        {
+            var q = db.ActionItems.AsNoTracking().Where(i => i.PlanId == id && i.EntryId != null);
+            q = b.Ids is { Length: > 0 } ids ? q.Where(i => ids.Contains(i.Id)) : Filter(q, b.Filter, b.Q);
+            var entries = await q.Select(i => i.EntryId!.Value).Take(PlanBuilder.MaxItems).ToListAsync(ct);
+            if (entries.Count == 0)
+            {
+                return Results.Problem("No items to change (items whose file is no longer indexed cannot be planned again).", statusCode: 400);
+            }
+
+            var (op, dest, _) = await FromTemplateAsync(db, b.TemplateId, b.Op, b.Destination, null, ct);
+            return await Run(builder, id, new ManualPlanRequest(null, op, entries, dest), ct);
         });
 
         api.MapPost("/plans/from-filter", async (FilterPlanBody b, PlanBuilder builder, AnalyzeDbContext db, CancellationToken ct) =>
@@ -89,14 +113,14 @@ public static class PlanEndpoints
                 return Results.Problem($"The filter matches more than {PlanBuilder.MaxItems} items; narrow it down.", statusCode: 400);
             }
 
-            return await Run(() => builder.CreateAsync(new ManualPlanRequest(b.Name, op, ids, dest, conflict, PlanSource.Insight), ct));
+            return await Run(builder, b.PlanId, new ManualPlanRequest(b.Name, op, ids, dest, conflict, PlanSource.Insight), ct);
         });
 
         api.MapPost("/plans/dedupe", async (DedupePlanRequest req, PlanBuilder builder, CancellationToken ct) =>
             await Run(() => builder.CreateDedupeAsync(req, ct)));
 
-        // Every file the backup comparison found damaged here, replaced with the backup's copy (draft plan for review).
-        api.MapPost("/plans/restore-damaged", async (RestorePlanBody? b, PlanBuilder builder, IEnumerable<ANalyze.Scanner.IBackupSource> backups, CancellationToken ct) =>
+        // Every file the backup comparison found damaged here, replaced with the backup's copy by default (draft plan for review).
+        api.MapPost("/plans/restore-damaged", async (DamagedPlanBody? b, PlanBuilder builder, AnalyzeDbContext db, IEnumerable<ANalyze.Scanner.IBackupSource> backups, CancellationToken ct) =>
         {
             var ids = new HashSet<long>();
             foreach (var source in backups)
@@ -109,7 +133,9 @@ public static class PlanEndpoints
                 return Results.Problem("No damaged files with a copy on the backup.", statusCode: 400);
             }
 
-            return await Run(() => builder.CreateAsync(new ManualPlanRequest(b?.Name ?? $"Restore {ids.Count} damaged file(s) from the backup", ActionOp.Restore, [.. ids.Take(PlanBuilder.MaxItems)], null), ct));
+            var (op, dest, conflict) = await FromTemplateAsync(db, b?.TemplateId, b?.Op ?? ActionOp.Restore, b?.Destination, b?.Conflict, ct);
+            var name = b?.Name ?? (op == ActionOp.Restore ? $"Restore {ids.Count} damaged file(s) from the backup" : null);
+            return await Run(builder, b?.PlanId, new ManualPlanRequest(name, op, [.. ids.Take(PlanBuilder.MaxItems)], dest, conflict), ct);
         });
 
         api.MapPatch("/plans/{id:int}/items", async (int id, ItemsBody b, AnalyzeDbContext db, CancellationToken ct) =>
@@ -187,7 +213,7 @@ public static class PlanEndpoints
                 return Results.Problem("The plan is running", statusCode: 409);
             }
 
-            var hasTrash = plan.TrashPurgedAt is null && await db.ActionItems.AnyAsync(i => i.PlanId == id && (i.Op == ActionOp.Trash || i.Op == ActionOp.Restore) && i.Status == ItemStatus.Done, ct);
+            var hasTrash = plan.TrashPurgedAt is null && await db.ActionItems.AnyAsync(i => i.PlanId == id && (i.Op == ActionOp.Trash || (i.Op == ActionOp.Restore && i.KeepPath == null)) && i.Status == ItemStatus.Done, ct);
             if (hasTrash)
             {
                 return Results.Problem("Empty this plan's trash first (or undo it)", statusCode: 409);
@@ -246,6 +272,34 @@ public static class PlanEndpoints
         }
 
         return (op, dest, conflict ?? ConflictPolicy.Rename);
+    }
+
+    /// <summary>Creates a plan, or adds to the draft plan <paramref name="planId"/>.</summary>
+    private static async Task<IResult> Run(PlanBuilder builder, int? planId, ManualPlanRequest req, CancellationToken ct)
+    {
+        try
+        {
+            if (planId is { } pid)
+            {
+                var r = await builder.AddAsync(pid, req, ct);
+                return Results.Ok(new { r.Id, r.Name, r.Items, r.Added, r.Replaced });
+            }
+
+            var plan = await builder.CreateAsync(req, ct);
+            return Results.Ok(new { plan.Id, plan.Name, items = plan.Items.Count, added = plan.Items.Count, replaced = 0 });
+        }
+        catch (ArgumentException e)
+        {
+            return Results.Problem(e.Message, statusCode: 400);
+        }
+        catch (KeyNotFoundException e)
+        {
+            return Results.Problem(e.Message, statusCode: 404);
+        }
+        catch (InvalidOperationException e)
+        {
+            return Results.Problem(e.Message, statusCode: 409);
+        }
     }
 
     private static async Task<IResult> Run(Func<Task<ActionPlan>> create)

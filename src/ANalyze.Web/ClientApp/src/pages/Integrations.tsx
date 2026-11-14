@@ -101,7 +101,7 @@ function IntegrationCard({ integration }: { integration: Integration }) {
       <>
       <div className="grid gap-3 md:grid-cols-2">
         {integration.fields.map((f) => (
-          <FieldInput key={f.key} field={f} value={s.values[f.key]} onChange={(v) => setValue(f.key, v)} onSuggest={f.type === 'mappings' ? () => suggest.mutate() : undefined} suggestions={suggest.data} suggesting={suggest.isPending} auto={integration.auto} />
+          <FieldInput key={f.key} field={f} value={s.values[f.key]} onChange={(v) => setValue(f.key, v)} onSuggest={f.key === 'mappings' ? () => suggest.mutate() : undefined} suggestions={f.key === 'mappings' ? suggest.data : undefined} suggesting={suggest.isPending} auto={f.key === 'mappings' ? integration.auto : undefined} />
         ))}
       </div>
       {suggest.error && <div className="mt-2"><ErrorBox error={suggest.error} /></div>}

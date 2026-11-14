@@ -288,6 +288,12 @@ public sealed class PlanExecutor(
             case ActionOp.Restore:
                 await RestoreAsync(plan, item, root.Path, src, st, conn, ct);
                 replaced.Add(item.EntryId!.Value);
+                if (item.KeepPath is { } kept)
+                {
+                    // The kept local copy is a new file there.
+                    rescan.Add((item.RootId, ParentOf(kept)));
+                }
+
                 break;
 
             case ActionOp.Hardlink:
@@ -396,10 +402,11 @@ public sealed class PlanExecutor(
 
             File.SetLastWriteTimeUtc(tmp, File.GetLastWriteTimeUtc(src));
 
-            var dest = RootRegistry.TrashPath(rootPath, plan.Id, item.SourcePath);
+            // The damaged file goes to the trash, or is kept where the plan says (e.g. "{relDir}/~{name}").
+            var dest = item.KeepPath is { } keep ? RootRegistry.Combine(rootPath, keep) : RootRegistry.TrashPath(rootPath, plan.Id, item.SourcePath);
             if (Path.Exists(dest))
             {
-                throw new SkipException("The trash of this plan already holds a file at that path");
+                throw new SkipException(item.KeepPath is null ? "The trash of this plan already holds a file at that path" : $"{item.KeepPath} exists already");
             }
 
             Native.CreateDirectoryLikeParent(Path.GetDirectoryName(dest)!);
@@ -498,15 +505,20 @@ public sealed class PlanExecutor(
         if (item.Op == ActionOp.Move)
         {
             // The moved copy is gone from the target: drop it (or the folders the move created) from the index directly.
-            var gone = pruned is null ? item.UndoPath : Path.GetRelativePath(root.Path, pruned).Replace('\\', '/');
-            using var find = conn.CreateCommand();
-            find.CommandText = "SELECT Id FROM Entries WHERE RootId = $r AND RelPath = $p";
-            find.Parameters.AddWithValue("$r", item.RootId);
-            find.Parameters.AddWithValue("$p", gone);
-            if (find.ExecuteScalar() is long goneId)
-            {
-                EntryMaintenance.DeleteEntry(conn, goneId);
-            }
+            DropIndexed(conn, item.RootId, pruned is null ? item.UndoPath : Path.GetRelativePath(root.Path, pruned).Replace('\\', '/'));
+        }
+    }
+
+    /// <summary>Removes a path that is gone from disk (and everything under it) from the index.</summary>
+    private static void DropIndexed(Microsoft.Data.Sqlite.SqliteConnection conn, int rootId, string relPath)
+    {
+        using var find = conn.CreateCommand();
+        find.CommandText = "SELECT Id FROM Entries WHERE RootId = $r AND RelPath = $p";
+        find.Parameters.AddWithValue("$r", rootId);
+        find.Parameters.AddWithValue("$p", relPath);
+        if (find.ExecuteScalar() is long goneId)
+        {
+            EntryMaintenance.DeleteEntry(conn, goneId);
         }
     }
 
@@ -528,7 +540,13 @@ public sealed class PlanExecutor(
 
         Native.CreateDirectoryLikeParent(Path.GetDirectoryName(to)!);
         MovePath(from, to, isDir: false, overwrite: false);
-        PruneEmptyParents(Path.GetDirectoryName(from)!, rootPath);
+        var pruned = PruneEmptyParents(Path.GetDirectoryName(from)!, rootPath);
+        if (item.KeepPath is not null)
+        {
+            // The kept copy (indexed by the rescan after applying) is gone from there.
+            DropIndexed(conn, item.RootId, pruned is null ? item.UndoPath! : Path.GetRelativePath(rootPath, pruned).Replace('\\', '/'));
+        }
+
         if (item.EntryId is { } id)
         {
             var st = Native.LStat(to);
