@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Link, useNavigate } from 'react-router'
+import { lazy, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Link } from 'react-router'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { api } from '../../api/client'
 import { BarList } from '../../components/charts'
 import { EntryDrawer } from '../../components/EntryDrawer'
 import { PathText } from '../../components/PathText'
+import { PlanDialog } from '../../components/PlanDialog'
 import { Empty, ErrorBox, Loading, PageTitle, Section, ShareBar, Stat, Tabs } from '../../components/ui'
 import { useLocate } from '../../hooks/useLocate'
-import { useEntryPreview, useUrlEnum, useUrlNumber, useUrlParam, useUrlParams } from '../../hooks/useUrlState'
+import { useEntryPreview, useUrlEnum, useUrlNumber, useUrlOverlay, useUrlParam, useUrlParams } from '../../hooks/useUrlState'
 import { ago, bytes, count, pct } from '../../lib/format'
 import { ComparePanel } from './ComparePanel'
+
+const DamagedReview = lazy(() => import('./DamagedReview'))
 
 type FileState = 'synced' | 'corrupt' | 'missing' | 'unsynced'
 
@@ -83,11 +86,17 @@ const TABS: Tab[] = ['folders', ...FILE_STATES.map((x) => x.id)]
 const inTarget = (t: Target, f: { rootId: number; path: string }) =>
   t.rootId === f.rootId && (!t.relPath || f.path === t.relPath || f.path.startsWith(t.relPath + '/'))
 
+/** The Backup page, or (`?review=1`) the one-by-one review of the corrupted files. */
+export default function BackupPage() {
+  const [params] = useUrlParams()
+  return params.has('review') ? <DamagedReview /> : <Overview />
+}
+
 /**
  * Backup page of the "ANalyze parent" integration: what of this instance is synchronized to the backup server (the parent).
  * Tab, folder (`?target=&path=`), filters and the file panel are in the URL, so Back steps through them.
  */
-export default function BackupPage() {
+function Overview() {
   const [, setParams] = useUrlParams()
   const [tab, setTab] = useUrlEnum<Tab>('tab', TABS, 'folders')
   const q = useQuery({ queryKey: ['parent', 'summary'], queryFn: () => api<Summary>('/integrations/parent/summary') })
@@ -370,7 +379,17 @@ const STATE_TONE: Record<FileState, string> = { synced: 'chip', corrupt: 'rounde
 /** Opens a file in the drawer, with the list it was opened from (for previous/next). */
 type OpenFile = (id: number, list: number[]) => void
 
-function FileList({ state, rootId, path, direct, q, onOpen }: { state?: FileState; rootId?: number; path?: string; direct?: boolean; q?: string; onOpen: OpenFile }) {
+function FileList({ state, rootId, path, direct, q, onOpen, selected, onSelect }: {
+  state?: FileState
+  rootId?: number
+  path?: string
+  direct?: boolean
+  q?: string
+  onOpen: OpenFile
+  /** With these, each file gets a checkbox (entry id → size of the ticked files). */
+  selected?: Map<number, number>
+  onSelect?: (next: Map<number, number>) => void
+}) {
   const [pages, setPages] = useState(1)
   // The open "What happened?" comparison, in the URL so Back closes it.
   const [explainParam, setExplainParam] = useUrlNumber('explain', -1)
@@ -390,6 +409,20 @@ function FileList({ state, rootId, path, direct, q, onOpen }: { state?: FileStat
         {r.data.items.map((f) => (
           <div key={f.id}>
             <div className="flex items-center gap-2">
+              {selected && onSelect && (
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 shrink-0 accent-accent"
+                  checked={selected.has(f.entryId)}
+                  onChange={(e) => {
+                    const next = new Map(selected)
+                    if (e.target.checked) next.set(f.entryId, f.size)
+                    else next.delete(f.entryId)
+                    onSelect(next)
+                  }}
+                  aria-label={`Select ${f.relPath}`}
+                />
+              )}
               <button className="flex min-w-0 flex-1 items-center gap-3 px-1 py-1.5 text-left text-sm hover:bg-accent-faint" onClick={() => onOpen(f.entryId, r.data!.items.map((x) => x.entryId))}>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate" title={f.parentPath}>
@@ -418,6 +451,18 @@ function FileList({ state, rootId, path, direct, q, onOpen }: { state?: FileStat
           </div>
         ))}
       </div>
+      {selected && onSelect && (
+        <div className="mt-2 flex gap-2 text-xs">
+          <button className="link" onClick={() => onSelect(new Map([...selected, ...r.data!.items.map((f) => [f.entryId, f.size] as const)]))}>
+            Select the {count(r.data.items.length)} shown
+          </button>
+          {selected.size > 0 && (
+            <button className="link" onClick={() => onSelect(new Map())}>
+              Clear the selection
+            </button>
+          )}
+        </div>
+      )}
       {r.data.total > r.data.items.length && (
         <button className="btn-ghost mt-2" onClick={() => setPages(pages + 1)}>
           Show more ({count(r.data.total - r.data.items.length)} left)
@@ -431,12 +476,11 @@ function Files({ state }: { state: FileState }) {
   const [q, setQParam] = useUrlParam('q')
   const setQ = (v: string) => setQParam(v, { replace: true })
   const [preview, open] = useFilePreview()
-  const navigate = useNavigate()
-  // Every damaged file (corrupt here, or flagged by the integrity check) replaced with the backup's copy: a draft plan to review.
-  const restore = useMutation({
-    mutationFn: () => api<{ id: number }>('/plans/restore-damaged', { method: 'POST', json: {} }),
-    onSuccess: (p) => navigate(`/actions/${p.id}`),
-  })
+  const [, setParams] = useUrlParams()
+  // Ticked files (entry id → size) for "Action for the selected…"; "all": every damaged file, replaced with the backup's copy.
+  const [selected, setSelected] = useState(new Map<number, number>())
+  const plan = useUrlOverlay('plan')
+  const all = plan.value === 'all'
   const totals = useQuery({
     queryKey: ['parent', 'files', state, q, 'totals'],
     queryFn: () => api<{ total: number; totalSize: number }>('/integrations/parent/files', { query: { state, q, limit: 1 } }),
@@ -451,21 +495,50 @@ function Files({ state }: { state: FileState }) {
             {count(totals.data.total)} files · {bytes(totals.data.totalSize)}
           </span>
         )}
+        <span className="flex-1" />
+        <button
+          className="btn-secondary"
+          disabled={selected.size === 0}
+          onClick={() => plan.open('selected')}
+          title={state === 'corrupt' ? "Replace the ticked files with the backup's copy (keeping the damaged file or not), or trash, move or delete them" : 'Trash, move or delete the ticked files'}
+        >
+          Action for {count(selected.size)} selected…
+        </button>
         {state === 'corrupt' && (
-          <button
-            className="btn-primary ml-auto"
-            disabled={restore.isPending || !totals.data?.total}
-            onClick={() => restore.mutate()}
-            title="Creates a plan to review: each damaged file is replaced with the backup's copy (checked against its size and hash), the damaged one goes to the trash"
-          >
-            🛟 Replace all with the backup's copy…
-          </button>
+          <>
+            <button
+              className="btn-secondary"
+              disabled={!totals.data?.total}
+              onClick={() => plan.open('all')}
+              title="A plan to review: each damaged file is replaced with the backup's copy (checked against its size and hash); the damaged one goes to the trash or is kept under another name"
+            >
+              🛟 Replace all…
+            </button>
+            <button
+              className="btn-primary"
+              disabled={!totals.data?.total}
+              onClick={() => setParams({ review: 1, tab: null, q: null, explain: null })}
+              title="Go through the files one at a time, each next to the backup's copy, and decide: replace, replace and keep the damaged file, keep, or skip"
+            >
+              Review one by one →
+            </button>
+          </>
         )}
       </div>
-      {restore.error && <ErrorBox error={restore.error} />}
       <div className="card px-3 py-1">
-        <FileList state={state} q={q} onOpen={open} />
+        <FileList state={state} q={q} onOpen={open} selected={selected} onSelect={setSelected} />
       </div>
+      <PlanDialog
+        key={all ? 'all' : 'selected'}
+        open={plan.value !== null && (all || selected.size > 0)}
+        onClose={plan.close}
+        damaged={all}
+        entryIds={all ? undefined : [...selected.keys()]}
+        count={all ? undefined : selected.size}
+        size={all ? undefined : [...selected.values()].reduce((a, b) => a + b, 0)}
+        defaultOp={state === 'corrupt' ? 'restore' : 'trash'}
+        title={all ? "Replace all corrupted files with the backup's copy" : undefined}
+      />
       {preview}
     </>
   )

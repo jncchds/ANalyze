@@ -5,6 +5,7 @@ import { api } from '../api/client'
 import type { PlanRow } from '../api/types'
 import { ConfirmButton, Empty, ErrorBox, Loading, PageTitle, Tabs } from '../components/ui'
 import { bytes, count, dateTime } from '../lib/format'
+import { OP_LABEL } from '../lib/plans'
 import { useUrlEnum } from '../hooks/useUrlState'
 
 interface TrashBin {
@@ -24,8 +25,6 @@ export const STATUS_STYLE: Record<string, string> = {
   undone: 'bg-muted/10 text-muted',
   cancelled: 'bg-muted/10 text-muted',
 }
-
-const OP_LABEL: Record<string, string> = { trash: '🗑️ Trash', delete: '⚠️ Delete', move: '📦 Move', hardlink: '🔗 Hard link', restore: '🛟 Restore from backup' }
 
 export default function Actions() {
   const [tab, setTab] = useUrlEnum('tab', ['plans', 'trash'] as const, 'plans')
@@ -49,7 +48,7 @@ function Plans() {
   const q = useQuery({ queryKey: ['plans'], queryFn: () => api<PlanRow[]>('/plans') })
   if (q.isLoading) return <Loading />
   if (q.error) return <ErrorBox error={q.error} />
-  if (!q.data?.length) return <Empty>No plans yet. Select files in Browse, Search, Duplicates or Insights and choose “Clean up…”.</Empty>
+  if (!q.data?.length) return <Empty>No plans yet. Select files in Browse, Search, Duplicates or Insights and choose “Clean up…”. A draft plan can take more items later: choose it under “Add to”.</Empty>
   return (
     <div className="card divide-y divide-line/60">
       {q.data.map((p) => (
@@ -58,7 +57,7 @@ function Plans() {
           <div className="min-w-0 flex-1">
             <div className="truncate font-semibold">{p.name}</div>
             <div className="text-xs muted">
-              {p.op ? OP_LABEL[p.op] : ''} · created {dateTime(p.createdAt)}
+              {p.mixed ? '🧩 Several actions' : p.op ? OP_LABEL[p.op] : 'Empty'} · created {dateTime(p.createdAt)}
               {p.appliedAt ? ` · applied ${dateTime(p.appliedAt)}` : ''}
               {p.message ? ` · ${p.message}` : ''}
             </div>

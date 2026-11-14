@@ -8,13 +8,19 @@ namespace ANalyze.Web.Endpoints;
 
 public static class PlanEndpoints
 {
-    public sealed record FilterPlanBody(SearchFilter Filter, ActionOp Op, string? Destination, ConflictPolicy? Conflict, string? Name, int? TemplateId);
+    /// <summary><c>PlanId</c>: add to that draft plan. <c>KeepDamaged</c> (restore): template for where the damaged file is kept instead of the trash.</summary>
+    public sealed record FilterPlanBody(SearchFilter Filter, ActionOp Op, string? Destination, ConflictPolicy? Conflict, string? Name, int? TemplateId, int? PlanId = null, string? KeepDamaged = null);
 
-    public sealed record ManualPlanBody(long[] EntryIds, ActionOp Op, string? Destination, ConflictPolicy? Conflict, string? Name, int? TemplateId);
+    /// <summary><c>LeaveOut</c>: list the entries but leave them out (a recorded "keep it" decision).</summary>
+    public sealed record ManualPlanBody(long[] EntryIds, ActionOp Op, string? Destination, ConflictPolicy? Conflict, string? Name, int? TemplateId, int? PlanId = null, string? KeepDamaged = null, bool LeaveOut = false);
 
-    public sealed record RestorePlanBody(string? Name);
+    public sealed record RestorePlanBody(string? Name, int? PlanId = null, string? KeepDamaged = null);
 
     public sealed record ItemsBody(long[]? Ids, bool Included, string? Filter);
+
+    public sealed record RemoveItemsBody(long[]? Ids, long[]? EntryIds);
+
+    public sealed record RenameBody(string Name);
 
     public static void MapPlanEndpoints(this RouteGroupBuilder api)
     {
@@ -33,6 +39,7 @@ public static class PlanEndpoints
                     Done = g.Count(i => i.Status == ItemStatus.Done),
                     Failed = g.Count(i => i.Status == ItemStatus.Failed),
                     Op = g.Min(i => i.Op),
+                    LastOp = g.Max(i => i.Op),
                 })
                 .ToDictionaryAsync(x => x.PlanId, ct);
             return plans.Select(p => new
@@ -44,6 +51,7 @@ public static class PlanEndpoints
                 done = stats.GetValueOrDefault(p.Id)?.Done ?? 0,
                 failed = stats.GetValueOrDefault(p.Id)?.Failed ?? 0,
                 op = stats.GetValueOrDefault(p.Id)?.Op,
+                mixed = stats.GetValueOrDefault(p.Id) is { } st && st.Op != st.LastOp,
             });
         });
 
@@ -74,10 +82,53 @@ public static class PlanEndpoints
             return Results.Ok(new { plan, summary, page = new Page<ActionItem>(page, total) });
         });
 
+        // What a plan does with each entry, compactly (the damaged-files review shows its decisions from this).
+        api.MapGet("/plans/{id:int}/decisions", async (int id, AnalyzeDbContext db, CancellationToken ct) =>
+        {
+            var plan = await db.ActionPlans.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, ct);
+            if (plan is null)
+            {
+                return Results.NotFound();
+            }
+
+            var rows = await db.ActionItems.AsNoTracking().Where(i => i.PlanId == id && i.EntryId != null)
+                .Select(i => new { i.Id, i.EntryId, i.Op, i.Included, i.Status, i.KeepPath, i.TargetPath, i.Warning }).ToListAsync(ct);
+            return Results.Ok(new
+            {
+                plan = new { plan.Id, plan.Name, plan.Status },
+                items = rows.Select(i => new
+                {
+                    itemId = i.Id,
+                    entryId = i.EntryId,
+                    i.Op,
+                    i.Included,
+                    i.Status,
+                    i.KeepPath,
+                    i.TargetPath,
+                    i.Warning,
+                    kept = !i.Included && i.Warning == PlanBuilder.KeptNote,
+                }),
+            });
+        });
+
+        api.MapPatch("/plans/{id:int}", async (int id, RenameBody b, AnalyzeDbContext db, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(b.Name))
+            {
+                return Results.Problem("A plan needs a name", statusCode: 400);
+            }
+
+            var name = b.Name.Trim();
+            return await db.ActionPlans.Where(p => p.Id == id).ExecuteUpdateAsync(u => u.SetProperty(p => p.Name, name), ct) > 0 ? Results.NoContent() : Results.NotFound();
+        });
+
         api.MapPost("/plans", async (ManualPlanBody b, PlanBuilder builder, AnalyzeDbContext db, CancellationToken ct) =>
         {
             var (op, dest, conflict) = await FromTemplateAsync(db, b.TemplateId, b.Op, b.Destination, b.Conflict, ct);
-            return await Run(() => builder.CreateAsync(new ManualPlanRequest(b.Name, op, b.EntryIds, dest, conflict, b.TemplateId is null ? PlanSource.Manual : PlanSource.Template), ct));
+            return await Run(() => builder.CreateAsync(new ManualPlanRequest(b.Name, op, b.EntryIds, dest, conflict, b.TemplateId is null ? PlanSource.Manual : PlanSource.Template)
+            {
+                PlanId = b.PlanId, KeepDamaged = b.KeepDamaged, LeaveOut = b.LeaveOut,
+            }, ct));
         });
 
         api.MapPost("/plans/from-filter", async (FilterPlanBody b, PlanBuilder builder, AnalyzeDbContext db, CancellationToken ct) =>
@@ -89,7 +140,7 @@ public static class PlanEndpoints
                 return Results.Problem($"The filter matches more than {PlanBuilder.MaxItems} items; narrow it down.", statusCode: 400);
             }
 
-            return await Run(() => builder.CreateAsync(new ManualPlanRequest(b.Name, op, ids, dest, conflict, PlanSource.Insight), ct));
+            return await Run(() => builder.CreateAsync(new ManualPlanRequest(b.Name, op, ids, dest, conflict, PlanSource.Insight) { PlanId = b.PlanId, KeepDamaged = b.KeepDamaged }, ct));
         });
 
         api.MapPost("/plans/dedupe", async (DedupePlanRequest req, PlanBuilder builder, CancellationToken ct) =>
@@ -109,7 +160,10 @@ public static class PlanEndpoints
                 return Results.Problem("No damaged files with a copy on the backup.", statusCode: 400);
             }
 
-            return await Run(() => builder.CreateAsync(new ManualPlanRequest(b?.Name ?? $"Restore {ids.Count} damaged file(s) from the backup", ActionOp.Restore, [.. ids.Take(PlanBuilder.MaxItems)], null), ct));
+            return await Run(() => builder.CreateAsync(new ManualPlanRequest(string.IsNullOrWhiteSpace(b?.Name) ? $"Restore {ids.Count} damaged file(s) from the backup" : b.Name, ActionOp.Restore, [.. ids.Take(PlanBuilder.MaxItems)], null)
+            {
+                PlanId = b?.PlanId, KeepDamaged = b?.KeepDamaged,
+            }, ct));
         });
 
         api.MapPatch("/plans/{id:int}/items", async (int id, ItemsBody b, AnalyzeDbContext db, CancellationToken ct) =>
@@ -135,6 +189,34 @@ public static class PlanEndpoints
 
             var n = await q.ExecuteUpdateAsync(u => u.SetProperty(i => i.Included, b.Included), ct);
             return Results.Ok(new { updated = n });
+        });
+
+        // Takes items out of a draft plan altogether (by item id, or by the entries they are about).
+        api.MapPost("/plans/{id:int}/items/remove", async (int id, RemoveItemsBody b, AnalyzeDbContext db, CancellationToken ct) =>
+        {
+            var plan = await db.ActionPlans.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, ct);
+            if (plan is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (plan.Status != PlanStatus.Draft)
+            {
+                return Results.Problem("Only draft plans can be edited", statusCode: 409);
+            }
+
+            var n = 0;
+            foreach (var chunk in (b.Ids ?? []).Chunk(5000))
+            {
+                n += await db.ActionItems.Where(i => i.PlanId == id && chunk.Contains(i.Id)).ExecuteDeleteAsync(ct);
+            }
+
+            foreach (var chunk in (b.EntryIds ?? []).Chunk(5000))
+            {
+                n += await db.ActionItems.Where(i => i.PlanId == id && i.EntryId != null && chunk.Contains(i.EntryId.Value)).ExecuteDeleteAsync(ct);
+            }
+
+            return Results.Ok(new { removed = n });
         });
 
         api.MapPost("/plans/{id:int}/apply", async (int id, AnalyzeDbContext db, PlanQueue queue, CancellationToken ct) =>
@@ -187,7 +269,7 @@ public static class PlanEndpoints
                 return Results.Problem("The plan is running", statusCode: 409);
             }
 
-            var hasTrash = plan.TrashPurgedAt is null && await db.ActionItems.AnyAsync(i => i.PlanId == id && (i.Op == ActionOp.Trash || i.Op == ActionOp.Restore) && i.Status == ItemStatus.Done, ct);
+            var hasTrash = plan.TrashPurgedAt is null && await db.ActionItems.AnyAsync(i => i.PlanId == id && (i.Op == ActionOp.Trash || (i.Op == ActionOp.Restore && i.KeepPath == null)) && i.Status == ItemStatus.Done, ct);
             if (hasTrash)
             {
                 return Results.Problem("Empty this plan's trash first (or undo it)", statusCode: 409);
@@ -253,7 +335,8 @@ public static class PlanEndpoints
         try
         {
             var plan = await create();
-            return Results.Ok(new { plan.Id, plan.Name, items = plan.Items.Count });
+            // `items`: the ones this request added (an existing plan may hold more).
+            return Results.Ok(new { plan.Id, plan.Name, items = plan.Items.Count, included = plan.Items.Count(i => i.Included) });
         }
         catch (ArgumentException e)
         {

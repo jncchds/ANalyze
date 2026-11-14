@@ -199,6 +199,8 @@ export interface PlanRow {
   done: number
   failed: number
   op?: ActionOp
+  /** The plan's items do not all have the same action. */
+  mixed?: boolean
 }
 
 export interface PlanItem {

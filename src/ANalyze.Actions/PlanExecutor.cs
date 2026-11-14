@@ -288,6 +288,12 @@ public sealed class PlanExecutor(
             case ActionOp.Restore:
                 await RestoreAsync(plan, item, root.Path, src, st, conn, ct);
                 replaced.Add(item.EntryId!.Value);
+                if (item.KeepPath is { } kept)
+                {
+                    // The damaged file kept next to it is a new file for the index.
+                    rescan.Add((item.RootId, ParentOf(kept)));
+                }
+
                 break;
 
             case ActionOp.Hardlink:
@@ -326,7 +332,8 @@ public sealed class PlanExecutor(
     /// <summary>
     /// Replaces a damaged file with the backup's copy: the copy is downloaded next to it and checked (size, and content hash when the
     /// backup has one), gets the owner, permissions and modification time of the file it replaces, then the damaged file goes to the
-    /// trash (so the plan can be undone) and the copy takes its place.
+    /// trash, or to <see cref="ActionItem.KeepPath"/> when the plan keeps it (either way the plan can be undone), and the copy takes
+    /// its place.
     /// </summary>
     private async Task RestoreAsync(ActionPlan plan, ActionItem item, string rootPath, string src, FileStat st, Microsoft.Data.Sqlite.SqliteConnection conn, CancellationToken ct)
     {
@@ -396,10 +403,10 @@ public sealed class PlanExecutor(
 
             File.SetLastWriteTimeUtc(tmp, File.GetLastWriteTimeUtc(src));
 
-            var dest = RootRegistry.TrashPath(rootPath, plan.Id, item.SourcePath);
+            var dest = item.KeepPath is { } keep ? RootRegistry.Combine(rootPath, keep) : RootRegistry.TrashPath(rootPath, plan.Id, item.SourcePath);
             if (Path.Exists(dest))
             {
-                throw new SkipException("The trash of this plan already holds a file at that path");
+                throw new SkipException(item.KeepPath is null ? "The trash of this plan already holds a file at that path" : $"{item.KeepPath} exists already: the damaged file cannot be kept there");
             }
 
             Native.CreateDirectoryLikeParent(Path.GetDirectoryName(dest)!);
@@ -483,6 +490,12 @@ public sealed class PlanExecutor(
         {
             UndoRestore(item, from, to, root.Path, conn);
             replaced.Add(item.EntryId!.Value);
+            if (item.KeepPath is not null)
+            {
+                // The kept damaged file is back under its own name: its index entry (from the rescan) goes.
+                DropFromIndex(conn, item.RootId, item.UndoPath);
+            }
+
             return;
         }
 
@@ -499,14 +512,19 @@ public sealed class PlanExecutor(
         {
             // The moved copy is gone from the target: drop it (or the folders the move created) from the index directly.
             var gone = pruned is null ? item.UndoPath : Path.GetRelativePath(root.Path, pruned).Replace('\\', '/');
-            using var find = conn.CreateCommand();
-            find.CommandText = "SELECT Id FROM Entries WHERE RootId = $r AND RelPath = $p";
-            find.Parameters.AddWithValue("$r", item.RootId);
-            find.Parameters.AddWithValue("$p", gone);
-            if (find.ExecuteScalar() is long goneId)
-            {
-                EntryMaintenance.DeleteEntry(conn, goneId);
-            }
+            DropFromIndex(conn, item.RootId, gone);
+        }
+    }
+
+    private static void DropFromIndex(Microsoft.Data.Sqlite.SqliteConnection conn, int rootId, string relPath)
+    {
+        using var find = conn.CreateCommand();
+        find.CommandText = "SELECT Id FROM Entries WHERE RootId = $r AND RelPath = $p";
+        find.Parameters.AddWithValue("$r", rootId);
+        find.Parameters.AddWithValue("$p", relPath);
+        if (find.ExecuteScalar() is long goneId)
+        {
+            EntryMaintenance.DeleteEntry(conn, goneId);
         }
     }
 

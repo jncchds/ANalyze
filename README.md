@@ -146,8 +146,10 @@ Build without ffmpeg (no video thumbnails, smaller image): `docker build -f dock
 
 ## How actions stay safe
 
-1. Selecting files and choosing **Clean up…** creates a **draft plan** — nothing changes yet.
-2. The review page lists every item with its target; untick anything to keep. Conflicts (destination exists) are
+1. Selecting files and choosing **Clean up…** creates a **draft plan** — nothing changes yet. Under **Add to** the same
+   dialog adds the selection to a draft plan you already have instead (a plan can mix actions; choosing again for a file
+   replaces its earlier item), so one plan can be collected from several places.
+2. The review page lists every item with its target; untick anything to keep, remove items with ✕, rename the plan with ✎. Conflicts (destination exists) are
    resolved by the chosen policy (rename/skip/overwrite); items on read-only roots are excluded.
 3. **Apply** re-checks each item right before it runs: still there, same size and mtime. Duplicate removals also re-hash
    both copies, so a file that changed since the scan is skipped.
@@ -300,12 +302,24 @@ streamed from the backup server through this instance:
 
 The file panel also has **‹ ›** buttons (and the ← → keys) to step through the files of the list it was opened from.
 
-**Replace with the backup's copy** repairs damaged files: *Replace all with the backup's copy…* on the Backup page's
-*Corrupted* tab, the link next to a corrupted file in the file panel, or the action of that name in **Clean up…** (for a
-selection, a search such as *Possibly corrupted*, or folders, which stand for the damaged files inside them). It is a plan
-like any other: each file's copy is downloaded from the backup server next to it and checked against the backup's size
-and content hash, keeps the owner, permissions and date of the file it replaces, and the damaged file goes to the trash
-— so **Undo** puts it back. Files that are not damaged, identical or not on the backup are listed but left out.
+**Replace with the backup's copy** repairs damaged files: *Replace all…* on the Backup page's *Corrupted* tab, the link
+next to a corrupted file in the file panel, or the action of that name in **Clean up…** (for a selection, a search such
+as *Possibly corrupted*, or folders, which stand for the damaged files inside them). It is a plan like any other: each
+file's copy is downloaded from the backup server next to it and checked against the backup's size and content hash,
+keeps the owner, permissions and date of the file it replaces, and the damaged file goes to the trash — or, if you
+choose *is kept, just in case*, stays under another name (by default `{relDir}/~{name}`: next to the restored file as
+`~name`; any move template works, e.g. `Damaged/{relDir}/{name}`). Either way **Undo** puts it back. Files that are not
+damaged, identical or not on the backup are listed but left out.
+
+The files on the *Corrupted* tab (and the other file tabs) have checkboxes: **Action for N selected…** opens the same
+dialog, so a corrupted file can also be trashed, moved or deleted instead of replaced.
+
+**Review one by one →** (Corrupted tab, or a draft plan with restores) goes through the corrupted files one at a time,
+each next to the backup's copy (side by side, or *What happened?*), and you decide per file: **Replace** (damaged file
+to the trash), **Replace, keep damaged as** `~name`, **Keep** the file here, **Skip** for now, or another action. Keys:
+`1` `2` `3` decide and jump to the next undecided file, `S` skips, `←` `→` step. Every decision is saved at once as an
+item of a draft plan (a new one, or one you pick), so you can stop and continue later; nothing changes on disk until
+you apply that plan.
 
 ### Plex
 

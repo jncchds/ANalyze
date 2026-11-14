@@ -184,6 +184,12 @@ fires: AI auto-classification and integration auto-sync subscribe to it.
 `PlanBuilder` creates drafts: manual selections (folders cover their contents — nested picks are dropped), filters (`/plans/from-filter`, same
 `SearchFilter` as search and insights), templates (`PathTemplate` tokens `{name} {stem} {ext} {category} {kind} {relDir} {parent} {mtime:fmt} {size}`;
 values are sanitized and `..` is rejected), and dedupe (`DedupeSelector`). Items on read-only roots are excluded at creation and re-checked at apply.
+Every create request takes a `planId`: the items are then added to that draft plan (`PlanBuilder.OpenAsync`/`SaveAsync`) instead of a new one —
+items it already has for the same entries are replaced (the latest decision wins), its name and conflict policy stay (the policy is per plan:
+the executor reads it for overwrites), and new move targets avoid the ones it already has. So a plan can mix actions (`mixed` in `GET /plans`).
+`leaveOut` lists entries without including them (warning `PlanBuilder.KeptNote`): a recorded "keep it" decision. Draft plans are edited with
+`PATCH /plans/{id}/items` (include/exclude), `POST /plans/{id}/items/remove` (`ids` or `entryIds`) and `PATCH /plans/{id}` (rename);
+`GET /plans/{id}/decisions` is the compact per-entry view the damaged-files review reads.
 
 `PlanExecutor` (via `PlanQueue`/`PlanWorker`) verifies each item (exists, same type, size and mtime; duplicates are re-hashed together with the
 kept copy), then:
@@ -195,11 +201,15 @@ kept copy), then:
   `BackupRestoreSource`: `FindAsync` from `BackupFiles`, `DamagedAsync` = corrupt there or `CorruptAt` set, `OpenAsync` streams the parent's
   `/backup/content`). The copy is downloaded to `.<name>.analyze-restore-<guid>` next to the file while hashing it (XxHash128), checked
   against the backup's size and `ParentHash`, given the replaced file's owner, mode and mtime; then the damaged file is renamed into the
-  trash (like Trash) and the copy over its path. The entry gets the new size, identity, hashes and no `CorruptAt`
+  trash (like Trash), or — when the request had `keepDamaged`, a path template such as `{relDir}/~{name}` — to `ActionItem.KeepPath`
+  (expanded at creation, made unique against the disk and the plan; its folder is rescanned so the kept file is indexed, and such items
+  count as nothing in the trash), and the copy over its path. The entry gets the new size, identity, hashes and no `CorruptAt`
   (`EntryMaintenance.UpdateContent`), and the `IHashListener`s re-check it (the backup state becomes synced). Undo deletes the copy unless it
-  was changed since (its mtime still equals the trashed file's), moves the damaged file back and clears its hash for re-hashing. Plans:
+  was changed since (its mtime still equals the trashed file's), moves the damaged file back (from the trash or `KeepPath`, whose index
+  entry is dropped) and clears its hash for re-hashing. Plans:
   `PlanBuilder` with `ActionOp.Restore` (folders stand for the damaged files inside; not damaged, identical, not on the backup → excluded
-  with a warning; `TargetPath` = the copy's location for display), or `POST /plans/restore-damaged` for every damaged file.
+  with a warning; `TargetPath` = the copy's location for display), or `POST /plans/restore-damaged` for every damaged file (the list itself:
+  `GET /integrations/parent/files?damaged=true`).
 
 The index is updated directly (`EntryMaintenance.DeleteEntry`, `UpdateIdentity`) and folders that received files are rescanned as subtrees.
 Undo moves items back (trash, move, restore), prunes folders left empty, and drops the moved copies from the index.
@@ -366,7 +376,11 @@ sort and pages (`useUrlParam`/`useUrlEnum`/`useUrlNumber`; choices push a histor
 overlays (`useUrlOverlay`: dialogs as `?edit=new|<id>`, `?plan=…`, `?title=<key>`; the file panel via `useEntryPreview` as `?file=<id>&fileTab=`,
 dialogs use their own key such as `itemFile`). An overlay is pushed with a marker in the history state and closing it goes Back; opened from a
 link it closes in place; navigating away from one (`leaveOverlay`) replaces its entry. `Modal` closes only through its `open` prop, and
-integration labels' `?entry=` is turned into the page's own URL state once located. New UI state that a user would expect Back to undo
+integration labels' `?entry=` is turned into the page's own URL state once located. `PlanDialog` is the one dialog that plans an action
+(selection, filter or `damaged`: every damaged file): it offers the draft plans under "Add to" (`lib/plans.ts`: `useDraftPlans`, last choices
+in `localStorage`) and, for a restore, where the damaged file goes. The Backup page's `?review=1` is `integrations/parent/DamagedReview.tsx`:
+the damaged files one at a time next to the backup's copy (`BackupCompareView`, `ComparePanel`), each decision (replace / replace and keep
+the damaged file / keep / other action) written at once as an item of a draft plan (`planId`, `leaveOut`), keys 1 2 3 S ← →. New UI state that a user would expect Back to undo
 belongs in the URL the same way. Charts: labeled bar lists
 (identity never by color alone) and an ECharts treemap. Category colors: the first eight built-ins use the validated categorical palette.
 

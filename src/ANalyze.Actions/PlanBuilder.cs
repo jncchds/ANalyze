@@ -12,7 +12,20 @@ public sealed record ManualPlanRequest(
     IReadOnlyList<long> EntryIds,
     string? Destination,
     ConflictPolicy Conflict = ConflictPolicy.Rename,
-    PlanSource Source = PlanSource.Manual);
+    PlanSource Source = PlanSource.Manual)
+{
+    /// <summary>Add the items to this draft plan instead of creating one (its name and conflict policy stay).</summary>
+    public int? PlanId { get; init; }
+
+    /// <summary>
+    /// For <see cref="ActionOp.Restore"/>: where the damaged file goes instead of the trash, as a path template
+    /// (<c>{relDir}/~{name}</c> keeps it next to the restored file). Empty: the trash.
+    /// </summary>
+    public string? KeepDamaged { get; init; }
+
+    /// <summary>List the items but leave them out: a recorded decision to keep them as they are.</summary>
+    public bool LeaveOut { get; init; }
+}
 
 public sealed record DedupePlanRequest(
     string? Name,
@@ -22,12 +35,19 @@ public sealed record DedupePlanRequest(
     IReadOnlyList<string>? Hashes,
     int? RootId,
     string? PathPrefix,
-    long MinSize = 0);
+    long MinSize = 0,
+    int? PlanId = null);
 
 /// <summary>Builds draft plans. Nothing touches the disk until a plan is applied.</summary>
 public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootRegistry roots, IEnumerable<IBackupSource> backups)
 {
     public const int MaxItems = 200_000;
+
+    /// <summary>Default place for a damaged file that is kept when the backup's copy replaces it.</summary>
+    public const string KeepDamagedDefault = "{relDir}/~{name}";
+
+    /// <summary>Warning of items listed by a "keep it" decision (<see cref="ManualPlanRequest.LeaveOut"/>).</summary>
+    public const string KeptNote = "Kept as it is (your decision)";
 
     public async Task<ActionPlan> CreateAsync(ManualPlanRequest req, CancellationToken ct)
     {
@@ -69,18 +89,34 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
             }
         }
 
-        var plan = new ActionPlan
+        var plan = await OpenAsync(db, req.PlanId, entries.Select(e => e.Id).ToList(), () => new ActionPlan
         {
-            Name = string.IsNullOrWhiteSpace(req.Name) ? DefaultName(req.Op, entries.Count) : req.Name.Trim(),
+            Name = string.IsNullOrWhiteSpace(req.Name) ? DefaultName(req.Op, entries.Count, !string.IsNullOrWhiteSpace(req.KeepDamaged)) : req.Name.Trim(),
             Source = req.Source,
             Status = PlanStatus.Draft,
             Conflict = req.Conflict,
             CreatedAt = DateTimeOffset.UtcNow,
-        };
+        }, ct);
+        var conflict = plan.Conflict;
+        var added = new List<ActionItem>(entries.Count);
 
-        var targets = new HashSet<string>(StringComparer.Ordinal);
+        // Paths this plan already writes to (in an existing plan too), per root.
+        var targets = new HashSet<(int Root, string Path)>();
+        if (req.PlanId is not null)
+        {
+            foreach (var t in await db.ActionItems.AsNoTracking().Where(i => i.PlanId == plan.Id && (i.Op == ActionOp.Move || i.Op == ActionOp.Restore))
+                .Select(i => new { i.RootId, i.Op, i.TargetPath, i.KeepPath }).ToListAsync(ct))
+            {
+                if ((t.Op == ActionOp.Move ? t.TargetPath : t.KeepPath) is { } path)
+                {
+                    targets.Add((t.RootId, path));
+                }
+            }
+        }
+
         foreach (var e in entries)
         {
+            var facts = new TemplateFacts(e.Name, e.RelPath, e.Ext, e.CategoryId is { } c && categories.TryGetValue(c, out var n) ? n : null, e.Kind.ToString(), e.MTime, e.IsDir ? e.TotalSize : e.Size);
             var item = new ActionItem
             {
                 EntryId = e.Id,
@@ -95,21 +131,17 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
             if (req.Op == ActionOp.Restore)
             {
                 CheckRestore(item, e, copies.GetValueOrDefault(e.Id));
+                if (item.TargetPath is not null && !e.IsDir && !string.IsNullOrWhiteSpace(req.KeepDamaged))
+                {
+                    KeepDamagedAt(item, req.KeepDamaged, facts, targets);
+                }
             }
 
             if (req.Op == ActionOp.Move)
             {
-                var facts = new TemplateFacts(e.Name, e.RelPath, e.Ext, e.CategoryId is { } c && categories.TryGetValue(c, out var n) ? n : null, e.Kind.ToString(), e.MTime, e.IsDir ? e.TotalSize : e.Size);
-                var dest = req.Destination!;
-                // A plain folder ("Archive/old") means "move into it, keep the name".
-                if (!dest.Contains('{'))
-                {
-                    dest = dest.TrimEnd('/') + "/{name}";
-                }
-
                 try
                 {
-                    item.TargetPath = PathTemplate.Expand(dest, facts);
+                    item.TargetPath = PathTemplate.Expand(WithName(req.Destination!), facts);
                 }
                 catch (ArgumentException ex)
                 {
@@ -119,18 +151,133 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
 
                 if (item.TargetPath is { } t)
                 {
-                    ResolveTarget(item, t, req.Conflict, targets);
+                    ResolveTarget(item, t, conflict, targets);
                 }
             }
 
             MarkReadOnly(item);
-            plan.Items.Add(item);
+            if (req.LeaveOut && item.Included)
+            {
+                item.Included = false;
+                item.Warning = KeptNote;
+            }
+
+            added.Add(item);
         }
 
-        await MarkInUseAsync(db, plan.Items, ct);
-        db.ActionPlans.Add(plan);
-        await db.SaveChangesAsync(ct);
+        await MarkInUseAsync(db, added, ct);
+        return await SaveAsync(db, plan, added, ct);
+    }
+
+    /// <summary>A plain folder ("Archive/old") means "into it, keeping the name".</summary>
+    private static string WithName(string template) => template.Contains('{') ? template : template.TrimEnd('/') + "/{name}";
+
+    /// <summary>
+    /// The plan new items go to: a new one, or the draft <paramref name="planId"/>. Items it already has for the same entries are
+    /// replaced (the latest decision about a file wins).
+    /// </summary>
+    private static async Task<ActionPlan> OpenAsync(AnalyzeDbContext db, int? planId, IReadOnlyList<long> entryIds, Func<ActionPlan> create, CancellationToken ct)
+    {
+        if (planId is not { } id)
+        {
+            return create();
+        }
+
+        var plan = await db.ActionPlans.FirstOrDefaultAsync(p => p.Id == id, ct) ?? throw new ArgumentException($"Plan #{id} does not exist.");
+        if (plan.Status != PlanStatus.Draft)
+        {
+            throw new ArgumentException("Only draft plans can take more items.");
+        }
+
+        if (await db.ActionItems.CountAsync(i => i.PlanId == id, ct) + entryIds.Count > MaxItems)
+        {
+            throw new ArgumentException($"Too many items in one plan (max {MaxItems}).");
+        }
+
+        foreach (var chunk in entryIds.Chunk(5000))
+        {
+            await db.ActionItems.Where(i => i.PlanId == id && i.EntryId != null && chunk.Contains(i.EntryId.Value)).ExecuteDeleteAsync(ct);
+        }
+
         return plan;
+    }
+
+    /// <summary>Saves the new items; the returned plan lists only them (<see cref="ActionPlan.Items"/>).</summary>
+    private static async Task<ActionPlan> SaveAsync(AnalyzeDbContext db, ActionPlan plan, List<ActionItem> added, CancellationToken ct)
+    {
+        if (plan.Id == 0)
+        {
+            plan.Items.AddRange(added);
+            db.ActionPlans.Add(plan);
+        }
+        else
+        {
+            foreach (var item in added)
+            {
+                item.PlanId = plan.Id;
+            }
+
+            db.ActionItems.AddRange(added);
+        }
+
+        await db.SaveChangesAsync(ct);
+        if (plan.Items.Count == 0)
+        {
+            plan.Items.AddRange(added);
+        }
+
+        return plan;
+    }
+
+    /// <summary>
+    /// The damaged file is kept at the expanded template instead of going to the trash (<see cref="ActionItem.KeepPath"/>); a taken
+    /// name gets a number.
+    /// </summary>
+    private void KeepDamagedAt(ActionItem item, string template, TemplateFacts facts, HashSet<(int Root, string Path)> taken)
+    {
+        string keep;
+        try
+        {
+            keep = PathTemplate.Expand(WithName(template.Trim()), facts);
+        }
+        catch (ArgumentException ex)
+        {
+            item.Included = false;
+            item.Warning = ex.Message;
+            return;
+        }
+
+        if (keep == item.SourcePath)
+        {
+            item.Included = false;
+            item.Warning = "The damaged file cannot be kept under its own name";
+            return;
+        }
+
+        if (keep == RootRegistry.TrashFolder || keep.StartsWith(RootRegistry.TrashFolder + "/", StringComparison.Ordinal))
+        {
+            item.Included = false;
+            item.Warning = "The damaged file cannot be kept in the trash folder";
+            return;
+        }
+
+        item.KeepPath = Unique(item.RootId, keep, taken);
+        taken.Add((item.RootId, item.KeepPath));
+    }
+
+    private bool Exists(int rootId, string rel, HashSet<(int Root, string Path)> taken) =>
+        taken.Contains((rootId, rel)) || (roots.Get(rootId) is { } root && Path.Exists(RootRegistry.Combine(root.Path, rel)));
+
+    /// <summary>"name.ext", or "name (2).ext"… when that is on disk or taken by another item of the plan.</summary>
+    private string Unique(int rootId, string rel, HashSet<(int Root, string Path)> taken)
+    {
+        var candidate = rel;
+        for (var n = 2; Exists(rootId, candidate, taken) && n < 10_000; n++)
+        {
+            candidate = PathTemplate.WithSuffix(rel, n);
+        }
+
+        return candidate;
     }
 
     /// <summary>
@@ -228,6 +375,7 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
         var rows = await q.Select(e => new { e.Id, e.RootId, e.RelPath, e.MTime, e.Size, e.Inode, e.Dev, e.FullHash })
             .OrderBy(e => e.FullHash).ToListAsync(ct);
 
+        var added = new List<ActionItem>();
         var plan = new ActionPlan
         {
             Name = string.IsNullOrWhiteSpace(req.Name) ? $"Dedupe: keep {req.Keep.ToString().ToLowerInvariant()}, {req.Op.ToString().ToLowerInvariant()} others" : req.Name.Trim(),
@@ -287,18 +435,22 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
                 }
 
                 MarkReadOnly(item);
-                plan.Items.Add(item);
-                if (plan.Items.Count >= MaxItems)
+                added.Add(item);
+                if (added.Count >= MaxItems)
                 {
                     break;
                 }
             }
+
+            if (added.Count >= MaxItems)
+            {
+                break;
+            }
         }
 
-        await MarkInUseAsync(db, plan.Items, ct);
-        db.ActionPlans.Add(plan);
-        await db.SaveChangesAsync(ct);
-        return plan;
+        await MarkInUseAsync(db, added, ct);
+        plan = await OpenAsync(db, req.PlanId, added.Select(i => i.EntryId!.Value).ToList(), () => plan, ct);
+        return await SaveAsync(db, plan, added, ct);
     }
 
     private void MarkReadOnly(ActionItem item)
@@ -312,7 +464,7 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
     }
 
     /// <summary>Applies the conflict policy against the disk and against other targets in the same plan.</summary>
-    private void ResolveTarget(ActionItem item, string target, ConflictPolicy policy, HashSet<string> taken)
+    private void ResolveTarget(ActionItem item, string target, ConflictPolicy policy, HashSet<(int Root, string Path)> taken)
     {
         if (target == item.SourcePath)
         {
@@ -328,10 +480,7 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
             return;
         }
 
-        var root = roots.Get(item.RootId);
-        bool Exists(string rel) => taken.Contains(rel) || (root is not null && Path.Exists(RootRegistry.Combine(root.Path, rel)));
-
-        if (Exists(target))
+        if (Exists(item.RootId, target, taken))
         {
             switch (policy)
             {
@@ -343,21 +492,14 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
                     item.Warning = "Will overwrite the existing destination";
                     break;
                 default:
-                    var n = 2;
-                    var candidate = PathTemplate.WithSuffix(target, n);
-                    while (Exists(candidate) && n < 10_000)
-                    {
-                        candidate = PathTemplate.WithSuffix(target, ++n);
-                    }
-
-                    target = candidate;
+                    target = Unique(item.RootId, target, taken);
                     item.Warning = "Renamed to avoid a name clash";
                     break;
             }
         }
 
         item.TargetPath = target;
-        taken.Add(target);
+        taken.Add((item.RootId, target));
     }
 
     internal static List<Entry> RemoveNested(List<Entry> entries)
@@ -382,11 +524,12 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
         }).ToList();
     }
 
-    private static string DefaultName(ActionOp op, int count) => op switch
+    private static string DefaultName(ActionOp op, int count, bool keepDamaged = false) => op switch
     {
         ActionOp.Trash => $"Trash {count} item(s)",
         ActionOp.Delete => $"Delete {count} item(s)",
         ActionOp.Move => $"Move {count} item(s)",
+        ActionOp.Restore when keepDamaged => $"Restore {count} file(s) from the backup, keep the damaged ones",
         ActionOp.Restore => $"Restore {count} file(s) from the backup",
         _ => $"{op} {count} item(s)",
     };

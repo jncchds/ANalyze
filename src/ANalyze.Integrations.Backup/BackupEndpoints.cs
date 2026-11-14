@@ -71,10 +71,16 @@ internal static class BackupEndpoints
         });
 
         // Files by state, inside a folder (direct=true: only files directly in it); largest first.
-        g.MapGet("/files", async (string? state, int? rootId, string? path, bool? direct, string? q, string? sort, int? offset, int? limit, SqliteSetup sqlite, RootRegistry roots, CancellationToken ct) =>
+        // damaged=true: every file a restore can repair (corrupt here, or flagged by the integrity check, with a copy on the backup).
+        g.MapGet("/files", async (string? state, int? rootId, string? path, bool? direct, string? q, string? sort, bool? damaged, int? offset, int? limit, SqliteSetup sqlite, RootRegistry roots, CancellationToken ct) =>
         {
             var snap = await plugin.LoadSnapshotAsync(ct);
             var where = new List<string> { "b.IsDir = 0" };
+            if (damaged == true)
+            {
+                where.Add($"b.ParentSize IS NOT NULL AND (b.State = '{BackupStates.Corrupt}' OR EXISTS (SELECT 1 FROM Entries e WHERE e.Id = b.EntryId AND e.CorruptAt IS NOT NULL))");
+            }
+
             var p = (path ?? "").Trim('/');
             var prefix = p.Length == 0 ? "" : p + "/";
             if (!string.IsNullOrEmpty(state))

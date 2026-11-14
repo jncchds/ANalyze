@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -8,6 +9,7 @@ import { ConfirmButton, Empty, ErrorBox, Loading, PageTitle, Progress, Stat } fr
 import { isActive, useJob } from '../hooks/useJobs'
 import { bytes, count, dateTime } from '../lib/format'
 import { useUrlNumber, useUrlParam } from '../hooks/useUrlState'
+import { itemAction } from '../lib/plans'
 import { STATUS_STYLE } from './Actions'
 
 const PAGE = 200
@@ -42,6 +44,19 @@ export default function PlanPage() {
     mutationFn: (body: { ids?: number[]; included: boolean; filter?: string }) => api(`/plans/${id}/items`, { method: 'PATCH', json: body }),
     onSuccess: refresh,
   })
+  const removeItem = useMutation({
+    mutationFn: (itemId: number) => api(`/plans/${id}/items/remove`, { method: 'POST', json: { ids: [itemId] } }),
+    onSuccess: refresh,
+  })
+  const [renaming, setRenaming] = useState<string>()
+  const rename = useMutation({
+    mutationFn: (name: string) => api(`/plans/${id}`, { method: 'PATCH', json: { name } }),
+    onSuccess: () => {
+      setRenaming(undefined)
+      qc.invalidateQueries({ queryKey: ['plans'] })
+      refresh()
+    },
+  })
   const apply = useMutation({ mutationFn: () => api(`/plans/${id}/apply`, { method: 'POST' }), onSuccess: refresh })
   const undo = useMutation({ mutationFn: () => api(`/plans/${id}/undo`, { method: 'POST' }), onSuccess: refresh })
   const cancel = useMutation({ mutationFn: () => api('/plans/cancel', { method: 'POST' }) })
@@ -59,6 +74,7 @@ export default function PlanPage() {
   const draft = plan.status === 'draft'
   const rootName = (rid: number) => roots.data?.find((r) => r.id === rid)?.name ?? '?'
   const hasDelete = page.items.some((i) => i.op === 'delete')
+  const hasRestore = page.items.some((i) => i.op === 'restore')
 
   return (
     <>
@@ -75,6 +91,11 @@ export default function PlanPage() {
         actions={
           <>
             <span className={clsx('rounded px-2 py-0.5 text-xs font-semibold', STATUS_STYLE[plan.status])}>{plan.status}</span>
+            {draft && hasRestore && (
+              <Link className="btn-secondary" to={`/integrations/parent?review=1&plan=${plan.id}`} title="Go through the corrupted files one by one, comparing each with the backup; the decisions land in this plan">
+                Review one by one
+              </Link>
+            )}
             {(draft || plan.status === 'cancelled' || plan.status === 'failed') && (
               <ConfirmButton
                 className="btn-primary"
@@ -103,9 +124,37 @@ export default function PlanPage() {
           </>
         }
       >
-        {plan.name}
+        {renaming !== undefined ? (
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (renaming.trim()) rename.mutate(renaming.trim())
+            }}
+          >
+            <input className="input max-w-md text-base font-normal" value={renaming} autoFocus onChange={(e) => setRenaming(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && setRenaming(undefined)} aria-label="Plan name" />
+            <button className="btn-primary text-sm font-normal" disabled={rename.isPending || !renaming.trim()}>
+              Save
+            </button>
+            <button type="button" className="btn-ghost text-sm font-normal" onClick={() => setRenaming(undefined)}>
+              Cancel
+            </button>
+          </form>
+        ) : (
+          <>
+            {plan.name}{' '}
+            <button className="btn-ghost px-1.5 py-0.5 align-middle text-sm font-normal" onClick={() => setRenaming(plan.name)} title="Rename the plan" aria-label="Rename the plan">
+              ✎
+            </button>
+          </>
+        )}
       </PageTitle>
-      {(apply.error || undo.error || remove.error) && <ErrorBox error={apply.error ?? undo.error ?? remove.error} />}
+      {(apply.error || undo.error || remove.error || rename.error || removeItem.error) && <ErrorBox error={apply.error ?? undo.error ?? remove.error ?? rename.error ?? removeItem.error} />}
+      {draft && (
+        <p className="mb-3 text-sm muted">
+          A draft takes more items: choose this plan under “Add to” in any “Clean up…” dialog. Untick an item to leave it out, or remove it with ✕.
+        </p>
+      )}
       {draft && hasDelete && (
         <div className="mb-3 rounded-md bg-danger/10 p-3 text-sm text-danger">This plan deletes files permanently. Consider recreating it with “Move to trash”.</div>
       )}
@@ -180,15 +229,20 @@ export default function PlanPage() {
                 {i.targetPath && <div className="break-all text-xs text-accent">{i.op === 'restore' ? '← from ' : '→ '}{i.targetPath}</div>}
                 {i.keepPath && (
                   <div className="break-all text-xs muted">
-                    {i.op === 'hardlink' ? 'linked to' : 'kept copy:'} {i.keepPath}
+                    {i.op === 'restore' ? 'damaged file kept as' : i.op === 'hardlink' ? 'linked to' : 'kept copy:'} {i.keepPath}
                   </div>
                 )}
                 {i.warning && <div className="text-xs text-warning">⚠ {i.warning}</div>}
                 {i.error && <div className="text-xs text-danger">{i.error}</div>}
               </div>
-              <span className="shrink-0 text-xs muted">{i.op}</span>
+              <span className="shrink-0 text-xs muted">{itemAction(i)}</span>
               {i.status !== 'pending' && <span className={clsx('shrink-0 rounded px-1.5 text-xs', i.status === 'done' ? 'bg-success/10 text-success' : i.status === 'undone' ? 'bg-muted/10 text-muted' : 'bg-danger/10 text-danger')}>{i.status}</span>}
               <span className="w-20 shrink-0 text-right tabular">{bytes(i.expectedSize)}</span>
+              {draft && (
+                <button className="btn-ghost shrink-0 px-1.5 py-0 text-xs" onClick={() => removeItem.mutate(i.id)} disabled={removeItem.isPending} title="Remove from the plan" aria-label="Remove from the plan">
+                  ✕
+                </button>
+              )}
             </div>
           ))}
         </div>

@@ -156,6 +156,93 @@ public class RestoreTests
     }
 
     [Fact]
+    public async Task The_damaged_file_can_be_kept_next_to_the_restored_one()
+    {
+        var (app, http, backup, damaged, _, path) = await SetupAsync();
+        await using var _a = app;
+        using var _h = http;
+        var good = Enumerable.Range(0, 6000).Select(i => (byte)i).ToArray();
+        backup.Copies[damaged] = (good, true, Hash(good));
+        var kept = Path.Combine(app.Library, "docs/~restore.bin");
+
+        var res = await http.PostAsJsonAsync("/api/v1/plans", new { entryIds = new[] { damaged }, op = "restore", keepDamaged = "{relDir}/~{name}" }, TestApp.Json);
+        res.EnsureSuccessStatusCode();
+        var id = (await res.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+        var plan = await http.GetFromJsonAsync<JsonElement>($"/api/v1/plans/{id}");
+        Assert.Equal("docs/~restore.bin", plan.GetProperty("page").GetProperty("items")[0].GetProperty("keepPath").GetString());
+
+        (await http.PostAsync($"/api/v1/plans/{id}/apply", null)).EnsureSuccessStatusCode();
+        plan = await app.WaitPlanAsync(http, id, "done", "failed");
+        Assert.Equal(1, plan.GetProperty("summary").GetProperty("done").GetInt32());
+        Assert.Equal(good, await File.ReadAllBytesAsync(path));
+        Assert.Equal(5000, new FileInfo(kept).Length);
+        Assert.False(Directory.Exists(Path.Combine(app.Library, ".analyze-trash")));
+        // The kept file is in the index, and nothing of this plan is in the trash.
+        Assert.Equal(1, (await http.GetFromJsonAsync<JsonElement>("/api/v1/search?q=~restore.bin")).GetProperty("items").GetArrayLength());
+        Assert.Equal(0, (await http.GetFromJsonAsync<JsonElement>("/api/v1/trash")).GetArrayLength());
+
+        (await http.PostAsync($"/api/v1/plans/{id}/undo", null)).EnsureSuccessStatusCode();
+        await app.WaitPlanAsync(http, id, "undone");
+        Assert.Equal(5000, new FileInfo(path).Length);
+        Assert.False(File.Exists(kept));
+        Assert.Equal(0, (await http.GetFromJsonAsync<JsonElement>("/api/v1/search?q=~restore.bin")).GetProperty("items").GetArrayLength());
+        (await http.DeleteAsync($"/api/v1/plans/{id}")).EnsureSuccessStatusCode();
+    }
+
+    [Fact]
+    public async Task Decisions_collect_in_one_draft_plan_and_the_latest_wins()
+    {
+        var (app, http, backup, damaged, fine, _) = await SetupAsync();
+        await using var _a = app;
+        using var _h = http;
+        var good = Enumerable.Range(0, 6000).Select(i => (byte)i).ToArray();
+        backup.Copies[damaged] = (good, true, Hash(good));
+
+        var res = await http.PostAsJsonAsync("/api/v1/plans", new { entryIds = new[] { fine }, op = "trash", name = "Collected" }, TestApp.Json);
+        var id = (await res.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+
+        async Task<JsonElement> Decide(object body)
+        {
+            var r = await http.PostAsJsonAsync("/api/v1/plans", body, TestApp.Json);
+            r.EnsureSuccessStatusCode();
+            Assert.Equal(id, (await r.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32());
+            return (await http.GetFromJsonAsync<JsonElement>($"/api/v1/plans/{id}/decisions")).GetProperty("items");
+        }
+
+        JsonElement Of(JsonElement items, long entry) => items.EnumerateArray().Single(i => i.GetProperty("entryId").GetInt64() == entry);
+
+        // Keep it: listed, left out.
+        var items = await Decide(new { planId = id, entryIds = new[] { damaged }, op = "restore", leaveOut = true });
+        Assert.Equal(2, items.GetArrayLength());
+        Assert.True(Of(items, damaged).GetProperty("kept").GetBoolean());
+        Assert.False(Of(items, damaged).GetProperty("included").GetBoolean());
+
+        // Changed my mind: replace it and keep the damaged file. The same entry is not listed twice.
+        items = await Decide(new { planId = id, entryIds = new[] { damaged }, op = "restore", keepDamaged = "{relDir}/~{name}" });
+        Assert.Equal(2, items.GetArrayLength());
+        Assert.True(Of(items, damaged).GetProperty("included").GetBoolean());
+        Assert.Equal("docs/~restore.bin", Of(items, damaged).GetProperty("keepPath").GetString());
+        Assert.Equal("trash", Of(items, fine).GetProperty("op").GetString());
+
+        var plan = await http.GetFromJsonAsync<JsonElement>($"/api/v1/plans/{id}");
+        Assert.Equal("Collected", plan.GetProperty("plan").GetProperty("name").GetString());
+        Assert.True((await http.GetFromJsonAsync<JsonElement>("/api/v1/plans")).EnumerateArray().Single(p => p.GetProperty("id").GetInt32() == id).GetProperty("mixed").GetBoolean());
+
+        (await http.PatchAsJsonAsync($"/api/v1/plans/{id}", new { name = "Renamed" }, TestApp.Json)).EnsureSuccessStatusCode();
+        res = await http.PostAsJsonAsync($"/api/v1/plans/{id}/items/remove", new { entryIds = new[] { fine } }, TestApp.Json);
+        Assert.Equal(1, (await res.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("removed").GetInt32());
+        plan = await http.GetFromJsonAsync<JsonElement>($"/api/v1/plans/{id}");
+        Assert.Equal("Renamed", plan.GetProperty("plan").GetProperty("name").GetString());
+        Assert.Equal(1, plan.GetProperty("summary").GetProperty("items").GetInt32());
+
+        // An applied plan takes nothing more.
+        (await http.PostAsync($"/api/v1/plans/{id}/apply", null)).EnsureSuccessStatusCode();
+        await app.WaitPlanAsync(http, id, "done", "failed");
+        res = await http.PostAsJsonAsync("/api/v1/plans", new { planId = id, entryIds = new[] { fine }, op = "trash" }, TestApp.Json);
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, res.StatusCode);
+    }
+
+    [Fact]
     public async Task A_download_that_does_not_match_the_backup_hash_changes_nothing()
     {
         var (app, http, backup, damaged, _, path) = await SetupAsync();

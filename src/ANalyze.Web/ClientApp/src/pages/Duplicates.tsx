@@ -1,14 +1,16 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, fileUrl } from '../api/client'
 import type { DedupeKeep } from '../api/types'
 import { EntryDrawer } from '../components/EntryDrawer'
 import { ExtractedArchives } from '../components/ExtractedArchives'
+import { PlanTargetField } from '../components/PlanDialog'
 import { Empty, ErrorBox, Field, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../components/ui'
 import { useScope } from '../hooks/useScope'
 import { leaveOverlay, useEntryPreview, useUrlEnum, useUrlNumber, useUrlOverlay, useUrlParam } from '../hooks/useUrlState'
 import { bytes, count, date } from '../lib/format'
+import { lastPlan, useDraftPlans } from '../lib/plans'
 
 interface Member {
   id: number
@@ -180,7 +182,7 @@ export default function Duplicates() {
   )
 }
 
-/** Chooses which copy to keep and what to do with the others; creates a draft plan for review. */
+/** Chooses which copy to keep and what to do with the others; creates a draft plan for review, or adds to one (group by group). */
 function DedupeWizard({ hashes, onClose }: { hashes?: string[]; onClose: () => void }) {
   const navigate = useNavigate()
   const { rootId } = useScope()
@@ -188,6 +190,10 @@ function DedupeWizard({ hashes, onClose }: { hashes?: string[]; onClose: () => v
   const [op, setOp] = useState<'trash' | 'delete' | 'hardlink'>('trash')
   const [preferred, setPreferred] = useState('')
   const [minSize, setMinSize] = useState(0)
+  const qc = useQueryClient()
+  const drafts = useDraftPlans()
+  const [chosen, setChosen] = useState(() => lastPlan.get())
+  const planId = drafts.data?.some((p) => p.id === chosen) ? chosen! : undefined
   const create = useMutation({
     mutationFn: () =>
       api<{ id: number }>('/plans/dedupe', {
@@ -198,14 +204,23 @@ function DedupeWizard({ hashes, onClose }: { hashes?: string[]; onClose: () => v
           hashes,
           rootId,
           minSize,
+          planId,
           preferredFolders: preferred.split('\n').map((s) => s.trim()).filter(Boolean),
         },
       }),
-    onSuccess: (p) => leaveOverlay(navigate, `/actions/${p.id}`),
+    onSuccess: (p) => {
+      lastPlan.set(planId ?? null)
+      qc.invalidateQueries({ queryKey: ['plans'] })
+      qc.invalidateQueries({ queryKey: ['plan'] })
+      // Adding to a plan: stay here for the next group; a new plan opens for review.
+      if (planId) onClose()
+      else leaveOverlay(navigate, `/actions/${p.id}`)
+    },
   })
   return (
     <Modal open onClose={onClose} title={hashes ? 'Dedupe this group' : 'Dedupe all duplicates'}>
       <div className="space-y-4">
+        <PlanTargetField drafts={drafts.data} value={planId} onChange={setChosen} />
         <Field label="Keep">
           <select className="input" value={keep} onChange={(e) => setKeep(e.target.value as DedupeKeep)}>
             <option value="oldest">The oldest copy (usually the original)</option>
@@ -239,7 +254,7 @@ function DedupeWizard({ hashes, onClose }: { hashes?: string[]; onClose: () => v
             Cancel
           </button>
           <button className="btn-primary" onClick={() => create.mutate()} disabled={create.isPending}>
-            Create plan for review
+            {planId !== undefined ? 'Add to the plan' : 'Create plan for review'}
           </button>
         </div>
       </div>
