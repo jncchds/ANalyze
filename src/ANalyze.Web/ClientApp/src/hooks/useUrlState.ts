@@ -131,7 +131,8 @@ export function useEntryPreview(key = 'file') {
       key,
       id,
       tab,
-      open: (entryId: number) => overlay.open(entryId),
+      /** `tab`: the viewer tab to open it on (e.g. `backup`, the comparison with the backup). */
+      open: (entryId: number, tab?: string) => overlay.open(entryId, tab && tab !== 'preview' ? { [tabKey]: tab } : undefined),
       /** Previous/next file: in place, so Back still closes the panel. */
       step: (entryId: number) => overlay.change(entryId),
       close: overlay.close,

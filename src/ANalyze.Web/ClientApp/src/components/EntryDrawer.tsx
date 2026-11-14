@@ -9,6 +9,7 @@ import { bytes, date, kindLabel } from '../lib/format'
 import { PlanDialog } from './PlanDialog'
 import { AnnotationBadges, CategoryPill, ErrorBox, Loading, Tabs } from './ui'
 import { BackupCompareView } from './BackupCompareView'
+import { RestoreDecision } from './RestoreDecision'
 import { useUrlOverlay, type EntryPreview } from '../hooks/useUrlState'
 import { HexView, MainPreview, MetaView, TextView, previewTabs } from './viewers'
 
@@ -45,9 +46,11 @@ function backupText(b: NonNullable<EntryDetail['backup']>, size: number) {
 /**
  * Side panel with details, category, integrations, actions and the preview/text/hex/metadata viewers. It is opened through the
  * URL (`useEntryPreview`: `?file=<id>&fileTab=…`), so Back closes it. With `list` (the files of the page, in its order) it steps to
- * the previous/next file (buttons, ← / → keys) in place, keeping the viewer tab.
+ * the previous/next file (buttons, ← / → keys) in place, keeping the viewer tab. A corrupted file the backup has a copy of gets its
+ * decision here (`RestoreDecision`: replace, replace and keep, keep; keys 1 2 3), saved in a draft plan — `planId` when the panel is
+ * opened from a plan's page — after which the panel steps to the next file of the list.
  */
-export function EntryDrawer({ preview, list }: { preview: EntryPreview; list?: number[] }) {
+export function EntryDrawer({ preview, list, planId }: { preview: EntryPreview; list?: number[]; planId?: number }) {
   const { id, close: onClose, step: onNavigate, tab, setTab } = preview
   const qc = useQueryClient()
   const categories = useCategories()
@@ -129,7 +132,13 @@ export function EntryDrawer({ preview, list }: { preview: EntryPreview; list?: n
               </nav>
             )}
             <h2 className="truncate text-lg font-semibold" title={e?.name}>
-              {e?.name ?? '…'}
+              {e && !e.isDir ? (
+                <Link to={`/browse/${e.id}`} className="hover:text-accent" title={`${e.name} — open in the file browser`}>
+                  {e.name}
+                </Link>
+              ) : (
+                e?.name ?? '…'
+              )}
             </h2>
           </div>
           {pos >= 0 && (
@@ -192,14 +201,6 @@ export function EntryDrawer({ preview, list }: { preview: EntryPreview; list?: n
                 {d.backup && (
                   <div className={clsx('text-xs', d.backup.state === 'synced' ? 'text-accent' : d.backup.state === 'corrupt' ? 'text-danger' : 'text-amber')}>
                     🛟 {backupText(d.backup, e.size)}
-                    {restorable && (
-                      <>
-                        {' '}
-                        <button className="link" disabled={d.root?.readOnly} onClick={() => plan.open('restore')} title={d.root?.readOnly ? 'Root is read-only' : undefined}>
-                          Replace with the backup's copy…
-                        </button>
-                      </>
-                    )}
                   </div>
                 )}
                 {!e.isDir && e.hashedAt && !e.corruptAt && <div className="text-xs muted">Content hash checked {date(e.hashedAt)}</div>}
@@ -249,6 +250,10 @@ export function EntryDrawer({ preview, list }: { preview: EntryPreview; list?: n
                 </button>
               </div>
 
+              {restorable && (
+                <RestoreDecision entryId={e.id} readOnly={d.root?.readOnly} fixedPlan={planId} disabled={plan.value !== null} onDecided={() => next !== undefined && onNavigate(next)} />
+              )}
+
               {!e.isDir && (
                 <div>
                   <Tabs tabs={tabs.map((t) => ({ id: t.id, label: t.label }))} value={shown} onChange={setTab} />
@@ -264,16 +269,7 @@ export function EntryDrawer({ preview, list }: { preview: EntryPreview; list?: n
         </div>
       </aside>
       {e && (
-        <PlanDialog
-          key={plan.value === 'restore' ? 'restore' : 'plan'}
-          open={plan.value !== null}
-          onClose={plan.close}
-          entryIds={[e.id]}
-          count={1}
-          size={e.size}
-          defaultOp={plan.value === 'restore' ? 'restore' : undefined}
-          title={plan.value === 'restore' ? "Replace with the backup's copy" : undefined}
-        />
+        <PlanDialog open={plan.value !== null} onClose={plan.close} entryIds={[e.id]} count={1} size={e.size} />
       )}
     </>
   )

@@ -1,4 +1,4 @@
-import { lazy, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -11,9 +11,8 @@ import { Empty, ErrorBox, Loading, PageTitle, Section, ShareBar, Stat, Tabs } fr
 import { useLocate } from '../../hooks/useLocate'
 import { useEntryPreview, useUrlEnum, useUrlNumber, useUrlOverlay, useUrlParam, useUrlParams } from '../../hooks/useUrlState'
 import { ago, bytes, count, pct } from '../../lib/format'
+import { decisionMark, decisionText, usePlanDecisions, useReviewPlan } from '../../lib/plans'
 import { ComparePanel } from './ComparePanel'
-
-const DamagedReview = lazy(() => import('./DamagedReview'))
 
 type FileState = 'synced' | 'corrupt' | 'missing' | 'unsynced'
 
@@ -86,17 +85,11 @@ const TABS: Tab[] = ['folders', ...FILE_STATES.map((x) => x.id)]
 const inTarget = (t: Target, f: { rootId: number; path: string }) =>
   t.rootId === f.rootId && (!t.relPath || f.path === t.relPath || f.path.startsWith(t.relPath + '/'))
 
-/** The Backup page, or (`?review=1`) the one-by-one review of the corrupted files. */
-export default function BackupPage() {
-  const [params] = useUrlParams()
-  return params.has('review') ? <DamagedReview /> : <Overview />
-}
-
 /**
  * Backup page of the "ANalyze parent" integration: what of this instance is synchronized to the backup server (the parent).
  * Tab, folder (`?target=&path=`), filters and the file panel are in the URL, so Back steps through them.
  */
-function Overview() {
+export default function BackupPage() {
   const [, setParams] = useUrlParams()
   const [tab, setTab] = useUrlEnum<Tab>('tab', TABS, 'folders')
   const q = useQuery({ queryKey: ['parent', 'summary'], queryFn: () => api<Summary>('/integrations/parent/summary') })
@@ -354,9 +347,9 @@ function Folders({ targets, threshold }: { targets: Target[]; threshold: number 
 function useFilePreview() {
   const preview = useEntryPreview()
   const [list, setList] = useState<number[]>()
-  const open: OpenFile = (id, ids) => {
+  const open: OpenFile = (id, ids, tab) => {
     setList(ids)
-    preview.open(id)
+    preview.open(id, tab)
   }
   return [<EntryDrawer preview={preview} list={list} />, open] as const
 }
@@ -376,8 +369,24 @@ function detail(f: FileRow) {
 
 const STATE_TONE: Record<FileState, string> = { synced: 'chip', corrupt: 'rounded bg-danger/10 px-1.5 text-xs text-danger', missing: 'pill-amber', unsynced: 'pill-muted' }
 
-/** Opens a file in the drawer, with the list it was opened from (for previous/next). */
-type OpenFile = (id: number, list: number[]) => void
+/** Opens a file in the drawer, with the list it was opened from (for previous/next), optionally on a viewer tab. */
+type OpenFile = (id: number, list: number[], tab?: string) => void
+
+interface FileQuery {
+  state?: FileState
+  rootId?: number
+  path?: string
+  direct?: boolean
+  q?: string
+}
+
+/** One list of files, largest first, `pages` × 200 of them. */
+function useFileRows({ state, rootId, path, direct, q }: FileQuery, pages: number) {
+  return useQuery({
+    queryKey: ['parent', 'files', state, rootId, path, direct, q, pages],
+    queryFn: () => api<{ total: number; totalSize: number; items: FileRow[] }>('/integrations/parent/files', { query: { state, rootId, path, direct, q, limit: 200 * pages } }),
+  })
+}
 
 function FileList({ state, rootId, path, direct, q, onOpen, selected, onSelect }: {
   state?: FileState
@@ -396,10 +405,9 @@ function FileList({ state, rootId, path, direct, q, onOpen, selected, onSelect }
   const explain = explainParam < 0 ? null : explainParam
   const setExplain = (id: number | null) => setExplainParam(id ?? -1)
   const parentName = useQuery({ queryKey: ['parent', 'summary'], queryFn: () => api<Summary>('/integrations/parent/summary') }).data?.snapshot?.parentName ?? 'the backup'
-  const r = useQuery({
-    queryKey: ['parent', 'files', state, rootId, path, direct, q, pages],
-    queryFn: () => api<{ total: number; totalSize: number; items: FileRow[] }>('/integrations/parent/files', { query: { state, rootId, path, direct, q, limit: 200 * pages } }),
-  })
+  const r = useFileRows({ state, rootId, path, direct, q }, pages)
+  // Decisions already made about these files in the file panel (the review plan).
+  const { byEntry } = usePlanDecisions(useReviewPlan()[0])
   if (r.isLoading) return <Loading />
   if (r.error) return <ErrorBox error={r.error} />
   if (!r.data?.items.length) return <Empty>No files.</Empty>
@@ -430,6 +438,11 @@ function FileList({ state, rootId, path, direct, q, onOpen, selected, onSelect }
                   </span>
                   <span className={clsx('block truncate text-xs', f.state === 'corrupt' ? 'text-danger' : 'muted')}>{detail(f)}</span>
                 </span>
+                {byEntry.has(f.entryId) && (
+                  <span className={clsx('shrink-0 text-xs', decisionMark(byEntry.get(f.entryId)!).tone)} title={`Decided: ${decisionText(byEntry.get(f.entryId)!)}`}>
+                    {decisionMark(byEntry.get(f.entryId)!).icon}
+                  </span>
+                )}
                 {!state && <span className={STATE_TONE[f.state]}>{FILE_STATES.find((x) => x.id === f.state)?.label}</span>}
                 <span className="w-20 text-right tabular">{bytes(f.size)}</span>
               </button>
@@ -476,7 +489,8 @@ function Files({ state }: { state: FileState }) {
   const [q, setQParam] = useUrlParam('q')
   const setQ = (v: string) => setQParam(v, { replace: true })
   const [preview, open] = useFilePreview()
-  const [, setParams] = useUrlParams()
+  // The first files of the list, to start the one-by-one review at (the same query as the list below).
+  const first = useFileRows({ state, q }, 1).data?.items
   // Ticked files (entry id → size) for "Action for the selected…"; "all": every damaged file, replaced with the backup's copy.
   const [selected, setSelected] = useState(new Map<number, number>())
   const plan = useUrlOverlay('plan')
@@ -516,9 +530,9 @@ function Files({ state }: { state: FileState }) {
             </button>
             <button
               className="btn-primary"
-              disabled={!totals.data?.total}
-              onClick={() => setParams({ review: 1, tab: null, q: null, explain: null })}
-              title="Go through the files one at a time, each next to the backup's copy, and decide: replace, replace and keep the damaged file, keep, or skip"
+              disabled={!first?.length}
+              onClick={() => open(first![0].entryId, first!.map((f) => f.entryId), 'backup')}
+              title="Opens the first file next to the backup's copy; decide there (replace, replace and keep the damaged file, keep) and step through the list with ‹ ›"
             >
               Review one by one →
             </button>

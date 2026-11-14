@@ -97,6 +97,13 @@ export default function Browse() {
     enabled: !!id && view === 'map',
   })
 
+  // A link to a file (`/browse/<file id>`) opens its folder with the file panel on it.
+  const shownEntry = detail.data?.entry
+  const fileEntry = shownEntry && shownEntry.id === id && !shownEntry.isDir ? shownEntry : undefined
+  useEffect(() => {
+    if (fileEntry?.parentId) navigate(`/browse/${fileEntry.parentId}?file=${fileEntry.id}`, { replace: true })
+  }, [fileEntry, navigate])
+
   const qc = useQueryClient()
   const [savedLater, setSavedLater] = useState<string | null>(null)
   const disk = useQuery({

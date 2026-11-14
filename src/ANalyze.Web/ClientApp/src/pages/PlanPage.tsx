@@ -4,11 +4,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { api } from '../api/client'
 import { useRoots } from '../api/hooks'
-import type { PlanDetail } from '../api/types'
+import type { PlanDetail, PlanItem } from '../api/types'
+import { EntryDrawer } from '../components/EntryDrawer'
 import { ConfirmButton, Empty, ErrorBox, Loading, PageTitle, Progress, Stat } from '../components/ui'
 import { isActive, useJob } from '../hooks/useJobs'
 import { bytes, count, dateTime } from '../lib/format'
-import { useUrlNumber, useUrlParam } from '../hooks/useUrlState'
+import { useEntryPreview, useUrlNumber, useUrlParam } from '../hooks/useUrlState'
 import { itemAction } from '../lib/plans'
 import { STATUS_STYLE } from './Actions'
 
@@ -22,7 +23,13 @@ const FILTERS = [
   { id: 'done', label: 'Done' },
 ]
 
-/** Review screen: untick items to keep them, then apply. Applied plans show results and can be undone. */
+/** The item's file is still where the plan found it (not trashed, deleted or moved away), so it can be opened. */
+const inPlace = (i: PlanItem) => !!i.entryId && (i.status !== 'done' || i.op === 'restore' || i.op === 'hardlink')
+
+/**
+ * Review screen: untick items to keep them, then apply. Applied plans show results and can be undone. Files open in the file panel
+ * (previous/next through the page's items); for corrupted files it holds the decision, saved in this plan while it is a draft.
+ */
 export default function PlanPage() {
   const { id } = useParams()
   const qc = useQueryClient()
@@ -33,6 +40,7 @@ export default function PlanPage() {
   const [filter, setFilter] = useUrlParam('filter', 'all')
   const [search, setSearch] = useUrlParam('q')
   const [offset, setOffset] = useUrlNumber('offset')
+  const preview = useEntryPreview()
   const running = isActive(job) && job?.refId === Number(id)
   const q = useQuery({
     queryKey: ['plan', id, filter, search, offset],
@@ -74,7 +82,10 @@ export default function PlanPage() {
   const draft = plan.status === 'draft'
   const rootName = (rid: number) => roots.data?.find((r) => r.id === rid)?.name ?? '?'
   const hasDelete = page.items.some((i) => i.op === 'delete')
-  const hasRestore = page.items.some((i) => i.op === 'restore')
+  // The files of this page the panel can show, in order.
+  const viewable = page.items.filter((i) => !i.isDir && inPlace(i))
+  const viewIds = viewable.map((i) => i.entryId!)
+  const firstRestore = viewable.find((i) => i.op === 'restore')
 
   return (
     <>
@@ -91,10 +102,10 @@ export default function PlanPage() {
         actions={
           <>
             <span className={clsx('rounded px-2 py-0.5 text-xs font-semibold', STATUS_STYLE[plan.status])}>{plan.status}</span>
-            {draft && hasRestore && (
-              <Link className="btn-secondary" to={`/integrations/parent?review=1&plan=${plan.id}`} title="Go through the corrupted files one by one, comparing each with the backup; the decisions land in this plan">
+            {draft && firstRestore && (
+              <button className="btn-secondary" onClick={() => preview.open(firstRestore.entryId!, 'backup')} title="Opens the first file next to the backup's copy; decide there and step through the items with ‹ ›">
                 Review one by one
-              </Link>
+              </button>
             )}
             {(draft || plan.status === 'cancelled' || plan.status === 'failed') && (
               <ConfirmButton
@@ -224,7 +235,13 @@ export default function PlanPage() {
                 <div className="break-all">
                   <span className="muted">{rootName(i.rootId)}/</span>
                   {i.isDir ? '📁 ' : ''}
-                  {i.sourcePath}
+                  {inPlace(i) ? (
+                    <Link to={`/browse/${i.entryId}`} className="hover:text-accent hover:underline" title="Open in the file browser">
+                      {i.sourcePath}
+                    </Link>
+                  ) : (
+                    i.sourcePath
+                  )}
                 </div>
                 {i.targetPath && <div className="break-all text-xs text-accent">{i.op === 'restore' ? '← from ' : '→ '}{i.targetPath}</div>}
                 {i.keepPath && (
@@ -235,6 +252,11 @@ export default function PlanPage() {
                 {i.warning && <div className="text-xs text-warning">⚠ {i.warning}</div>}
                 {i.error && <div className="text-xs text-danger">{i.error}</div>}
               </div>
+              {!i.isDir && inPlace(i) && (
+                <button className="btn-ghost shrink-0 px-2 py-0 text-xs" onClick={() => preview.open(i.entryId!, i.op === 'restore' ? 'backup' : undefined)} title="Open the file panel: preview, comparison with the backup, decision">
+                  View
+                </button>
+              )}
               <span className="shrink-0 text-xs muted">{itemAction(i)}</span>
               {i.status !== 'pending' && <span className={clsx('shrink-0 rounded px-1.5 text-xs', i.status === 'done' ? 'bg-success/10 text-success' : i.status === 'undone' ? 'bg-muted/10 text-muted' : 'bg-danger/10 text-danger')}>{i.status}</span>}
               <span className="w-20 shrink-0 text-right tabular">{bytes(i.expectedSize)}</span>
@@ -260,6 +282,7 @@ export default function PlanPage() {
           </button>
         </div>
       )}
+      <EntryDrawer preview={preview} list={viewIds} planId={draft ? plan.id : undefined} />
     </>
   )
 }
