@@ -18,8 +18,10 @@ docker compose -f docker-compose.dev.yml up --build  # full app on :8080 with ./
 
 1. **After every code change** — `dotnet build` and `npm run typecheck` (in ClientApp); fix all errors, and warnings when safe.
 2. **After every committed change** — release notes:
-   a. Don't bump `VERSION` (only when the user asks), even when that version's tag already exists: a build of main for an existing
-      release `v{VERSION}` replaces its files and notes (`release` job in `.github/workflows/docker.yml`).
+   a. If the current `VERSION` was already pushed to origin and the change touches the app (code, UI, schema, behaviour), bump the
+      patch number and add a new `## v{version} — {date}` heading. Changes that only fix the build, CI or Docker image, with no code
+      change, don't bump: they go under the current version, so the next build of main replaces that release's files and notes
+      (`release` job in `.github/workflows/docker.yml`).
    b. Make sure the heading for the current version carries today's date.
    c. Add a `- feat:/fix:/refactor:` bullet for the change under that heading.
 3. **After every architectural or schema change** — update `AGENTS.md` and `README.md`.
