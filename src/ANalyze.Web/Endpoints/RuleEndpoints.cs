@@ -140,13 +140,13 @@ public static class RuleEndpoints
         });
 
         // Live preview while editing: how many files would match, with samples.
-        api.MapPost("/rules/test", (RuleCondition condition, bool? uncategorizedOnly, SqliteSetup sqlite) =>
+        api.MapPost("/rules/test", (RuleCondition condition, bool? uncategorizedOnly, DbSetup database) =>
         {
             var match = RuleEngine.CompileCondition(condition);
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            using var c = sqlite.Open();
+            using var c = database.Open();
             using var cmd = c.CreateCommand();
-            cmd.CommandText = "SELECT Id, Name, RelPath, Ext, Mime, Kind, Size, MTime, ATime, Depth, RootId, CategoryId FROM Entries WHERE IsDir = 0"
+            cmd.CommandText = "SELECT Id, Name, RelPath, Ext, Mime, Kind, Size, MTime, ATime, Depth, RootId, CategoryId FROM Entries WHERE IsDir = FALSE"
                 + (uncategorizedOnly == true ? " AND CategoryId IS NULL" : "");
             using var r = cmd.ExecuteReader();
             long count = 0, bytes = 0;

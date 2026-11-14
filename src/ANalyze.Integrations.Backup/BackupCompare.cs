@@ -17,7 +17,7 @@ public sealed record CompareStatus(long EntryId, string Status, string? Phase, D
 /// <see cref="FileMap"/> (the parent through <c>/backup/probe</c>) and <see cref="BackupDiff"/> tells what happened. Runs in the
 /// background, one at a time; the last results stay in memory for the page to poll.
 /// </summary>
-public sealed class BackupCompare(IntegrationHost host, ParentIntegration plugin, RootRegistry roots, SqliteSetup sqlite, ILogger<BackupCompare> log)
+public sealed class BackupCompare(IntegrationHost host, ParentIntegration plugin, RootRegistry roots, DbSetup database, ILogger<BackupCompare> log)
 {
     private const int Keep = 100;
 
@@ -116,15 +116,15 @@ public sealed class BackupCompare(IntegrationHost host, ParentIntegration plugin
         var snap = await plugin.LoadSnapshotAsync(ct) ?? throw new InvalidOperationException("Compare the backup first.");
 
         (int Root, string Rel, long? ParentSize, string? ParentHash, string? Hash, long? HashedAt, long? CorruptAt, string? Mime) row;
-        using (var c = sqlite.Open())
+        using (var c = database.Open())
         {
             row = Db.Query(c, """
                 SELECT b.LocalRootId, b.LocalRelPath, b.ParentSize, b.ParentHash, e.FullHash, e.HashedAt, e.CorruptAt, e.Mime
-                FROM BackupFiles b JOIN Entries e ON e.Id = b.EntryId WHERE b.EntryId = $e AND b.IsDir = 0
+                FROM BackupFiles b JOIN Entries e ON e.Id = b.EntryId WHERE b.EntryId = @e AND b.IsDir = FALSE
                 """, r => (r.GetInt32(0), r.GetString(1), r.IsDBNull(2) ? (long?)null : r.GetInt64(2), r.IsDBNull(3) ? null : r.GetString(3),
                     r.IsDBNull(4) ? null : r.GetString(4), r.IsDBNull(5) ? (long?)null : r.GetInt64(5), r.IsDBNull(6) ? (long?)null : r.GetInt64(6),
                     r.IsDBNull(7) ? null : r.GetString(7)),
-                ("$e", entryId)).FirstOrDefault();
+                ("@e", entryId)).FirstOrDefault();
         }
 
         if (row.Rel is null)

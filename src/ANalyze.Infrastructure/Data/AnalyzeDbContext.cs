@@ -7,8 +7,19 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace ANalyze.Infrastructure.Data;
 
-public sealed class AnalyzeDbContext(DbContextOptions<AnalyzeDbContext> options) : DbContext(options)
+/// <summary>The model, as stored in SQLite (migrations in Data/Migrations). <see cref="PostgresDbContext"/> adapts it for PostgreSQL.</summary>
+public class AnalyzeDbContext : DbContext
 {
+    public AnalyzeDbContext(DbContextOptions<AnalyzeDbContext> options)
+        : base(options)
+    {
+    }
+
+    protected AnalyzeDbContext(DbContextOptions options)
+        : base(options)
+    {
+    }
+
     /// <summary>Partial index of files without a content hash, by size.</summary>
     public const string UnhashedIndex = "IX_Entries_Unhashed";
 

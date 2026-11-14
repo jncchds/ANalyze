@@ -8,14 +8,14 @@ Authoritative description of how ANalyze works. Update it with every architectur
 React SPA (static files in ASP.NET wwwroot — single container)
         ↕ REST /api/v1 + SignalR /hubs/jobs
 ASP.NET Core 10 minimal APIs
-        ↕ EF Core 10 (schema, CRUD) + Microsoft.Data.Sqlite (bulk paths)
-SQLite (WAL) in /data/analyze.db
+        ↕ EF Core 10 (schema, CRUD) + ADO.NET DbConnection (bulk paths)
+SQLite (WAL) in /data/analyze.db   — or —   PostgreSQL (ANalyze__Database__Provider=postgres)
 ```
 
 | Project | Purpose |
 |---|---|
 | `ANalyze.Domain` | Entities, enums, rule model + `RuleEngine`, `Builtins` (seeded categories, rules, templates). No dependencies. |
-| `ANalyze.Infrastructure` | `AnalyzeDbContext` + migrations, `SqliteSetup` (connection string + PRAGMAs), `SettingsStore`, `SecretProtector`, `RootRegistry` (roots, writability probe, safe paths), `Native` (statx, link, realpath, lchown), `JobBoard`/`JobLock`, `Logging/ActivityLog` (in-memory activity log) + `Format`. |
+| `ANalyze.Infrastructure` | `AnalyzeDbContext` + migrations (SQLite), `PostgresDbContext` + `PostgresMigrations`, `DbSetup` (provider, connection string, SQLite PRAGMAs, context factory), `SqlDialect` (the SQL that differs per provider), `SqliteImporter` (SQLite → PostgreSQL copy), `SettingsStore`, `SecretProtector`, `RootRegistry` (roots, writability probe, safe paths), `Native` (statx, link, realpath, lchown), `JobBoard`/`JobLock`, `Logging/ActivityLog` (in-memory activity log) + `Format`. |
 | `ANalyze.Scanner` | `Walker` (incremental tree mirror), `Detector` (type by extension/magic), `Categorizer` (rules), `DuplicateFinder` + `Hashing`, `ScanService` (pipeline), `ScanQueue`/`ScanWorker`/`ScanScheduler`, `EntryMaintenance`. |
 | `ANalyze.Preview` | Thumbnails (SkiaSharp, ffmpeg for video), paged text/hex reads, archive listing (SharpCompress), metadata (MetadataExtractor, TagLib). |
 | `ANalyze.Actions` | `PlanBuilder` (manual/template/dedupe plans), `PathTemplate`, `DedupeSelector`, `PlanExecutor` + `PlanQueue`, `TrashService` + janitor. |
@@ -65,7 +65,43 @@ SQLite (WAL) in /data/analyze.db
 - **Settings** — key/value JSON: `app` (`AppSettings`), `integration:<id>` (`IntegrationSettings`, secrets encrypted with data protection).
 
 Times are unix seconds in Entries; `DateTimeOffset` columns are stored as binary longs (`DateTimeOffsetToBinaryConverter`, set globally) so
-SQLite can sort them. Migrations are created only with `dotnet ef migrations add <Name> --project src/ANalyze.Infrastructure --startup-project src/ANalyze.Infrastructure --output-dir Data/Migrations`.
+SQLite can sort them (PostgreSQL keeps the same encoding, so raw SQL is the same on both).
+
+## Database providers
+
+`AnalyzeOptions.Database` (`ANalyze__Database__Provider` = `sqlite` (default) | `postgres`, `__ConnectionString`, `__ImportFrom`) →
+`DbSetup` (singleton): `Open()` gives a raw `DbConnection` (SQLite with the PRAGMAs, or Npgsql), `CreateOptions()`/`CreateContext()` the EF
+context. `IDbContextFactory<AnalyzeDbContext>` (and the scoped `AnalyzeDbContext`) hand out an `AnalyzeDbContext` on SQLite and a
+`PostgresDbContext` (a subclass) on PostgreSQL, so every consumer keeps using `AnalyzeDbContext`. PostgreSQL connection strings get
+defaults when they leave them out: `Command Timeout=0` (aggregates may take minutes, as on SQLite), `Max Auto Prepare=64` (the walker's
+per-row statements), `Application Name=ANalyze`.
+
+- **Two migration sets, one model.** Every schema change needs both:
+  `dotnet ef migrations add <Name> --context AnalyzeDbContext --project src/ANalyze.Infrastructure --startup-project src/ANalyze.Infrastructure --output-dir Data/Migrations`
+  and `dotnet ef migrations add <Name> --context PostgresDbContext --project src/ANalyze.Infrastructure --startup-project src/ANalyze.Infrastructure --output-dir Data/PostgresMigrations`
+  (no server needed). `PostgresDbContext.OnModelCreating` adapts the shared model: lower-case table and column names (unquoted
+  identifiers in raw SQL fold to them), collation `"C"` on every text column (byte order like SQLite's BINARY: the `'p/'`…`'p0'` subtree
+  ranges depend on it), `nocase` (an ICU collation that orders case-insensitively) for `Entries.Name`, real booleans, and the partial
+  index filter in PostgreSQL syntax. A column added with a default only in a migration has no default on PostgreSQL's initial schema:
+  raw INSERTs list every NOT NULL column.
+- **Raw SQL is written once for both** (rules in `SqlDialect`'s summary): `@name` parameters; `TRUE`/`FALSE` for booleans, never 0/1 or
+  arithmetic (`SUM(CASE WHEN … THEN 1 ELSE 0 END)`) — except where a WHERE must match the partial index's filter for SQLite (`c.Bool(false)`);
+  `ON CONFLICT` instead of `INSERT OR IGNORE/REPLACE`; `RETURNING` instead of `last_insert_rowid()`; an alias on every subquery in FROM;
+  aggregates, not output aliases, in HAVING and in ORDER BY expressions (wrap the query: `SELECT * FROM (…) g ORDER BY title COLLATE NOCASE`);
+  unqualified temp tables with `c.IdKey()`, `c.Text()`, `BOOLEAN`, `BIGINT`; `CAST(@p AS TEXT) IS NULL` for a parameter that may be NULL
+  with nothing else giving its type; `Convert.ToInt64` (not a cast) for `SUM()` scalars (numeric on PostgreSQL). The per-provider
+  fragments: `c.NotIndexed()`, `c.IndexedBy(index)`, `c.Like()` (ILIKE), `c.GroupConcatDistinct(x)`, `c.Instr(a, b)`; `PRAGMA optimize` is
+  skipped on PostgreSQL. EF queries that need case-insensitive LIKE lower both sides.
+- **One command at a time per connection** on PostgreSQL (no MARS): read a reader to the end (or close it) before running another
+  command on the same connection; long reads that write as they go use a second connection (`read`/`write` in the scanner phases).
+- PostgreSQL text cannot hold NUL characters: archive member names are stripped of them; the importer strips them too.
+- **SQLite → PostgreSQL** (`SqliteImporter`): brings the SQLite file up to date (its migrations), then copies every table of the model with
+  binary COPY in one transaction, principals before dependents, values converted to the PostgreSQL column types, and moves each identity
+  sequence past the copied ids; `ANALYZE` at the end. It refuses a PostgreSQL database that has entries or scans unless forced (`TRUNCATE …
+  RESTART IDENTITY` first). Entry points: `ANalyze__Database__ImportFrom` (in `DatabaseInitializer`, after migrating, while the database has
+  never been scanned) and `ANalyze.Web --import-sqlite <path> [--force]` (migrates, imports, exits).
+- Tests: `ANALYZE_TEST_POSTGRES=<connection string without database>` runs the whole suite on PostgreSQL, one database per `TestApp`
+  (`TestApp.UseSqlite` keeps one on SQLite, e.g. as the importer's source).
 
 ## Scan pipeline (`ScanService.RunAsync`)
 
@@ -161,8 +197,8 @@ screen when a job changes phase and every 10 s while a scan runs, never cancelli
 Whole-index aggregates (`/overview`, `/insights`, the sidebar's reclaimable space) go through `Caches` (singleton), stale-while-revalidate: a
 phase change only marks values stale; the next request gets the old value at once and starts one background computation per key (at most
 every 60 s, own connection / `DbContext`, not cancelled with the request), and when it is done SignalR sends `refreshed` with the key so the
-UI refetches. Only the very first request for a key waits. The aggregates over all files or a whole root read `Sql.FullScan`
-(`Entries e NOT INDEXED`): left alone SQLite walks an index on a low-selectivity column (IsDir, RootId, CategoryId, ParentId) and fetches
+UI refetches. Only the very first request for a key waits. The aggregates over all files or a whole root read `Sql.FullScan(c)`
+(`Entries e NOT INDEXED`; nothing extra on PostgreSQL, whose planner scans sequentially by itself): left alone SQLite walks an index on a low-selectivity column (IsDir, RootId, CategoryId, ParentId) and fetches
 every row in index order, random I/O that is many times slower on spinning or busy disks. The overview computes its breakdowns (totals,
 category, kind, extension, age, size) in one grouped pass, and "heaviest folders" groups by `ParentId` before joining the top 25.
 

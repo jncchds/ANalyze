@@ -6,26 +6,54 @@ using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Infrastructure.Data;
 
-/// <summary>Applies migrations, seeds built-in categories/rules/templates and syncs roots.</summary>
+/// <summary>Applies migrations, imports a SQLite database when asked to, seeds built-in categories/rules/templates and syncs roots.</summary>
 public sealed class DatabaseInitializer(
     AnalyzeDbContext db,
-    SqliteSetup sqlite,
+    DbSetup database,
     SettingsStore settings,
     RootRegistry roots,
+    Microsoft.Extensions.Options.IOptions<AnalyzeOptions> options,
     ILogger<DatabaseInitializer> log)
 {
     public async Task InitializeAsync(bool migrate, CancellationToken ct = default)
     {
+        log.LogInformation("Database: {Provider} at {Where}", database.Name, database.Describe());
         if (migrate)
         {
-            await db.Database.MigrateAsync(ct);
+            await MigrateAsync(ct);
         }
 
-        sqlite.EnableWal();
+        if (database.IsPostgres && options.Value.Database.ImportFrom is { Length: > 0 } importFrom)
+        {
+            await ImportAtStartupAsync(importFrom, ct);
+        }
+
+        database.EnableWal();
         await SeedAsync(db, ct);
         await settings.LoadAsync(ct);
         await roots.SyncAsync(ct);
         await RecoverAsync(ct);
+    }
+
+    public Task MigrateAsync(CancellationToken ct = default) => db.Database.MigrateAsync(ct);
+
+    /// <summary><c>ANalyze__Database__ImportFrom</c>: copies the SQLite database while PostgreSQL has never been scanned.</summary>
+    private async Task ImportAtStartupAsync(string path, CancellationToken ct)
+    {
+        if (!await SqliteImporter.IsFreshAsync(database, ct))
+        {
+            log.LogDebug("ANalyze__Database__ImportFrom: {Target} already holds scanned data; {Path} is not imported again", database.Describe(), path);
+            return;
+        }
+
+        if (!File.Exists(path))
+        {
+            log.LogInformation("ANalyze__Database__ImportFrom: no SQLite database at {Path}, nothing to import", path);
+            return;
+        }
+
+        log.LogInformation("Importing the SQLite database {Path} into PostgreSQL {Target}", path, database.Describe());
+        await SqliteImporter.RunAsync(path, database, force: false, log, ct);
     }
 
     /// <summary>Seeds built-ins into an empty database.</summary>

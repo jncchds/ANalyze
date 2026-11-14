@@ -31,8 +31,10 @@ public static class SystemEndpoints
 
     public static void MapSystemEndpoints(this RouteGroupBuilder api)
     {
-        api.MapGet("/config", (RootRegistry roots, SettingsStore settings, IOptions<AnalyzeOptions> o) => new
+        api.MapGet("/config", (RootRegistry roots, SettingsStore settings, IOptions<AnalyzeOptions> o, DbSetup database) => new
         {
+            database = database.Name,
+            databaseLocation = database.Describe(),
             version = Assembly.GetEntryAssembly()?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0],
             readOnly = roots.All.All(r => r.ReadOnly),
             forcedReadOnly = o.Value.ReadOnly,
@@ -44,14 +46,14 @@ public static class SystemEndpoints
 
         api.MapGet("/release-notes", () => ReleaseNotes.All);
 
-        api.MapGet("/roots", (RootRegistry roots, SqliteSetup sqlite) =>
+        api.MapGet("/roots", (RootRegistry roots, DbSetup database) =>
         {
-            using var c = sqlite.Open();
+            using var c = database.Open();
             var drives = SafeDrives();
             return roots.All.Select(r =>
             {
                 var (size, files) = r.RootEntryId is { } id
-                    ? Sql.Query(c, "SELECT TotalSize, FileCount FROM Entries WHERE Id = $id", x => (x.GetInt64(0), x.GetInt64(1)), ("$id", id)).FirstOrDefault()
+                    ? Sql.Query(c, "SELECT TotalSize, FileCount FROM Entries WHERE Id = @id", x => (x.GetInt64(0), x.GetInt64(1)), ("@id", id)).FirstOrDefault()
                     : (0, 0);
                 var drive = drives.Where(d => RootRegistry.IsUnder(d.Mount, r.Path) || d.Mount == "/").OrderByDescending(d => d.Mount.Length).FirstOrDefault();
                 return new RootDto(r.Id, r.Name, r.Path, r.ReadOnly, r.Missing, r.LastScanAt, r.RootEntryId, size, files, drive.Total, drive.Free);
@@ -162,9 +164,9 @@ public static class SystemEndpoints
         });
 
         // Everything the sidebar needs in one call.
-        api.MapGet("/summary", async (SqliteSetup sqlite, AnalyzeDbContext db, SettingsStore settings, TrashService trash, Caches caches, CancellationToken ct) =>
+        api.MapGet("/summary", async (DbSetup database, AnalyzeDbContext db, SettingsStore settings, TrashService trash, Caches caches, CancellationToken ct) =>
         {
-            var reclaim = await caches.GetAsync("summary.reclaimable", () => Task.FromResult(ComputeReclaimable(sqlite)));
+            var reclaim = await caches.GetAsync("summary.reclaimable", () => Task.FromResult(ComputeReclaimable(database)));
             var drafts = await db.ActionPlans.CountAsync(p => p.Status == PlanStatus.Draft, ct);
             var bins = await trash.ListAsync(ct);
             var pinnedIds = settings.Current.PinnedFolders;
@@ -214,22 +216,22 @@ public static class SystemEndpoints
 
     private static object Masked(AppSettings s) => s with { Ai = s.Ai with { ApiKey = string.IsNullOrEmpty(s.Ai.ApiKey) ? null : MaskedKey } };
 
-    private static object ComputeReclaimable(SqliteSetup sqlite)
+    private static object ComputeReclaimable(DbSetup database)
     {
-        using var c = sqlite.Open();
+        using var c = database.Open();
         var dup = Sql.Query(c, $"""
             SELECT COALESCE(SUM(w), 0), COUNT(*) FROM (
-                SELECT (COUNT(DISTINCT {Sql.Identity}) - 1) * MAX(Size) AS w FROM Entries NOT INDEXED
-                WHERE FullHash IS NOT NULL AND IsDir = 0 AND IsSymlink = 0
-                GROUP BY FullHash HAVING COUNT(DISTINCT {Sql.Identity}) > 1)
+                SELECT (COUNT(DISTINCT {Sql.Identity}) - 1) * MAX(Size) AS w FROM Entries{c.NotIndexed()}
+                WHERE FullHash IS NOT NULL AND IsDir = FALSE AND IsSymlink = FALSE
+                GROUP BY FullHash HAVING COUNT(DISTINCT {Sql.Identity}) > 1) g
             """, r => new { bytes = r.GetInt64(0), groups = r.GetInt64(1) }).First();
         var cats = Sql.Query(c, $"""
             SELECT c.Id, c.Name, c.Color, COUNT(e.Id), COALESCE(SUM(e.Size), 0) FROM Categories c
-            LEFT JOIN Entries e ON e.CategoryId = c.Id AND e.IsDir = 0
-            WHERE c.Name IN ({string.Join(",", Reclaimable.Select((_, i) => "$c" + i))})
+            LEFT JOIN Entries e ON e.CategoryId = c.Id AND e.IsDir = FALSE
+            WHERE c.Name IN ({string.Join(",", Reclaimable.Select((_, i) => "@c" + i))})
             GROUP BY c.Id, c.Name, c.Color
             """, r => new { id = r.GetInt32(0), name = r.GetString(1), color = r.GetString(2), files = r.GetInt64(3), bytes = r.GetInt64(4) },
-            Reclaimable.Select((n, i) => ("$c" + i, (object?)n)).ToArray());
+            Reclaimable.Select((n, i) => ("@c" + i, (object?)n)).ToArray());
         return new { duplicates = dup, categories = cats.OrderByDescending(x => x.bytes).ToList() };
     }
 

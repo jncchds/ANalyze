@@ -2,7 +2,7 @@ using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure;
 using ANalyze.Infrastructure.Roots;
 using ANalyze.Infrastructure.Logging;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Scanner;
@@ -12,7 +12,7 @@ namespace ANalyze.Scanner;
 /// <see cref="VerifyAsync"/> re-reads files hashed long ago and flags those whose content changed although size and mtime did not
 /// (<c>Entries.CorruptAt</c>). Files whose size or mtime changed since the walk are skipped; the next scan resets them.
 /// </summary>
-internal sealed class ContentHasher(SqliteConnection read, SqliteConnection write, ScanContext ctx, IReadOnlyDictionary<int, string> rootPaths, int threads)
+internal sealed class ContentHasher(DbConnection read, DbConnection write, ScanContext ctx, IReadOnlyDictionary<int, string> rootPaths, int threads)
 {
     private const int Batch = 400;
 
@@ -39,16 +39,16 @@ internal sealed class ContentHasher(SqliteConnection read, SqliteConnection writ
 
     /// <summary>Re-reads files hashed before <paramref name="olderThan"/> (oldest first, up to <paramref name="maxBytes"/>; 0 = all).</summary>
     public Task<long> VerifyAsync(long olderThan, long maxBytes) =>
-        RunAsync("verifying", "FullHash IS NOT NULL AND COALESCE(HashedAt, 0) < $cut", "ORDER BY COALESCE(HashedAt, 0), Id", [("$cut", olderThan)], maxBytes, verify: true);
+        RunAsync("verifying", "FullHash IS NOT NULL AND COALESCE(HashedAt, 0) < @cut", "ORDER BY COALESCE(HashedAt, 0), Id", [("@cut", olderThan)], maxBytes, verify: true);
 
     private async Task<long> RunAsync(string phase, string where, string order, (string, object)[] args, long maxBytes, bool verify, string? countIndex = null)
     {
         ctx.HashedBytes = 0;
-        var filter = $"IsDir = 0 AND IsSymlink = 0 AND Size > 0 AND {where}";
+        var filter = $"IsDir = {read.Bool(false)} AND IsSymlink = {read.Bool(false)} AND Size > 0 AND {where}"; // as in the partial index
         ctx.StartPhase(phase); // before the count, which can take a while on a large database
         using (var c = read.CreateCommand())
         {
-            c.CommandText = $"SELECT COUNT(*), COALESCE(SUM(Size), 0) FROM Entries {(countIndex is null ? "" : "INDEXED BY " + countIndex)} WHERE {filter}";
+            c.CommandText = $"SELECT COUNT(*), COALESCE(SUM(Size), 0) FROM Entries{(countIndex is null ? "" : read.IndexedBy(countIndex))} WHERE {filter}";
             foreach (var (n, v) in args)
             {
                 c.Parameters.AddWithValue(n, v);
@@ -184,15 +184,15 @@ internal sealed class ContentHasher(SqliteConnection read, SqliteConnection writ
         using var upd = write.CreateCommand();
         upd.Transaction = tx;
         upd.CommandText = """
-            UPDATE Entries SET QuickHash = $q, FullHash = $f, HashedAt = $now, CorruptAt = CASE WHEN $bad THEN $now ELSE CorruptAt END
-            WHERE Id = $id AND Size = $size AND MTime = $mtime
+            UPDATE Entries SET QuickHash = @q, FullHash = @f, HashedAt = @now, CorruptAt = CASE WHEN @bad THEN @now ELSE CorruptAt END
+            WHERE Id = @id AND Size = @size AND MTime = @mtime
             """;
-        foreach (var p in new[] { "$q", "$f", "$bad", "$id", "$size", "$mtime" })
+        foreach (var p in new[] { "@q", "@f", "@bad", "@id", "@size", "@mtime" })
         {
-            upd.Parameters.Add(new SqliteParameter(p, null));
+            upd.Parameters.AddWithValue(p, null);
         }
 
-        upd.Parameters.AddWithValue("$now", now);
+        upd.Parameters.AddWithValue("@now", now);
         var byIdentity = reps.ToDictionary(r => verify ? "#" + r.Id : r.Identity);
         var stored = new List<long>(rows.Count);
         foreach (var row in rows)
@@ -210,12 +210,12 @@ internal sealed class ContentHasher(SqliteConnection read, SqliteConnection writ
                 ctx.Log.LogWarning("Possibly corrupted: {Path} has other content than when it was hashed, with the same size and modification time", row.RelPath);
             }
 
-            upd.Parameters["$q"].Value = (object?)rep.Quick ?? DBNull.Value;
-            upd.Parameters["$f"].Value = rep.Full;
-            upd.Parameters["$bad"].Value = bad;
-            upd.Parameters["$id"].Value = row.Id;
-            upd.Parameters["$size"].Value = row.Size;
-            upd.Parameters["$mtime"].Value = row.MTime;
+            upd.Parameters["@q"].Value = (object?)rep.Quick ?? DBNull.Value;
+            upd.Parameters["@f"].Value = rep.Full;
+            upd.Parameters["@bad"].Value = bad;
+            upd.Parameters["@id"].Value = row.Id;
+            upd.Parameters["@size"].Value = row.Size;
+            upd.Parameters["@mtime"].Value = row.MTime;
             if (upd.ExecuteNonQuery() > 0)
             {
                 stored.Add(row.Id);

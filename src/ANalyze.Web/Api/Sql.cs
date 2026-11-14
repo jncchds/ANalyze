@@ -1,11 +1,12 @@
-using Microsoft.Data.Sqlite;
+using ANalyze.Infrastructure.Data;
+using System.Data.Common;
 
 namespace ANalyze.Web.Api;
 
 /// <summary>Tiny helpers for aggregate queries that EF Core cannot express efficiently.</summary>
 public static class Sql
 {
-    public static List<T> Query<T>(SqliteConnection c, string sql, Func<SqliteDataReader, T> map, params (string Name, object? Value)[] args)
+    public static List<T> Query<T>(DbConnection c, string sql, Func<DbDataReader, T> map, params (string Name, object? Value)[] args)
     {
         using var cmd = c.CreateCommand();
         cmd.CommandText = sql;
@@ -24,7 +25,7 @@ public static class Sql
         return list;
     }
 
-    public static T? Scalar<T>(SqliteConnection c, string sql, params (string Name, object? Value)[] args)
+    public static T? Scalar<T>(DbConnection c, string sql, params (string Name, object? Value)[] args)
     {
         using var cmd = c.CreateCommand();
         cmd.CommandText = sql;
@@ -37,11 +38,11 @@ public static class Sql
         return o is null or DBNull ? default : (T)Convert.ChangeType(o, Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T), System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    public static long? NullableLong(this SqliteDataReader r, int i) => r.IsDBNull(i) ? null : r.GetInt64(i);
+    public static long? NullableLong(this DbDataReader r, int i) => r.IsDBNull(i) ? null : r.GetInt64(i);
 
-    public static int? NullableInt(this SqliteDataReader r, int i) => r.IsDBNull(i) ? null : r.GetInt32(i);
+    public static int? NullableInt(this DbDataReader r, int i) => r.IsDBNull(i) ? null : r.GetInt32(i);
 
-    public static string? NullableString(this SqliteDataReader r, int i) => r.IsDBNull(i) ? null : r.GetString(i);
+    public static string? NullableString(this DbDataReader r, int i) => r.IsDBNull(i) ? null : r.GetString(i);
 
     /// <summary>SQL fragment + parameters restricting Entries (alias e) to a root and folder.</summary>
     public static (string Where, (string, object?)[] Args) ScopeOf(int? rootId, string? path, string alias = "e")
@@ -54,17 +55,18 @@ public static class Sql
         var p = path?.Trim('/') ?? "";
         if (p.Length == 0)
         {
-            return ($" AND {alias}.RootId = $root", [("$root", rootId)]);
+            return ($" AND {alias}.RootId = @root", [("@root", rootId)]);
         }
 
-        return ($" AND {alias}.RootId = $root AND {alias}.RelPath >= $from AND {alias}.RelPath < $to", [("$root", rootId), ("$from", p + "/"), ("$to", p + "0")]);
+        return ($" AND {alias}.RootId = @root AND {alias}.RelPath >= @from AND {alias}.RelPath < @to", [("@root", rootId), ("@from", p + "/"), ("@to", p + "0")]);
     }
 
     /// <summary>
     /// <c>Entries e</c> read front to back, for aggregates over all files (or a whole root). Without it SQLite picks an index on a
     /// low-selectivity column (IsDir, RootId) and reads every row in index order: random I/O, slow on spinning or busy disks.
+    /// PostgreSQL picks a sequential scan for these by itself.
     /// </summary>
-    public const string FullScan = "Entries e NOT INDEXED";
+    public static string FullScan(DbConnection c) => "Entries e" + c.NotIndexed();
 
     public const string Identity = "CASE WHEN Inode = 0 THEN 'i' || Id ELSE Dev || ':' || Inode END";
 }

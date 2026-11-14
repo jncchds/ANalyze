@@ -2,7 +2,7 @@ using ANalyze.Domain;
 using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Roots;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Integrations.Items;
@@ -39,10 +39,10 @@ public sealed record Snapshot(IReadOnlyList<ExternalItem> Items, IReadOnlyList<E
 /// <param name="UntrackedKinds">File kinds that count as "untracked" inside root folders; null = every file.</param>
 public sealed record ItemViews(IReadOnlyList<FileKind>? UntrackedKinds = null);
 
-public sealed class ItemServices(IHttpClientFactory http, SqliteSetup sqlite, RootRegistry roots, IntegrationPaths paths, ILoggerFactory logs)
+public sealed class ItemServices(IHttpClientFactory http, DbSetup database, RootRegistry roots, IntegrationPaths paths, ILoggerFactory logs)
 {
     public IHttpClientFactory Http => http;
-    public SqliteSetup Sqlite => sqlite;
+    public DbSetup Database => database;
     public RootRegistry Roots => roots;
     public IntegrationPaths Paths => paths;
     public ILoggerFactory Logs => logs;
@@ -100,7 +100,7 @@ public abstract class ItemIntegration(ItemServices services) : IIntegration
         var snap = await FetchAsync(settings, progress, ct);
         var mappings = await Services.Paths.ForAsync(this, settings, ct);
         progress.Report(new IntegrationProgress("matching", 0, snap.Items.Count));
-        using var conn = Services.Sqlite.Open();
+        using var conn = Services.Database.Open();
         var log = Services.Logs.CreateLogger(GetType());
         log.LogInformation("{Integration}: {Items} items and {Folders} folders read; path mappings: {Mappings}", Name, snap.Items.Count, snap.Folders.Count,
             mappings.Count == 0 ? "none (paths are used as they are)" : string.Join(", ", mappings.Select(m => $"{m.From} → {m.To}")));
@@ -117,7 +117,7 @@ public abstract class ItemIntegration(ItemServices services) : IIntegration
         return new IntegrationSyncResult(true, $"{snap.Items.Count} items, {matched} found on disk{(snap.Summary is null ? "" : " · " + snap.Summary)}{detected}", snap.Items.Count, matched);
     }
 
-    private int Store(SqliteConnection conn, Snapshot snap, PathMatcher matcher, IProgress<IntegrationProgress> progress, ILogger log)
+    private int Store(DbConnection conn, Snapshot snap, PathMatcher matcher, IProgress<IntegrationProgress> progress, ILogger log)
     {
         var why = new Dictionary<string, int>();
         var examples = new List<string>();
@@ -148,8 +148,8 @@ public abstract class ItemIntegration(ItemServices services) : IIntegration
         using (var del = conn.CreateCommand())
         {
             del.Transaction = tx;
-            del.CommandText = "DELETE FROM IntegrationItems WHERE Source = $s";
-            del.Parameters.AddWithValue("$s", Id);
+            del.CommandText = "DELETE FROM IntegrationItems WHERE Source = @s";
+            del.Parameters.AddWithValue("@s", Id);
             del.ExecuteNonQuery();
         }
 
@@ -158,11 +158,11 @@ public abstract class ItemIntegration(ItemServices services) : IIntegration
         ins.CommandText = """
             INSERT INTO IntegrationItems (Source, Kind, ExternalId, Title, GroupKey, GroupTitle, SubTitle, Year, ExternalPath, Size, IsDir, State, Detail,
                 AddedAt, LastUsedAt, PlayCount, Url, EntryId, MatchedBy, CheckedPath)
-            VALUES ($src, $kind, $ext, $title, $gk, $gt, $sub, $year, $path, $size, $dir, $state, $detail, $added, $used, $plays, $url, $entry, $by, $checked)
+            VALUES (@src, @kind, @ext, @title, @gk, @gt, @sub, @year, @path, @size, @dir, @state, @detail, @added, @used, @plays, @url, @entry, @by, @checked)
             """;
-        foreach (var p in new[] { "$src", "$kind", "$ext", "$title", "$gk", "$gt", "$sub", "$year", "$path", "$size", "$dir", "$state", "$detail", "$added", "$used", "$plays", "$url", "$entry", "$by", "$checked" })
+        foreach (var p in new[] { "@src", "@kind", "@ext", "@title", "@gk", "@gt", "@sub", "@year", "@path", "@size", "@dir", "@state", "@detail", "@added", "@used", "@plays", "@url", "@entry", "@by", "@checked" })
         {
-            ins.Parameters.Add(new SqliteParameter(p, null));
+            ins.Parameters.AddWithValue(p, null);
         }
 
         static object V(object? v) => v ?? DBNull.Value;
@@ -175,27 +175,27 @@ public abstract class ItemIntegration(ItemServices services) : IIntegration
                 false => Tuple(matcher.Match(item.Path, item.Size, false), false),
                 null => matcher.MatchAny(item.Path, item.Size),
             };
-            ins.Parameters["$src"].Value = Id;
-            ins.Parameters["$kind"].Value = item.Kind;
-            ins.Parameters["$ext"].Value = item.ExternalId;
-            ins.Parameters["$title"].Value = item.Title;
-            ins.Parameters["$gk"].Value = V(item.GroupKey);
-            ins.Parameters["$gt"].Value = V(item.GroupTitle);
-            ins.Parameters["$sub"].Value = V(item.SubTitle);
-            ins.Parameters["$year"].Value = V(item.Year);
-            ins.Parameters["$path"].Value = item.Path;
-            ins.Parameters["$size"].Value = item.Size;
-            ins.Parameters["$dir"].Value = isDir || item.IsDir == true;
-            ins.Parameters["$state"].Value = V(item.State);
-            ins.Parameters["$detail"].Value = V(item.Detail);
-            ins.Parameters["$added"].Value = V(item.AddedAt);
-            ins.Parameters["$used"].Value = V(item.LastUsedAt);
-            ins.Parameters["$plays"].Value = item.PlayCount;
-            ins.Parameters["$url"].Value = V(item.Url);
-            ins.Parameters["$entry"].Value = V(entryId);
-            ins.Parameters["$by"].Value = V(by);
+            ins.Parameters["@src"].Value = Id;
+            ins.Parameters["@kind"].Value = item.Kind;
+            ins.Parameters["@ext"].Value = item.ExternalId;
+            ins.Parameters["@title"].Value = item.Title;
+            ins.Parameters["@gk"].Value = V(item.GroupKey);
+            ins.Parameters["@gt"].Value = V(item.GroupTitle);
+            ins.Parameters["@sub"].Value = V(item.SubTitle);
+            ins.Parameters["@year"].Value = V(item.Year);
+            ins.Parameters["@path"].Value = item.Path;
+            ins.Parameters["@size"].Value = item.Size;
+            ins.Parameters["@dir"].Value = isDir || item.IsDir == true;
+            ins.Parameters["@state"].Value = V(item.State);
+            ins.Parameters["@detail"].Value = V(item.Detail);
+            ins.Parameters["@added"].Value = V(item.AddedAt);
+            ins.Parameters["@used"].Value = V(item.LastUsedAt);
+            ins.Parameters["@plays"].Value = item.PlayCount;
+            ins.Parameters["@url"].Value = V(item.Url);
+            ins.Parameters["@entry"].Value = V(entryId);
+            ins.Parameters["@by"].Value = V(by);
             var local = matcher.LocalPath(item.Path);
-            ins.Parameters["$checked"].Value = local;
+            ins.Parameters["@checked"].Value = local;
             ins.ExecuteNonQuery();
             if (entryId is null)
             {
@@ -248,7 +248,7 @@ public abstract class ItemIntegration(ItemServices services) : IIntegration
     internal async Task<IReadOnlyList<PathMapping>> SuggestAsync(IntegrationSettings settings, CancellationToken ct)
     {
         var snap = await FetchAsync(settings, new Progress<IntegrationProgress>(), ct);
-        using var conn = Services.Sqlite.Open();
+        using var conn = Services.Database.Open();
         var matcher = new PathMatcher(conn, Services.Roots, []);
         var sample = snap.Items.Take(300).Select(i => (i.Path, i.Size, i.IsDir ?? false)).ToList();
         matcher.Detect(sample, sample.Count);

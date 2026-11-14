@@ -1,6 +1,7 @@
+using ANalyze.Infrastructure.Data;
 using ANalyze.Domain;
 using ANalyze.Infrastructure.Roots;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Scanner;
@@ -11,7 +12,7 @@ internal static class Detector
     private const int Page = 2000;
     private const int HeaderBytes = 4096;
 
-    public static void Run(SqliteConnection db, ScanContext ctx, IReadOnlyDictionary<int, string> rootPaths, Scope scope, bool sniff)
+    public static void Run(DbConnection db, ScanContext ctx, IReadOnlyDictionary<int, string> rootPaths, Scope scope, bool sniff)
     {
         ctx.StartPhase("detecting", Count(db, scope));
         ctx.Log.LogInformation(
@@ -20,10 +21,10 @@ internal static class Detector
         long byExtension = 0, sniffed = 0, unknown = 0;
 
         using var update = db.CreateCommand();
-        update.CommandText = "UPDATE Entries SET Kind=$kind, Mime=$mime, Detected=1 WHERE Id=$id";
-        update.Parameters.Add(new SqliteParameter("$kind", null));
-        update.Parameters.Add(new SqliteParameter("$mime", null));
-        update.Parameters.Add(new SqliteParameter("$id", null));
+        update.CommandText = "UPDATE Entries SET Kind=@kind, Mime=@mime, Detected=TRUE WHERE Id=@id";
+        update.Parameters.AddWithValue("@kind", null);
+        update.Parameters.AddWithValue("@mime", null);
+        update.Parameters.AddWithValue("@id", null);
 
         long lastId = 0;
         while (true)
@@ -32,8 +33,8 @@ internal static class Detector
             var page = new List<(long Id, int RootId, string RelPath, string? Ext, long Size)>(Page);
             using (var q = db.CreateCommand())
             {
-                q.CommandText = $"SELECT Id, RootId, RelPath, Ext, Size FROM Entries WHERE IsDir=0 AND Detected=0 AND Id > $last {scope.Sql} ORDER BY Id LIMIT {Page}";
-                q.Parameters.AddWithValue("$last", lastId);
+                q.CommandText = $"SELECT Id, RootId, RelPath, Ext, Size FROM Entries WHERE IsDir=FALSE AND Detected=FALSE AND Id > @last {scope.Sql} ORDER BY Id LIMIT {Page}";
+                q.Parameters.AddWithValue("@last", lastId);
                 scope.Bind(q);
                 using var r = q.ExecuteReader();
                 while (r.Read())
@@ -84,9 +85,9 @@ internal static class Detector
             update.Transaction = tx;
             for (var i = 0; i < page.Count; i++)
             {
-                update.Parameters["$kind"].Value = (int)results[i].Kind;
-                update.Parameters["$mime"].Value = (object?)results[i].Mime ?? DBNull.Value;
-                update.Parameters["$id"].Value = page[i].Id;
+                update.Parameters["@kind"].Value = (int)results[i].Kind;
+                update.Parameters["@mime"].Value = (object?)results[i].Mime ?? DBNull.Value;
+                update.Parameters["@id"].Value = page[i].Id;
                 update.ExecuteNonQuery();
             }
 
@@ -124,10 +125,10 @@ internal static class Detector
         }
     }
 
-    private static long Count(SqliteConnection db, Scope scope)
+    private static long Count(DbConnection db, Scope scope)
     {
         using var q = db.CreateCommand();
-        q.CommandText = $"SELECT COUNT(*) FROM Entries WHERE IsDir=0 AND Detected=0 {scope.Sql}";
+        q.CommandText = $"SELECT COUNT(*) FROM Entries WHERE IsDir=FALSE AND Detected=FALSE {scope.Sql}";
         scope.Bind(q);
         return (long)q.ExecuteScalar()!;
     }
@@ -139,22 +140,22 @@ public readonly record struct Scope(int? RootId, string? SubPath)
     public static readonly Scope Everything = new(null, null);
 
     public string Sql => RootId is null ? "" : string.IsNullOrEmpty(SubPath)
-        ? "AND RootId = $scopeRoot"
-        : "AND RootId = $scopeRoot AND (RelPath = $scopePath OR (RelPath >= $scopeFrom AND RelPath < $scopeTo))";
+        ? "AND RootId = @scopeRoot"
+        : "AND RootId = @scopeRoot AND (RelPath = @scopePath OR (RelPath >= @scopeFrom AND RelPath < @scopeTo))";
 
-    public void Bind(SqliteCommand cmd)
+    public void Bind(DbCommand cmd)
     {
         if (RootId is null)
         {
             return;
         }
 
-        cmd.Parameters.AddWithValue("$scopeRoot", RootId.Value);
+        cmd.Parameters.AddWithValue("@scopeRoot", RootId.Value);
         if (!string.IsNullOrEmpty(SubPath))
         {
-            cmd.Parameters.AddWithValue("$scopePath", SubPath);
-            cmd.Parameters.AddWithValue("$scopeFrom", SubPath + "/");
-            cmd.Parameters.AddWithValue("$scopeTo", SubPath + "0");
+            cmd.Parameters.AddWithValue("@scopePath", SubPath);
+            cmd.Parameters.AddWithValue("@scopeFrom", SubPath + "/");
+            cmd.Parameters.AddWithValue("@scopeTo", SubPath + "0");
         }
     }
 }

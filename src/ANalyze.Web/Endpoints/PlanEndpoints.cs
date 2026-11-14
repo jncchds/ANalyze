@@ -257,8 +257,9 @@ public static class PlanEndpoints
         };
         if (!string.IsNullOrWhiteSpace(search))
         {
-            var like = "%" + search.Trim() + "%";
-            q = q.Where(i => EF.Functions.Like(i.SourcePath, like) || (i.TargetPath != null && EF.Functions.Like(i.TargetPath, like)));
+            // Case-insensitive on both databases.
+            var like = "%" + search.Trim().ToLowerInvariant() + "%";
+            q = q.Where(i => EF.Functions.Like(i.SourcePath.ToLower(), like) || (i.TargetPath != null && EF.Functions.Like(i.TargetPath.ToLower(), like)));
         }
 
         return q;

@@ -56,23 +56,23 @@ public static class BackupExport
         g.MapBackupProbe();
         g.MapBackupContent();
 
-        g.MapGet("/info", (SqliteSetup sqlite, RootRegistry roots, SettingsStore settings) =>
+        g.MapGet("/info", (DbSetup database, RootRegistry roots, SettingsStore settings) =>
         {
-            using var c = sqlite.Open();
+            using var c = database.Open();
             // The root folder's row already holds the totals: one lookup per root on the (RootId, RelPath) index, no scan of all files.
             var s = settings.Current;
             return new ExportInfo("ANalyze", Version(), Environment.MachineName, HashAlgorithm, s.HashAllFiles, s.VerifyAfterDays,
                 roots.All.Where(r => !r.Missing).Select(r =>
                 {
-                    var n = Db.Query(c, "SELECT FileCount, TotalSize FROM Entries WHERE RootId = $r AND RelPath = ''",
-                        x => (Files: x.GetInt64(0), Size: x.GetInt64(1)), ("$r", r.Id)).FirstOrDefault();
+                    var n = Db.Query(c, "SELECT FileCount, TotalSize FROM Entries WHERE RootId = @r AND RelPath = ''",
+                        x => (Files: x.GetInt64(0), Size: x.GetInt64(1)), ("@r", r.Id)).FirstOrDefault();
                     return new ExportRoot(r.Id, r.Path, r.Name, n.Files, n.Size, null, r.LastScanAt);
                 }).ToList(), DateTimeOffset.UtcNow.ToUnixTimeSeconds());
         });
 
         // Keyset paging on the (RootId, HashedAt) index; the cursor is "hashedAt:id" of the last file returned.
-        // "HashedAt >= $at" lets SQLite seek to the cursor; with only the OR it walks the root's index from the start on every page.
-        g.MapGet("/hashes", (int rootId, string? after, int? limit, SqliteSetup sqlite, RootRegistry roots) =>
+        // "HashedAt >= @at" lets SQLite seek to the cursor; with only the OR it walks the root's index from the start on every page.
+        g.MapGet("/hashes", (int rootId, string? after, int? limit, DbSetup database, RootRegistry roots) =>
         {
             if (roots.Get(rootId) is null)
             {
@@ -81,18 +81,18 @@ public static class BackupExport
 
             var (at, id) = ParseCursor(after);
             var take = Math.Clamp(limit ?? 5000, 1, MaxPage);
-            using var c = sqlite.Open();
+            using var c = database.Open();
             var rows = Db.Query(c, $"""
                 SELECT RelPath, Size, MTime, FullHash, CorruptAt, HashedAt, Id FROM Entries
-                WHERE RootId = $r AND HashedAt >= $at AND (HashedAt > $at OR Id > $id) AND IsDir = 0 AND IsSymlink = 0 AND FullHash IS NOT NULL
+                WHERE RootId = @r AND HashedAt >= @at AND (HashedAt > @at OR Id > @id) AND IsDir = FALSE AND IsSymlink = FALSE AND FullHash IS NOT NULL
                 ORDER BY HashedAt, Id LIMIT {take}
                 """, r => (File: new ExportFile(r.GetString(0), r.GetInt64(1), r.GetInt64(2), r.GetString(3), r.IsDBNull(4) ? null : r.GetInt64(4)), At: r.GetInt64(5), Id: r.GetInt64(6)),
-                ("$r", rootId), ("$at", at), ("$id", id));
+                ("@r", rootId), ("@at", at), ("@id", id));
             var cursor = rows.Count > 0 ? $"{rows[^1].At}:{rows[^1].Id}" : $"{at}:{id}";
             return Results.Ok(new HashPage(rows.Select(x => x.File).ToList(), rows.Count == take ? cursor : null, cursor));
         });
 
-        g.MapGet("/files", (int rootId, string? after, int? limit, SqliteSetup sqlite, RootRegistry roots) =>
+        g.MapGet("/files", (int rootId, string? after, int? limit, DbSetup database, RootRegistry roots) =>
         {
             if (roots.Get(rootId) is null)
             {
@@ -100,14 +100,14 @@ public static class BackupExport
             }
 
             var take = Math.Clamp(limit ?? 5000, 1, MaxPage);
-            using var c = sqlite.Open();
+            using var c = database.Open();
             // Keyset paging on the unique (RootId, RelPath) index.
             var items = Db.Query(c, $"""
-                SELECT RelPath, CASE WHEN IsDir = 1 THEN TotalSize ELSE Size END, MTime, FullHash, CorruptAt, IsDir FROM Entries
-                WHERE RootId = $r AND RelPath > $after AND IsSymlink = 0
+                SELECT RelPath, CASE WHEN IsDir = TRUE THEN TotalSize ELSE Size END, MTime, FullHash, CorruptAt, IsDir FROM Entries
+                WHERE RootId = @r AND RelPath > @after AND IsSymlink = FALSE
                 ORDER BY RelPath LIMIT {take}
                 """, r => new ExportFile(r.GetString(0), r.GetInt64(1), r.GetInt64(2), r.IsDBNull(3) ? null : r.GetString(3), r.IsDBNull(4) ? null : r.GetInt64(4), r.GetBoolean(5)),
-                ("$r", rootId), ("$after", after ?? ""));
+                ("@r", rootId), ("@after", after ?? ""));
             return Results.Ok(new ExportPage(items, items.Count == take ? items[^1].P : null));
         });
     }
@@ -126,7 +126,7 @@ public static class BackupExport
     /// 404 with <c>{"missing":true}</c> when the file is not there (an older parent answers 404 without a body).
     /// </summary>
     public static void MapBackupProbe(this RouteGroupBuilder g) =>
-        g.MapGet("/probe", async (int rootId, string path, int? block, long? compare, HttpContext http, SqliteSetup sqlite, RootRegistry roots, CancellationToken ct) =>
+        g.MapGet("/probe", async (int rootId, string path, int? block, long? compare, HttpContext http, DbSetup database, RootRegistry roots, CancellationToken ct) =>
         {
             var rel = path.Trim('/');
             string full;
@@ -145,11 +145,11 @@ public static class BackupExport
             }
 
             ProbeIndex? index;
-            using (var c = sqlite.Open())
+            using (var c = database.Open())
             {
-                index = Db.Query(c, "SELECT Size, MTime, FullHash, HashedAt, CorruptAt FROM Entries WHERE RootId = $r AND RelPath = $p AND IsDir = 0",
+                index = Db.Query(c, "SELECT Size, MTime, FullHash, HashedAt, CorruptAt FROM Entries WHERE RootId = @r AND RelPath = @p AND IsDir = FALSE",
                     r => new ProbeIndex(r.GetInt64(0), r.GetInt64(1), r.IsDBNull(2) ? null : r.GetString(2), r.IsDBNull(3) ? null : r.GetInt64(3), r.IsDBNull(4) ? null : r.GetInt64(4)),
-                    ("$r", rootId), ("$p", rel)).FirstOrDefault();
+                    ("@r", rootId), ("@p", rel)).FirstOrDefault();
             }
 
             var res = http.Response;

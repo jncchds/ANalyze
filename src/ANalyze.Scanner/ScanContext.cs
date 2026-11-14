@@ -1,6 +1,7 @@
+using ANalyze.Infrastructure.Data;
 using System.Diagnostics;
 using ANalyze.Infrastructure.Jobs;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Scanner;
@@ -38,7 +39,7 @@ internal sealed class ScanContext(JobBoard board, long scanId, string title, Dat
     public SharedLease? Lease { get; init; }
 
     /// <summary>Called with the ids of files whose content hash was just stored (after the batch is committed).</summary>
-    public Action<SqliteConnection, IReadOnlyList<long>>? OnHashed { get; init; }
+    public Action<DbConnection, IReadOnlyList<long>>? OnHashed { get; init; }
 
     /// <summary>Called between batches before anything else: waits while the disks are busy with other work (background priority).</summary>
     public Action? Pace { get; init; }

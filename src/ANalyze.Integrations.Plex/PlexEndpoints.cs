@@ -5,7 +5,7 @@ using ANalyze.Integrations.Items;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 
 namespace ANalyze.Integrations.Plex;
 
@@ -15,9 +15,9 @@ internal static class PlexEndpoints
     public static void Map(RouteGroupBuilder g, PlexIntegration plex)
     {
         // Libraries with their size and how much of it was watched.
-        g.MapGet("/summary", (SqliteSetup sqlite) =>
+        g.MapGet("/summary", (DbSetup database) =>
         {
-            using var c = sqlite.Open();
+            using var c = database.Open();
             var sections = Query(c, """
                 SELECT p.SectionKey, p.SectionTitle, MIN(p.Type), COUNT(DISTINCT p.RatingKey), COUNT(*),
                        SUM(COALESCE(e.Size, p.Size)), SUM(CASE WHEN p.ViewCount > 0 THEN COALESCE(e.Size, p.Size) ELSE 0 END),
@@ -34,7 +34,7 @@ internal static class PlexEndpoints
         });
 
         // Titles ranked by size: movies, shows (all episodes) or artists (all tracks).
-        g.MapGet("/top", async (string? type, string? section, string? q, string? key, string? filter, string? sort, int? offset, int? limit, SqliteSetup sqlite, IntegrationHost host, CancellationToken ct) =>
+        g.MapGet("/top", async (string? type, string? section, string? q, string? key, string? filter, string? sort, int? offset, int? limit, DbSetup database, IntegrationHost host, CancellationToken ct) =>
         {
             var t = type is "show" or "artist" ? type : "movie";
             var itemType = t switch { "show" => "episode", "artist" => "track", _ => "movie" };
@@ -60,21 +60,21 @@ internal static class PlexEndpoints
                 "added" => "added DESC",
                 _ => "size DESC",
             };
-            var where = "p.Type = $type" + (string.IsNullOrEmpty(section) ? "" : " AND p.SectionKey = $section")
-                + (string.IsNullOrWhiteSpace(q) ? "" : " AND (p.Title LIKE $q OR p.ShowTitle LIKE $q)")
-                + (string.IsNullOrEmpty(key) ? "" : $" AND {groupKey} = $key");
+            using var c = database.Open();
+            var where = "p.Type = @type" + (string.IsNullOrEmpty(section) ? "" : " AND p.SectionKey = @section")
+                + (string.IsNullOrWhiteSpace(q) ? "" : $" AND (p.Title {c.Like()} @q OR p.ShowTitle {c.Like()} @q)")
+                + (string.IsNullOrEmpty(key) ? "" : $" AND {groupKey} = @key");
             var sql = $"""
                 SELECT {groupKey} AS k, {title} AS title, MIN(p.Year), MIN(p.SectionTitle), COUNT(*) AS files, SUM(COALESCE(e.Size, p.Size)) AS size,
                        SUM(CASE WHEN p.ViewCount > 0 THEN 1 ELSE 0 END), MAX(p.LastViewedAt) AS lastViewed, MIN(p.AddedAt) AS added,
-                       MAX(p.Versions), SUM(CASE WHEN p.EntryId IS NULL THEN 1 ELSE 0 END), {folder}, MIN(p.Url), GROUP_CONCAT(DISTINCT p.Resolution)
+                       MAX(p.Versions), SUM(CASE WHEN p.EntryId IS NULL THEN 1 ELSE 0 END), {folder}, MIN(p.Url), {c.GroupConcatDistinct("p.Resolution")}
                 FROM PlexItems p LEFT JOIN Entries e ON e.Id = p.EntryId LEFT JOIN Entries pa ON pa.Id = e.ParentId
                 WHERE {where}
                 GROUP BY k {having}
                 """;
-            using var c = sqlite.Open();
-            var args = new (string, object?)[] { ("$type", itemType), ("$section", section), ("$q", "%" + q + "%"), ("$key", key) };
-            var totals = Query(c, $"SELECT COUNT(*), COALESCE(SUM(size), 0) FROM ({sql})", r => (r.GetInt64(0), r.GetInt64(1)), args).First();
-            var items = Query(c, $"{sql} ORDER BY {order} LIMIT {Math.Clamp(limit ?? 100, 1, 1000)} OFFSET {Math.Max(0, offset ?? 0)}", r => new
+            var args = new (string, object?)[] { ("@type", itemType), ("@section", section), ("@q", "%" + q + "%"), ("@key", key) };
+            var totals = Query(c, $"SELECT COUNT(*), COALESCE(SUM(size), 0) FROM ({sql}) g", r => (r.GetInt64(0), r.GetInt64(1)), args).First();
+            var items = Query(c, $"SELECT * FROM ({sql}) g ORDER BY {order} LIMIT {Math.Clamp(limit ?? 100, 1, 1000)} OFFSET {Math.Max(0, offset ?? 0)}", r => new
             {
                 key = r.GetString(0),
                 title = r.IsDBNull(1) ? "?" : r.GetString(1),
@@ -95,9 +95,9 @@ internal static class PlexEndpoints
         });
 
         // Where a labelled file or folder belongs (from a label in the browser): the movie, show or artist it is part of, when there is exactly one.
-        g.MapGet("/locate", (long entryId, SqliteSetup sqlite) =>
+        g.MapGet("/locate", (long entryId, DbSetup database) =>
         {
-            using var c = sqlite.Open();
+            using var c = database.Open();
             if (Db.EntryScope(c, entryId) is not { } args)
             {
                 return Results.NotFound();
@@ -112,10 +112,10 @@ internal static class PlexEndpoints
         });
 
         // Files of one title: versions of a movie, episodes of a show, tracks of an artist.
-        g.MapGet("/title", (string type, string key, SqliteSetup sqlite, RootRegistry roots) =>
+        g.MapGet("/title", (string type, string key, DbSetup database, RootRegistry roots) =>
         {
-            using var c = sqlite.Open();
-            var where = type == "movie" ? "p.RatingKey = $key" : "p.SectionKey || ':' || p.ShowTitle = $key";
+            using var c = database.Open();
+            var where = type == "movie" ? "p.RatingKey = @key" : "p.SectionKey || ':' || p.ShowTitle = @key";
             return Query(c, $"""
                 SELECT p.Id, p.Title, p.ParentTitle, p.Season, p.Episode, p.ViewCount, p.LastViewedAt, p.AddedAt, p.PlexPath, COALESCE(e.Size, p.Size),
                        p.Resolution, p.EntryId, e.RelPath, e.RootId, p.Url, p.MatchedBy, p.CheckedPath
@@ -131,13 +131,13 @@ internal static class PlexEndpoints
                 rootId = r.IsDBNull(13) ? (int?)null : r.GetInt32(13), url = r.IsDBNull(14) ? null : r.GetString(14),
                 matchedBy = r.IsDBNull(15) ? null : r.GetString(15), checkedPath = r.IsDBNull(16) ? null : r.GetString(16),
                 localPath = r.IsDBNull(13) ? null : roots.Get(r.GetInt32(13)) is { } root ? RootRegistry.Combine(root.Path, r.GetString(12)) : null,
-            }, ("$key", key));
+            }, ("@key", key));
         });
 
         // Video/audio files inside Plex library folders that Plex does not list (unscanned, misnamed or leftovers).
-        g.MapGet("/not-in-plex", (int? offset, int? limit, SqliteSetup sqlite) =>
+        g.MapGet("/not-in-plex", (int? offset, int? limit, DbSetup database) =>
         {
-            using var c = sqlite.Open();
+            using var c = database.Open();
             var libs = Query(c, "SELECT e.RootId, e.RelPath FROM Annotations a JOIN Entries e ON e.Id = a.EntryId WHERE a.Source = 'plex' AND a.Kind = 'library'",
                 r => (Root: r.GetInt32(0), Rel: r.GetString(1)));
             if (libs.Count == 0)
@@ -145,10 +145,10 @@ internal static class PlexEndpoints
                 return Results.Ok(new { total = 0L, totalSize = 0L, items = Array.Empty<object>() });
             }
 
-            var ranges = string.Join(" OR ", libs.Select((_, i) => $"(e.RootId = $r{i} AND (e.RelPath >= $f{i} AND e.RelPath < $t{i}))"));
-            var args = libs.SelectMany((l, i) => new (string, object?)[] { ($"$r{i}", l.Root), ($"$f{i}", l.Rel.Length == 0 ? "" : l.Rel + "/"), ($"$t{i}", l.Rel.Length == 0 ? "￿" : l.Rel + "0") }).ToArray();
+            var ranges = string.Join(" OR ", libs.Select((_, i) => $"(e.RootId = @r{i} AND (e.RelPath >= @f{i} AND e.RelPath < @t{i}))"));
+            var args = libs.SelectMany((l, i) => new (string, object?)[] { ($"@r{i}", l.Root), ($"@f{i}", l.Rel.Length == 0 ? "" : l.Rel + "/"), ($"@t{i}", l.Rel.Length == 0 ? "￿" : l.Rel + "0") }).ToArray();
             var where = $"""
-                e.IsDir = 0 AND e.Kind IN ({(int)FileKind.Video}, {(int)FileKind.Audio}) AND ({ranges})
+                e.IsDir = FALSE AND e.Kind IN ({(int)FileKind.Video}, {(int)FileKind.Audio}) AND ({ranges})
                 AND NOT EXISTS (SELECT 1 FROM PlexItems p WHERE p.EntryId = e.Id)
                 """;
             var totals = Query(c, $"SELECT COUNT(*), COALESCE(SUM(e.Size), 0) FROM Entries e WHERE {where}", r => (r.GetInt64(0), r.GetInt64(1)), args).First();
@@ -158,15 +158,15 @@ internal static class PlexEndpoints
         });
 
         // Plex files ANalyze could not find: usually a missing path mapping.
-        g.MapGet("/unmatched", (int? limit, SqliteSetup sqlite) =>
+        g.MapGet("/unmatched", (int? limit, DbSetup database) =>
         {
-            using var c = sqlite.Open();
+            using var c = database.Open();
             return Query(c, $"SELECT SectionTitle, Title, ShowTitle, PlexPath, Size, CheckedPath FROM PlexItems WHERE EntryId IS NULL ORDER BY Size DESC LIMIT {Math.Clamp(limit ?? 100, 1, 1000)}",
                 r => new { section = r.GetString(0), title = r.GetString(1), show = r.IsDBNull(2) ? null : r.GetString(2), plexPath = r.GetString(3), size = r.GetInt64(4), checkedPath = r.IsDBNull(5) ? null : r.GetString(5) });
         });
 
         // Proposes path mappings by locating sample Plex files on disk (does not save anything).
-        g.MapPost("/suggest-mappings", async (IntegrationSettings? body, IntegrationHost host, SqliteSetup sqlite, ANalyze.Infrastructure.Roots.RootRegistry roots, CancellationToken ct) =>
+        g.MapPost("/suggest-mappings", async (IntegrationSettings? body, IntegrationHost host, DbSetup database, ANalyze.Infrastructure.Roots.RootRegistry roots, CancellationToken ct) =>
         {
             var settings = body is null ? await host.LoadAsync(plex.Id, ct) : await host.MergeAsync(plex.Id, body, ct);
             try
@@ -186,7 +186,7 @@ internal static class PlexEndpoints
                     }
                 }
 
-                using var c = sqlite.Open();
+                using var c = database.Open();
                 var matcher = new PathMatcher(c, roots, []);
                 matcher.Detect(files, sample: files.Count);
                 return Results.Ok(matcher.Detected);
@@ -198,7 +198,7 @@ internal static class PlexEndpoints
         });
     }
 
-    private static List<T> Query<T>(SqliteConnection c, string sql, Func<SqliteDataReader, T> map, params (string Name, object? Value)[] args)
+    private static List<T> Query<T>(DbConnection c, string sql, Func<DbDataReader, T> map, params (string Name, object? Value)[] args)
     {
         using var cmd = c.CreateCommand();
         cmd.CommandText = sql;

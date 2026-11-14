@@ -1,8 +1,9 @@
+using ANalyze.Infrastructure.Data;
 using System.IO.Hashing;
 using System.Text;
 using ANalyze.Domain;
 using ANalyze.Infrastructure.Logging;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Scanner;
@@ -41,7 +42,7 @@ public static class ExtractionMatcher
 
     private readonly record struct Key(int RootId, string Base, string Strip);
 
-    internal static long Run(SqliteConnection read, SqliteConnection write, ScanContext ctx)
+    internal static long Run(DbConnection read, DbConnection write, ScanContext ctx)
     {
         ctx.StartPhase("extractions");
         var archives = new List<long>();
@@ -93,11 +94,11 @@ public static class ExtractionMatcher
         return complete + partial;
     }
 
-    public static List<StoredMember> LoadMembers(SqliteConnection c, long archiveId)
+    public static List<StoredMember> LoadMembers(DbConnection c, long archiveId)
     {
         using var q = c.CreateCommand();
-        q.CommandText = "SELECT Path, Name, Size, Crc FROM ArchiveMembers WHERE ArchiveId = $a ORDER BY Id";
-        q.Parameters.AddWithValue("$a", archiveId);
+        q.CommandText = "SELECT Path, Name, Size, Crc FROM ArchiveMembers WHERE ArchiveId = @a ORDER BY Id";
+        q.Parameters.AddWithValue("@a", archiveId);
         using var r = q.ExecuteReader();
         var list = new List<StoredMember>();
         while (r.Read())
@@ -109,7 +110,7 @@ public static class ExtractionMatcher
     }
 
     /// <summary>The extractions of one archive (without <c>ArchiveId</c>), best first.</summary>
-    public static List<ArchiveExtraction> Find(SqliteConnection c, IReadOnlyList<StoredMember> members)
+    public static List<ArchiveExtraction> Find(DbConnection c, IReadOnlyList<StoredMember> members)
     {
         using var finder = new Finder(c);
         return Find(finder, members);
@@ -170,7 +171,7 @@ public static class ExtractionMatcher
     }
 
     /// <summary>Compares every archive file with the file at its place under <paramref name="basePath"/>.</summary>
-    public static List<MemberMatch> Compare(SqliteConnection c, IReadOnlyList<StoredMember> members, int rootId, string basePath, string strip)
+    public static List<MemberMatch> Compare(DbConnection c, IReadOnlyList<StoredMember> members, int rootId, string basePath, string strip)
     {
         using var finder = new Finder(c);
         Evaluate(finder, members, rootId, basePath, strip, out var matches);
@@ -241,7 +242,7 @@ public static class ExtractionMatcher
     /// Replaces the stored extractions of these archives. The same place keeps its id (links and queued checks stay valid) and its
     /// verification results while the matched files did not change.
     /// </summary>
-    private static void Store(SqliteConnection read, SqliteConnection write, List<(long Archive, List<ArchiveExtraction> Found)> batch)
+    private static void Store(DbConnection read, DbConnection write, List<(long Archive, List<ArchiveExtraction> Found)> batch)
     {
         if (batch.Count == 0)
         {
@@ -278,52 +279,54 @@ public static class ExtractionMatcher
         using var tx = write.BeginTransaction();
         using var del = write.CreateCommand();
         del.Transaction = tx;
-        del.CommandText = "DELETE FROM ArchiveExtractions WHERE ArchiveId = $a";
-        del.Parameters.Add(new SqliteParameter("$a", null));
+        del.CommandText = "DELETE FROM ArchiveExtractions WHERE ArchiveId = @a";
+        del.Parameters.AddWithValue("@a", null);
         using var ins = write.CreateCommand();
         ins.Transaction = tx;
-        ins.CommandText = """
+        // A new row (no id kept from before) takes the next id: SQLite does that for NULL, PostgreSQL needs the sequence.
+        var id = write.IsPostgres() ? "COALESCE(@id, nextval(pg_get_serial_sequence('archiveextractions', 'id')))" : "@id";
+        ins.CommandText = $"""
             INSERT INTO ArchiveExtractions (Id, ArchiveId, State, RootId, BaseRelPath, Strip, FolderId, FolderRelPath, Files, Matched, Missing, Smaller, Differs,
                 Bytes, MatchedBytes, Fingerprint, FoundAt, VerifiedAt, VerifiedOk, VerifiedBad, Unverified, BadPaths)
-            VALUES ($id, $a, $state, $root, $base, $strip, $folder, $folderPath, $files, $matched, $missing, $smaller, $differs,
-                $bytes, $matchedBytes, $fp, $now, $vAt, $vOk, $vBad, $vUn, $bad)
+            VALUES ({id}, @a, @state, @root, @base, @strip, @folder, @folderPath, @files, @matched, @missing, @smaller, @differs,
+                @bytes, @matchedBytes, @fp, @now, @vAt, @vOk, @vBad, @vUn, @bad)
             """;
-        foreach (var p in new[] { "$id", "$a", "$state", "$root", "$base", "$strip", "$folder", "$folderPath", "$files", "$matched", "$missing", "$smaller", "$differs",
-                     "$bytes", "$matchedBytes", "$fp", "$vAt", "$vOk", "$vBad", "$vUn", "$bad" })
+        foreach (var p in new[] { "@id", "@a", "@state", "@root", "@base", "@strip", "@folder", "@folderPath", "@files", "@matched", "@missing", "@smaller", "@differs",
+                     "@bytes", "@matchedBytes", "@fp", "@vAt", "@vOk", "@vBad", "@vUn", "@bad" })
         {
-            ins.Parameters.Add(new SqliteParameter(p, null));
+            ins.Parameters.AddWithValue(p, null);
         }
 
-        ins.Parameters.AddWithValue("$now", now);
+        ins.Parameters.AddWithValue("@now", now);
         foreach (var (archive, found) in batch)
         {
-            del.Parameters["$a"].Value = archive;
+            del.Parameters["@a"].Value = archive;
             del.ExecuteNonQuery();
             foreach (var x in found)
             {
                 var same = old.GetValueOrDefault((archive, x.RootId, x.BaseRelPath, x.Strip));
                 var kept = same is not null && same.Fingerprint == x.Fingerprint ? same : null;
-                ins.Parameters["$id"].Value = (object?)same?.Id ?? DBNull.Value;
-                ins.Parameters["$a"].Value = archive;
-                ins.Parameters["$state"].Value = (int)x.State;
-                ins.Parameters["$root"].Value = x.RootId;
-                ins.Parameters["$base"].Value = x.BaseRelPath;
-                ins.Parameters["$strip"].Value = x.Strip;
-                ins.Parameters["$folder"].Value = (object?)x.FolderId ?? DBNull.Value;
-                ins.Parameters["$folderPath"].Value = x.FolderRelPath;
-                ins.Parameters["$files"].Value = x.Files;
-                ins.Parameters["$matched"].Value = x.Matched;
-                ins.Parameters["$missing"].Value = x.Missing;
-                ins.Parameters["$smaller"].Value = x.Smaller;
-                ins.Parameters["$differs"].Value = x.Differs;
-                ins.Parameters["$bytes"].Value = x.Bytes;
-                ins.Parameters["$matchedBytes"].Value = x.MatchedBytes;
-                ins.Parameters["$fp"].Value = x.Fingerprint;
-                ins.Parameters["$vAt"].Value = (object?)kept?.VerifiedAt ?? DBNull.Value;
-                ins.Parameters["$vOk"].Value = kept?.VerifiedOk ?? 0;
-                ins.Parameters["$vBad"].Value = kept?.VerifiedBad ?? 0;
-                ins.Parameters["$vUn"].Value = kept?.Unverified ?? 0;
-                ins.Parameters["$bad"].Value = (object?)kept?.BadPaths ?? DBNull.Value;
+                ins.Parameters["@id"].Value = (object?)same?.Id ?? DBNull.Value;
+                ins.Parameters["@a"].Value = archive;
+                ins.Parameters["@state"].Value = (int)x.State;
+                ins.Parameters["@root"].Value = x.RootId;
+                ins.Parameters["@base"].Value = x.BaseRelPath;
+                ins.Parameters["@strip"].Value = x.Strip;
+                ins.Parameters["@folder"].Value = (object?)x.FolderId ?? DBNull.Value;
+                ins.Parameters["@folderPath"].Value = x.FolderRelPath;
+                ins.Parameters["@files"].Value = x.Files;
+                ins.Parameters["@matched"].Value = x.Matched;
+                ins.Parameters["@missing"].Value = x.Missing;
+                ins.Parameters["@smaller"].Value = x.Smaller;
+                ins.Parameters["@differs"].Value = x.Differs;
+                ins.Parameters["@bytes"].Value = x.Bytes;
+                ins.Parameters["@matchedBytes"].Value = x.MatchedBytes;
+                ins.Parameters["@fp"].Value = x.Fingerprint;
+                ins.Parameters["@vAt"].Value = (object?)kept?.VerifiedAt ?? DBNull.Value;
+                ins.Parameters["@vOk"].Value = kept?.VerifiedOk ?? 0;
+                ins.Parameters["@vBad"].Value = kept?.VerifiedBad ?? 0;
+                ins.Parameters["@vUn"].Value = kept?.Unverified ?? 0;
+                ins.Parameters["@bad"].Value = (object?)kept?.BadPaths ?? DBNull.Value;
                 ins.ExecuteNonQuery();
             }
         }
@@ -334,22 +337,22 @@ public static class ExtractionMatcher
     /// <summary>Index lookups used while matching (prepared once per connection).</summary>
     private sealed class Finder : IDisposable
     {
-        private readonly SqliteCommand _byName;
-        private readonly SqliteCommand _at;
+        private readonly DbCommand _byName;
+        private readonly DbCommand _at;
 
         public readonly record struct Found(long Id, string RelPath, long Size, long MTime, bool IsDir);
 
-        public Finder(SqliteConnection c)
+        public Finder(DbConnection c)
         {
             // The covering size index narrows by size; the name is checked on the few rows left.
             _byName = c.CreateCommand();
-            _byName.CommandText = $"SELECT RootId, RelPath, Name FROM Entries WHERE IsDir = 0 AND Size = $s AND IsSymlink = 0 AND Name = $n LIMIT {MaxHitsPerAnchor * 2}";
-            _byName.Parameters.Add(new SqliteParameter("$s", null));
-            _byName.Parameters.Add(new SqliteParameter("$n", null));
+            _byName.CommandText = $"SELECT RootId, RelPath, Name FROM Entries WHERE IsDir = FALSE AND Size = @s AND IsSymlink = FALSE AND Name = @n LIMIT {MaxHitsPerAnchor * 2}";
+            _byName.Parameters.AddWithValue("@s", null);
+            _byName.Parameters.AddWithValue("@n", null);
             _at = c.CreateCommand();
-            _at.CommandText = "SELECT Id, Size, MTime, IsDir, RelPath FROM Entries WHERE RootId = $r AND RelPath = $p AND IsSymlink = 0";
-            _at.Parameters.Add(new SqliteParameter("$r", null));
-            _at.Parameters.Add(new SqliteParameter("$p", null));
+            _at.CommandText = "SELECT Id, Size, MTime, IsDir, RelPath FROM Entries WHERE RootId = @r AND RelPath = @p AND IsSymlink = FALSE";
+            _at.Parameters.AddWithValue("@r", null);
+            _at.Parameters.AddWithValue("@p", null);
         }
 
         public void Dispose()
@@ -363,8 +366,8 @@ public static class ExtractionMatcher
             var list = new List<(int, string)>();
             foreach (var n in Variants(name))
             {
-                _byName.Parameters["$s"].Value = size;
-                _byName.Parameters["$n"].Value = n;
+                _byName.Parameters["@s"].Value = size;
+                _byName.Parameters["@n"].Value = n;
                 using var r = _byName.ExecuteReader();
                 // Name compares without case in SQLite; the path must match exactly.
                 while (r.Read() && list.Count < MaxHitsPerAnchor)
@@ -384,8 +387,8 @@ public static class ExtractionMatcher
         {
             foreach (var p in Variants(relPath))
             {
-                _at.Parameters["$r"].Value = rootId;
-                _at.Parameters["$p"].Value = p;
+                _at.Parameters["@r"].Value = rootId;
+                _at.Parameters["@p"].Value = p;
                 using var r = _at.ExecuteReader();
                 if (r.Read())
                 {

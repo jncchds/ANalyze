@@ -100,6 +100,10 @@ export interface Root {
 
 export interface Config {
   version?: string
+  /** Where the index is stored (ANalyze__Database__Provider). */
+  database: 'sqlite' | 'postgres'
+  /** SQLite file, or PostgreSQL host/database (no credentials). */
+  databaseLocation: string
   readOnly: boolean
   forcedReadOnly: boolean
   authRequired: boolean

@@ -6,9 +6,11 @@ Guidance for Claude Code in this repository. The design is described in `AGENTS.
 
 ```bash
 dotnet build                                         # all projects; warnings are errors
-dotnet test tests/ANalyze.Tests                      # unit + integration tests
+dotnet test tests/ANalyze.Tests                      # unit + integration tests (SQLite)
+ANALYZE_TEST_POSTGRES="Host=127.0.0.1;Username=…;Password=…" dotnet test tests/ANalyze.Tests   # same suite on PostgreSQL
 cd src/ANalyze.Web/ClientApp && npm run typecheck && npm run lint && npm run build
-dotnet ef migrations add <Name> --project src/ANalyze.Infrastructure --startup-project src/ANalyze.Infrastructure --output-dir Data/Migrations
+dotnet ef migrations add <Name> --context AnalyzeDbContext --project src/ANalyze.Infrastructure --startup-project src/ANalyze.Infrastructure --output-dir Data/Migrations
+dotnet ef migrations add <Name> --context PostgresDbContext --project src/ANalyze.Infrastructure --startup-project src/ANalyze.Infrastructure --output-dir Data/PostgresMigrations
 docker compose -f docker-compose.dev.yml up --build  # full app on :8080 with ./library mounted
 ```
 
@@ -21,12 +23,15 @@ docker compose -f docker-compose.dev.yml up --build  # full app on :8080 with ./
    b. Make sure the heading for the current version carries today's date.
    c. Add a `- feat:/fix:/refactor:` bullet for the change under that heading.
 3. **After every architectural or schema change** — update `AGENTS.md` and `README.md`.
-4. **Never hand-write migrations** — always `dotnet ef migrations add`.
+4. **Never hand-write migrations** — always `dotnet ef migrations add`, for both contexts (SQLite and PostgreSQL) on every schema change.
 5. **UI style** — keep the nopds/abook look (sidebar shell, cards, pills, token names in `index.css`) with ANalyze's own palette.
 
 ## Gotchas
 
 - Subtree ranges on `Entries.RelPath` use `>= 'p/' AND < 'p0'` (index-friendly); keep it that way.
+- The index is SQLite or PostgreSQL (`DbSetup`): raw SQL must run on both — `@params`, `TRUE`/`FALSE`, no `INSERT OR …`, aliases on
+  subqueries, no reader left open while another command runs on the same connection; per-provider bits via `SqlDialect`. See
+  "Database providers" in AGENTS.md.
 - Aggregates over all files or a whole root read `Sql.FullScan` (`Entries e NOT INDEXED`), and expensive page summaries go through `Caches` (stale-while-revalidate); see AGENTS.md.
 - Any new code that creates files or folders on a root must give them the parent's owner (`Native.CreateDirectoryLikeParent`, `Native.SetOwner`); the container runs as root.
 - Read file content only via `RootRegistry.ResolveForRead` and entry ids.

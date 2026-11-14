@@ -36,7 +36,7 @@ public sealed record BackupSnapshot(
 /// </summary>
 public sealed class ParentIntegration(
     IHttpClientFactory httpFactory,
-    SqliteSetup sqlite,
+    DbSetup database,
     RootRegistry roots,
     SettingsStore appSettings,
     IDbContextFactory<AnalyzeDbContext> dbf,
@@ -137,7 +137,7 @@ public sealed class ParentIntegration(
                 return page with { Items = page.Items.Select(x => x with { H = null }).ToList() };
             };
 
-        using var conn = sqlite.Open();
+        using var conn = database.Open();
         var result = await new BackupSync(conn, roots, settings.GetMappings(NotBackupsKey)).RunAsync(info, settings.GetMappings("mappings"), fetch, progress, ct,
             async c =>
             {
@@ -242,28 +242,28 @@ public sealed class ParentIntegration(
         if (found.Count > 0)
         {
             using var lease = await jobLock.AcquireSharedAsync("integration:" + Id, ct);
-            using var conn = sqlite.Open();
+            using var conn = database.Open();
             var ids = new List<long>();
             using (var tx = conn.BeginTransaction())
             {
                 using var upd = conn.CreateCommand();
                 upd.Transaction = tx;
                 upd.CommandText = """
-                    UPDATE BackupFiles SET ParentHash = $h, ParentSize = $s
-                    WHERE LocalRootId = $r AND LocalRelPath = $p AND IsDir = 0 AND ParentSize IS NOT NULL
+                    UPDATE BackupFiles SET ParentHash = @h, ParentSize = @s
+                    WHERE LocalRootId = @r AND LocalRelPath = @p AND IsDir = FALSE AND ParentSize IS NOT NULL
                     RETURNING EntryId
                     """;
-                foreach (var n in new[] { "$h", "$s", "$r", "$p" })
+                foreach (var n in new[] { "@h", "@s", "@r", "@p" })
                 {
-                    upd.Parameters.Add(new Microsoft.Data.Sqlite.SqliteParameter(n, null));
+                    upd.Parameters.AddWithValue(n, null);
                 }
 
                 foreach (var (r, rel, size, hash) in found)
                 {
-                    upd.Parameters["$h"].Value = hash;
-                    upd.Parameters["$s"].Value = size;
-                    upd.Parameters["$r"].Value = r;
-                    upd.Parameters["$p"].Value = rel;
+                    upd.Parameters["@h"].Value = hash;
+                    upd.Parameters["@s"].Value = size;
+                    upd.Parameters["@r"].Value = r;
+                    upd.Parameters["@p"].Value = rel;
                     if (upd.ExecuteScalar() is long id)
                     {
                         ids.Add(id);
@@ -313,7 +313,7 @@ public sealed class ParentIntegration(
     {
         var client = Client(settings);
         var info = await client.InfoAsync(ct);
-        using var conn = sqlite.Open();
+        using var conn = database.Open();
         var matcher = new PathMatcher(conn, roots, []);
         foreach (var r in info.Roots)
         {
@@ -369,7 +369,7 @@ internal sealed class BackupHashRefresh(IntegrationHost host, ParentIntegration 
                     log.LogInformation("Backup: {Checked} files re-checked with hashes the parent computed since the last look; {Corrupt} differ", r.Checked, r.Corrupt);
                 }
             }
-            catch (Exception e) when (e is HttpRequestException or InvalidOperationException or TaskCanceledException or JsonException or Microsoft.Data.Sqlite.SqliteException)
+            catch (Exception e) when (e is HttpRequestException or InvalidOperationException or TaskCanceledException or JsonException or System.Data.Common.DbException)
             {
                 log.LogDebug(e, "Backup hash refresh failed");
             }

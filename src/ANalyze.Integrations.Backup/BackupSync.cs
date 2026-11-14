@@ -1,5 +1,6 @@
+using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Roots;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 
 namespace ANalyze.Integrations.Backup;
 
@@ -50,7 +51,7 @@ public sealed record BackupSyncResult(
 /// said are not backups of each other: nothing below the parent folder is ever matched with anything below the local one, neither by a
 /// mapping (configured or detected) nor as a backed-up folder.
 /// </summary>
-public sealed class BackupSync(SqliteConnection conn, RootRegistry roots, IReadOnlyList<PathMapping>? notBackups = null)
+public sealed class BackupSync(DbConnection conn, RootRegistry roots, IReadOnlyList<PathMapping>? notBackups = null)
 {
     private readonly IReadOnlyList<PathMapping> _notBackups = notBackups ?? [];
 
@@ -113,12 +114,12 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots, IReadO
         long seen = 0, unmapped = 0;
         var total = info.Roots.Sum(r => r.Files);
 
-        Exec("DROP TABLE IF EXISTS temp.ParentStage");
-        Exec("CREATE TEMP TABLE ParentStage (RootId INTEGER NOT NULL, RelPath TEXT NOT NULL, ParentRel TEXT, IsDir INTEGER NOT NULL, Size INTEGER NOT NULL, Hash TEXT)");
-        Exec("CREATE UNIQUE INDEX temp.IX_ParentStage_Path ON ParentStage (RootId, RelPath)");
-        Exec("CREATE INDEX temp.IX_ParentStage_Parent ON ParentStage (RootId, ParentRel)");
-        using var ins = Cmd("INSERT OR IGNORE INTO ParentStage (RootId, RelPath, ParentRel, IsDir, Size, Hash) VALUES ($r, $p, $parent, $d, $s, $h)",
-            "$r", "$p", "$parent", "$d", "$s", "$h");
+        Exec("DROP TABLE IF EXISTS ParentStage");
+        Exec($"CREATE TEMP TABLE ParentStage (RootId INTEGER NOT NULL, RelPath {conn.Text()} NOT NULL, ParentRel {conn.Text()}, IsDir BOOLEAN NOT NULL, Size BIGINT NOT NULL, Hash {conn.Text()})");
+        Exec("CREATE UNIQUE INDEX IX_ParentStage_Path ON ParentStage (RootId, RelPath)");
+        Exec("CREATE INDEX IX_ParentStage_Parent ON ParentStage (RootId, ParentRel)");
+        using var ins = Cmd("INSERT INTO ParentStage (RootId, RelPath, ParentRel, IsDir, Size, Hash) VALUES (@r, @p, @parent, @d, @s, @h) ON CONFLICT DO NOTHING",
+            "@r", "@p", "@parent", "@d", "@s", "@h");
 
         // 1. The parent's tree, at the local paths it maps to.
         var targets = new List<BackupTarget>();
@@ -215,18 +216,18 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots, IReadO
         foreach (var (root, rel) in scopes)
         {
             using var q = conn.CreateCommand();
-            var range = rel.Length == 0 ? "" : "AND (e.RelPath = $rel OR (e.RelPath >= $from AND e.RelPath < $to))";
+            var range = rel.Length == 0 ? "" : "AND (e.RelPath = @rel OR (e.RelPath >= @from AND e.RelPath < @to))";
             q.CommandText = $"""
-                SELECT e.Id, e.ParentId, e.IsDir, e.Depth, CASE WHEN e.IsDir = 1 THEN e.TotalSize ELSE e.Size END, e.FullHash,
+                SELECT e.Id, e.ParentId, e.IsDir, e.Depth, CASE WHEN e.IsDir = TRUE THEN e.TotalSize ELSE e.Size END, e.FullHash,
                        p.IsDir, p.Size, p.Hash,
-                       CASE WHEN e.IsDir = 1 THEN (SELECT COUNT(*) FROM ParentStage c WHERE c.RootId = e.RootId AND c.ParentRel = e.RelPath) ELSE 0 END
+                       CASE WHEN e.IsDir = TRUE THEN (SELECT COUNT(*) FROM ParentStage c WHERE c.RootId = e.RootId AND c.ParentRel = e.RelPath) ELSE 0 END
                 FROM Entries e LEFT JOIN ParentStage p ON p.RootId = e.RootId AND p.RelPath = e.RelPath
-                WHERE e.RootId = $r {range} AND e.IsSymlink = 0
+                WHERE e.RootId = @r {range} AND e.IsSymlink = FALSE
                 """;
-            q.Parameters.AddWithValue("$r", root);
-            q.Parameters.AddWithValue("$rel", rel);
-            q.Parameters.AddWithValue("$from", rel + "/");
-            q.Parameters.AddWithValue("$to", rel + "0");
+            q.Parameters.AddWithValue("@r", root);
+            q.Parameters.AddWithValue("@rel", rel);
+            q.Parameters.AddWithValue("@from", rel + "/");
+            q.Parameters.AddWithValue("@to", rel + "0");
             using var r = q.ExecuteReader();
             while (r.Read())
             {
@@ -286,35 +287,35 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots, IReadO
         }
 
         // 3. Replace the table.
-        Exec("DROP TABLE IF EXISTS temp.BackupResult");
-        Exec("CREATE TEMP TABLE BackupResult (Id INTEGER PRIMARY KEY, State TEXT NOT NULL, ParentSize INTEGER, ParentHash TEXT, Verified INTEGER NOT NULL, Children INTEGER NOT NULL, Synced INTEGER NOT NULL)");
+        Exec("DROP TABLE IF EXISTS BackupResult");
+        Exec($"CREATE TEMP TABLE BackupResult (Id {conn.IdKey()}, State {conn.Text()} NOT NULL, ParentSize BIGINT, ParentHash {conn.Text()}, Verified BOOLEAN NOT NULL, Children INTEGER NOT NULL, Synced INTEGER NOT NULL)");
         using (var tx = conn.BeginTransaction())
         {
-            using var res = Cmd("INSERT INTO BackupResult VALUES ($id, $state, $psize, $phash, $v, $c, $s)", "$id", "$state", "$psize", "$phash", "$v", "$c", "$s");
+            using var res = Cmd("INSERT INTO BackupResult VALUES (@id, @state, @psize, @phash, @v, @c, @s)", "@id", "@state", "@psize", "@phash", "@v", "@c", "@s");
             res.Transaction = tx;
             foreach (var n in nodes.Values)
             {
-                res.Parameters["$id"].Value = n.Id;
-                res.Parameters["$state"].Value = n.State;
-                res.Parameters["$psize"].Value = (object?)n.ParentSize ?? DBNull.Value;
-                res.Parameters["$phash"].Value = (object?)n.ParentHash ?? DBNull.Value;
-                res.Parameters["$v"].Value = n.Verified;
-                res.Parameters["$c"].Value = n.Children;
-                res.Parameters["$s"].Value = n.SyncedChildren;
+                res.Parameters["@id"].Value = n.Id;
+                res.Parameters["@state"].Value = n.State;
+                res.Parameters["@psize"].Value = (object?)n.ParentSize ?? DBNull.Value;
+                res.Parameters["@phash"].Value = (object?)n.ParentHash ?? DBNull.Value;
+                res.Parameters["@v"].Value = n.Verified;
+                res.Parameters["@c"].Value = n.Children;
+                res.Parameters["@s"].Value = n.SyncedChildren;
                 res.ExecuteNonQuery();
             }
 
             Exec("DELETE FROM BackupFiles", tx);
             Exec("""
                 INSERT INTO BackupFiles (State, IsDir, EntryId, LocalRootId, LocalRelPath, Size, ParentSize, ParentHash, Verified, Children, SyncedChildren)
-                SELECT b.State, e.IsDir, e.Id, e.RootId, e.RelPath, CASE WHEN e.IsDir = 1 THEN e.TotalSize ELSE e.Size END, b.ParentSize, b.ParentHash, b.Verified, b.Children, b.Synced
+                SELECT b.State, e.IsDir, e.Id, e.RootId, e.RelPath, CASE WHEN e.IsDir = TRUE THEN e.TotalSize ELSE e.Size END, b.ParentSize, b.ParentHash, b.Verified, b.Children, b.Synced
                 FROM BackupResult b JOIN Entries e ON e.Id = b.Id
                 """, tx);
             tx.Commit();
         }
 
-        Exec("DROP TABLE temp.BackupResult");
-        Exec("DROP TABLE temp.ParentStage");
+        Exec("DROP TABLE BackupResult");
+        Exec("DROP TABLE ParentStage");
         var folders = nodes.Values.Count(n => n.IsDir);
         var result = new BackupSyncResult(targets, mappings, detected, files, folders, nodes.Values.Count(n => n.IsDir && n.Synced), unmapped);
         whileLocked?.Invoke(result);
@@ -324,15 +325,15 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots, IReadO
     /// <summary>How many of the sample files exist as files at their mapped local path.</summary>
     private int Found(IEnumerable<ExportFile> sample, Func<string, string> abs, IReadOnlyList<PathMapping> mappings)
     {
-        using var find = Cmd("SELECT 1 FROM Entries WHERE RootId = $r AND RelPath = $p AND IsDir = 0", "$r", "$p");
+        using var find = Cmd("SELECT 1 FROM Entries WHERE RootId = @r AND RelPath = @p AND IsDir = FALSE", "@r", "@p");
         var n = 0;
         foreach (var f in sample)
         {
             var local = IntegrationSettings.MapPath(abs(f.P), mappings);
             if (!NotBackup(abs(f.P), local) && Resolve(local) is ({ } r, { } rel))
             {
-                find.Parameters["$r"].Value = r;
-                find.Parameters["$p"].Value = rel;
+                find.Parameters["@r"].Value = r;
+                find.Parameters["@p"].Value = rel;
                 n += find.ExecuteScalar() is null ? 0 : 1;
             }
         }
@@ -369,14 +370,14 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots, IReadO
         return best.To is null ? null : best.From + localPath[best.To.Length..];
     }
 
-    private static void Insert(SqliteCommand ins, int root, string rel, string? parent, bool dir, long size, string? hash)
+    private static void Insert(DbCommand ins, int root, string rel, string? parent, bool dir, long size, string? hash)
     {
-        ins.Parameters["$r"].Value = root;
-        ins.Parameters["$p"].Value = rel;
-        ins.Parameters["$parent"].Value = (object?)parent ?? DBNull.Value;
-        ins.Parameters["$d"].Value = dir;
-        ins.Parameters["$s"].Value = size;
-        ins.Parameters["$h"].Value = (object?)hash ?? DBNull.Value;
+        ins.Parameters["@r"].Value = root;
+        ins.Parameters["@p"].Value = rel;
+        ins.Parameters["@parent"].Value = (object?)parent ?? DBNull.Value;
+        ins.Parameters["@d"].Value = dir;
+        ins.Parameters["@s"].Value = size;
+        ins.Parameters["@h"].Value = (object?)hash ?? DBNull.Value;
         ins.ExecuteNonQuery();
     }
 
@@ -385,25 +386,25 @@ public sealed class BackupSync(SqliteConnection conn, RootRegistry roots, IReadO
     private long? DirId(int root, string rel)
     {
         using var q = conn.CreateCommand();
-        q.CommandText = "SELECT Id FROM Entries WHERE RootId = $r AND RelPath = $p AND IsDir = 1";
-        q.Parameters.AddWithValue("$r", root);
-        q.Parameters.AddWithValue("$p", rel);
+        q.CommandText = "SELECT Id FROM Entries WHERE RootId = @r AND RelPath = @p AND IsDir = TRUE";
+        q.Parameters.AddWithValue("@r", root);
+        q.Parameters.AddWithValue("@p", rel);
         return q.ExecuteScalar() as long?;
     }
 
-    private SqliteCommand Cmd(string sql, params string[] names)
+    private DbCommand Cmd(string sql, params string[] names)
     {
         var c = conn.CreateCommand();
         c.CommandText = sql;
         foreach (var n in names)
         {
-            c.Parameters.Add(new SqliteParameter(n, null));
+            c.Parameters.AddWithValue(n, null);
         }
 
         return c;
     }
 
-    private void Exec(string sql, SqliteTransaction? tx = null)
+    private void Exec(string sql, DbTransaction? tx = null)
     {
         using var c = conn.CreateCommand();
         c.Transaction = tx;

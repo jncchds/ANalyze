@@ -2,6 +2,8 @@
 
 ## v0.1.12 — 2026-11-14
 
+- feat: choose where the index is stored: SQLite (default, as before) or PostgreSQL (`ANalyze__Database__Provider=postgres` and `ANalyze__Database__ConnectionString`; `docker-compose.postgres.yml` adds a PostgreSQL 17 container). Settings → Roots shows which one is in use
+- feat: move an existing SQLite index to PostgreSQL with everything in it (scans, hashes, rules, plans, settings): automatically at startup with `ANalyze__Database__ImportFrom=/data/analyze.db` while the PostgreSQL database has never been scanned, or once with `--import-sqlite /data/analyze.db` (`--force` replaces a database that already has scans)
 - feat: add a selection to an existing draft plan from the Clean up… dialog, next to creating a new one (the last plan used is preselected); a file the plan already has gets the new action
 - feat: planning from the file panel keeps the panel open, so damaged files can be compared and planned one by one (‹ › or ← →); the panel shows which draft plan has the file and its planned action, with Change…
 - feat: "Replace with the backup's copy" can keep the local file instead of trashing it, as `{relDir}/~{name}` by default (any path template; the choice is remembered); undo puts it back

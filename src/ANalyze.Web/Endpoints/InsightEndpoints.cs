@@ -26,11 +26,11 @@ public static class InsightEndpoints
             }));
 
         // Folders that grew the most between the last two full scans.
-        api.MapGet("/insights/growth", (int? rootId, int? limit, SqliteSetup sqlite) =>
+        api.MapGet("/insights/growth", (int? rootId, int? limit, DbSetup database) =>
         {
-            using var c = sqlite.Open();
-            var scans = Sql.Query(c, "SELECT DISTINCT ScanId FROM DirSizeHistory" + (rootId is null ? "" : " WHERE RootId = $r") + " ORDER BY ScanId DESC LIMIT 2",
-                r => r.GetInt64(0), ("$r", rootId));
+            using var c = database.Open();
+            var scans = Sql.Query(c, "SELECT DISTINCT ScanId FROM DirSizeHistory" + (rootId is null ? "" : " WHERE RootId = @r") + " ORDER BY ScanId DESC LIMIT 2",
+                r => r.GetInt64(0), ("@r", rootId));
             if (scans.Count < 2)
             {
                 return Results.Ok(new { from = (DateTimeOffset?)null, to = (DateTimeOffset?)null, items = Array.Empty<object>() });
@@ -38,12 +38,12 @@ public static class InsightEndpoints
 
             var items = Sql.Query(c, $"""
                 SELECT n.EntryId, n.RootId, n.RelPath, n.TotalSize, COALESCE(o.TotalSize, 0), n.FileCount - COALESCE(o.FileCount, 0)
-                FROM DirSizeHistory n LEFT JOIN DirSizeHistory o ON o.EntryId = n.EntryId AND o.ScanId = $old
-                WHERE n.ScanId = $new AND n.RelPath <> ''
+                FROM DirSizeHistory n LEFT JOIN DirSizeHistory o ON o.EntryId = n.EntryId AND o.ScanId = @old
+                WHERE n.ScanId = @new AND n.RelPath <> ''
                 ORDER BY ABS(n.TotalSize - COALESCE(o.TotalSize, 0)) DESC LIMIT {Math.Clamp(limit ?? 30, 1, 200)}
                 """, r => new { id = r.GetInt64(0), rootId = r.GetInt32(1), relPath = r.GetString(2), size = r.GetInt64(3), previous = r.GetInt64(4), delta = r.GetInt64(3) - r.GetInt64(4), filesDelta = r.GetInt64(5) },
-                ("$new", scans[0]), ("$old", scans[1]));
-            var at = Sql.Query(c, "SELECT ScanId, MAX(At) FROM DirSizeHistory WHERE ScanId IN ($a, $b) GROUP BY ScanId", r => (r.GetInt64(0), r.GetInt64(1)), ("$a", scans[0]), ("$b", scans[1]))
+                ("@new", scans[0]), ("@old", scans[1]));
+            var at = Sql.Query(c, "SELECT ScanId, MAX(At) FROM DirSizeHistory WHERE ScanId IN (@a, @b) GROUP BY ScanId", r => (r.GetInt64(0), r.GetInt64(1)), ("@a", scans[0]), ("@b", scans[1]))
                 .ToDictionary(x => x.Item1, x => x.Item2);
             var conv = new Microsoft.EntityFrameworkCore.Storage.ValueConversion.DateTimeOffsetToBinaryConverter();
             return Results.Ok(new

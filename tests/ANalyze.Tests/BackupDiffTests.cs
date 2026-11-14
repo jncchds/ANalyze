@@ -193,13 +193,13 @@ public sealed class BackupDiffTests : IDisposable
 
         // What a sync would have stored: the parent's root "/srv" is this library, its "bk" holds the copy of "home".
         long entryId;
-        using (var conn = app.Services.GetRequiredService<ANalyze.Infrastructure.Data.SqliteSetup>().Open())
+        using (var conn = app.Services.GetRequiredService<ANalyze.Infrastructure.Data.DbSetup>().Open())
         {
             entryId = Db.Query(conn, "SELECT Id FROM Entries WHERE RelPath = 'home/docs/v.bin'", r => r.GetInt64(0)).Single();
             Db.Query(conn, """
                 INSERT INTO BackupFiles (State, IsDir, EntryId, LocalRootId, LocalRelPath, Size, ParentSize, Verified, Children, SyncedChildren)
-                VALUES ('corrupt', 0, $e, 1, 'home/docs/v.bin', 300000, 200000, 0, 0, 0) RETURNING Id
-                """, r => r.GetInt64(0), ("$e", entryId));
+                VALUES ('corrupt', FALSE, @e, 1, 'home/docs/v.bin', 300000, 200000, FALSE, 0, 0) RETURNING Id
+                """, r => r.GetInt64(0), ("@e", entryId));
         }
 
         var info = new ExportInfo("ANalyze", "test", "nas1", BackupExport.HashAlgorithm, true, 0, [new ExportRoot(1, "/srv", "srv", 1, 0, null, null)]);

@@ -1,5 +1,6 @@
+using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Roots;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 
 namespace ANalyze.Integrations;
 
@@ -8,7 +9,7 @@ namespace ANalyze.Integrations;
 /// 1. known path mappings (configured, then detected from Docker), 2. mappings learned from sample files found by
 /// name and size, 3. per-item fallback by name + size (+ parent folder name to break ties).
 /// </summary>
-public sealed class PathMatcher(SqliteConnection conn, RootRegistry roots, IReadOnlyList<PathMapping> configured)
+public sealed class PathMatcher(DbConnection conn, RootRegistry roots, IReadOnlyList<PathMapping> configured)
 {
     private readonly List<PathMapping> _detected = [];
 
@@ -158,9 +159,9 @@ public sealed class PathMatcher(SqliteConnection conn, RootRegistry roots, IRead
             rel = slash < 0 ? "" : rel[..slash];
             using var q = conn.CreateCommand();
             // Only the nearest folder that exists matters (Error is not used: it also marks folders with an unreadable folder somewhere below).
-            q.CommandText = "SELECT OtherFilesystem FROM Entries WHERE RootId = $r AND RelPath = $p AND IsDir = 1";
-            q.Parameters.AddWithValue("$r", root.Id);
-            q.Parameters.AddWithValue("$p", rel);
+            q.CommandText = "SELECT OtherFilesystem FROM Entries WHERE RootId = @r AND RelPath = @p AND IsDir = TRUE";
+            q.Parameters.AddWithValue("@r", root.Id);
+            q.Parameters.AddWithValue("@p", rel);
             if (q.ExecuteScalar() is { } other)
             {
                 return Convert.ToBoolean(other) ? $"inside {RootRegistry.Combine(root.Path, rel)}, another filesystem the scan did not enter" : null;
@@ -173,8 +174,8 @@ public sealed class PathMatcher(SqliteConnection conn, RootRegistry roots, IRead
     public (long? Parent, long? Grand) Parents(long entryId)
     {
         using var q = conn.CreateCommand();
-        q.CommandText = "SELECT p.Id, p.ParentId FROM Entries e JOIN Entries p ON p.Id = e.ParentId WHERE e.Id = $id AND p.RelPath <> ''";
-        q.Parameters.AddWithValue("$id", entryId);
+        q.CommandText = "SELECT p.Id, p.ParentId FROM Entries e JOIN Entries p ON p.Id = e.ParentId WHERE e.Id = @id AND p.RelPath <> ''";
+        q.Parameters.AddWithValue("@id", entryId);
         using var r = q.ExecuteReader();
         if (!r.Read())
         {
@@ -186,8 +187,8 @@ public sealed class PathMatcher(SqliteConnection conn, RootRegistry roots, IRead
         if (grand is { } g)
         {
             using var root = conn.CreateCommand();
-            root.CommandText = "SELECT RelPath FROM Entries WHERE Id = $id";
-            root.Parameters.AddWithValue("$id", g);
+            root.CommandText = "SELECT RelPath FROM Entries WHERE Id = @id";
+            root.Parameters.AddWithValue("@id", g);
             if (root.ExecuteScalar() is "")
             {
                 grand = null;
@@ -211,10 +212,10 @@ public sealed class PathMatcher(SqliteConnection conn, RootRegistry roots, IRead
 
         var rel = localPath.Length <= root.Path.Length ? "" : localPath[(root.Path.TrimEnd('/').Length + 1)..];
         using var q = conn.CreateCommand();
-        q.CommandText = "SELECT Id FROM Entries WHERE RootId = $r AND RelPath = $p AND IsDir = $d";
-        q.Parameters.AddWithValue("$r", root.Id);
-        q.Parameters.AddWithValue("$p", rel);
-        q.Parameters.AddWithValue("$d", dir);
+        q.CommandText = "SELECT Id FROM Entries WHERE RootId = @r AND RelPath = @p AND IsDir = @d";
+        q.Parameters.AddWithValue("@r", root.Id);
+        q.Parameters.AddWithValue("@p", rel);
+        q.Parameters.AddWithValue("@d", dir);
         return q.ExecuteScalar() as long?;
     }
 
@@ -228,10 +229,10 @@ public sealed class PathMatcher(SqliteConnection conn, RootRegistry roots, IRead
 
         using var q = conn.CreateCommand();
         q.CommandText = dir
-            ? "SELECT Id, RootId, RelPath FROM Entries WHERE IsDir = 1 AND TotalSize = $s AND Name = $n AND RelPath <> '' LIMIT 10"
-            : "SELECT Id, RootId, RelPath FROM Entries WHERE IsDir = 0 AND Size = $s AND Name = $n LIMIT 10";
-        q.Parameters.AddWithValue("$s", size);
-        q.Parameters.AddWithValue("$n", name);
+            ? "SELECT Id, RootId, RelPath FROM Entries WHERE IsDir = TRUE AND TotalSize = @s AND Name = @n AND RelPath <> '' LIMIT 10"
+            : "SELECT Id, RootId, RelPath FROM Entries WHERE IsDir = FALSE AND Size = @s AND Name = @n LIMIT 10";
+        q.Parameters.AddWithValue("@s", size);
+        q.Parameters.AddWithValue("@n", name);
         using var r = q.ExecuteReader();
         var list = new List<(long, string)>();
         while (r.Read())

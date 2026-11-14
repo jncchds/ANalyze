@@ -1,8 +1,9 @@
+using ANalyze.Infrastructure.Data;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using ANalyze.Infrastructure;
 using ANalyze.Infrastructure.Roots;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 using ANalyze.Infrastructure.Logging;
 using Microsoft.Extensions.Logging;
 
@@ -22,25 +23,25 @@ internal sealed class Walker : IDisposable
 
     private readonly Stopwatch _sinceCommit = Stopwatch.StartNew();
 
-    private readonly SqliteConnection _db;
+    private readonly DbConnection _db;
     private readonly ScanContext _ctx;
     private readonly int _rootId;
     private readonly string _rootPath;
     private readonly bool _crossFs;
     private readonly IgnoreMatcher _ignore;
     private readonly List<string> _enterFs;
-    private SqliteTransaction _tx;
+    private DbTransaction _tx;
     private int _pending;
 
-    private readonly SqliteCommand _selChildren;
-    private readonly SqliteCommand _insert;
-    private readonly SqliteCommand _updateFile;
-    private readonly SqliteCommand _updateATime;
-    private readonly SqliteCommand _updateDir;
-    private readonly SqliteCommand _deleteOne;
-    private readonly SqliteCommand _deleteTree;
-    private readonly SqliteCommand _updatePartial;
-    private readonly SqliteCommand _setOtherFs;
+    private readonly DbCommand _selChildren;
+    private readonly DbCommand _insert;
+    private readonly DbCommand _updateFile;
+    private readonly DbCommand _updateATime;
+    private readonly DbCommand _updateDir;
+    private readonly DbCommand _deleteOne;
+    private readonly DbCommand _deleteTree;
+    private readonly DbCommand _updatePartial;
+    private readonly DbCommand _setOtherFs;
 
     /// <summary>Folders on another filesystem that were not entered, and unreadable folders (for the end-of-walk summary).</summary>
     public List<string> SkippedMounts { get; } = [];
@@ -60,7 +61,7 @@ internal sealed class Walker : IDisposable
         public Agg Total { get; set; }
     }
 
-    public Walker(SqliteConnection db, ScanContext ctx, int rootId, string rootPath, bool crossFs, IgnoreMatcher ignore, IReadOnlyList<string>? enterFilesystems = null)
+    public Walker(DbConnection db, ScanContext ctx, int rootId, string rootPath, bool crossFs, IgnoreMatcher ignore, IReadOnlyList<string>? enterFilesystems = null)
     {
         _enterFs = (enterFilesystems ?? []).Select(p => p.Trim()).Where(p => p.StartsWith('/') || Path.IsPathRooted(p))
             .Select(p => p.Length > 1 ? p.TrimEnd('/', '\\') : p).ToList();
@@ -72,32 +73,32 @@ internal sealed class Walker : IDisposable
         _ignore = ignore;
         _tx = db.BeginTransaction();
 
-        _selChildren = Cmd("SELECT Id, Name, IsDir, IsSymlink, Size, MTime, Inode, ATime, TotalSize, TotalAlloc, FileCount, DirCount, OtherFilesystem FROM Entries WHERE ParentId = $p",
-            "$p");
+        _selChildren = Cmd("SELECT Id, Name, IsDir, IsSymlink, Size, MTime, Inode, ATime, TotalSize, TotalAlloc, FileCount, DirCount, OtherFilesystem FROM Entries WHERE ParentId = @p",
+            "@p");
         _insert = Cmd("""
             INSERT INTO Entries (RootId, ParentId, Name, RelPath, Depth, IsDir, IsSymlink, LinkTarget, BrokenLink, Size, AllocSize, MTime, ATime, CTime,
-                Inode, Dev, NLink, Ext, Mime, Kind, Detected, CategoryId, CategorySource, Tags, QuickHash, FullHash, Error, TotalSize, TotalAlloc, FileCount, DirCount)
-            VALUES ($root, $parent, $name, $rel, $depth, $isDir, $isLink, $target, $broken, $size, $alloc, $mtime, $atime, $ctime,
-                $inode, $dev, $nlink, $ext, $mime, $kind, $detected, NULL, 0, NULL, NULL, NULL, 0, $size, $alloc, $files, 0);
-            SELECT last_insert_rowid();
-            """, "$root", "$parent", "$name", "$rel", "$depth", "$isDir", "$isLink", "$target", "$broken", "$size", "$alloc", "$mtime", "$atime", "$ctime",
-            "$inode", "$dev", "$nlink", "$ext", "$mime", "$kind", "$detected", "$files");
+                Inode, Dev, NLink, Ext, Mime, Kind, Detected, CategoryId, CategorySource, Tags, QuickHash, FullHash, Error, OtherFilesystem, TotalSize, TotalAlloc, FileCount, DirCount)
+            VALUES (@root, @parent, @name, @rel, @depth, @isDir, @isLink, @target, @broken, @size, @alloc, @mtime, @atime, @ctime,
+                @inode, @dev, @nlink, @ext, @mime, @kind, @detected, NULL, 0, NULL, NULL, NULL, FALSE, FALSE, @size, @alloc, @files, 0)
+            RETURNING Id;
+            """, "@root", "@parent", "@name", "@rel", "@depth", "@isDir", "@isLink", "@target", "@broken", "@size", "@alloc", "@mtime", "@atime", "@ctime",
+            "@inode", "@dev", "@nlink", "@ext", "@mime", "@kind", "@detected", "@files");
         _updateFile = Cmd("""
-            UPDATE Entries SET IsSymlink=$isLink, LinkTarget=$target, BrokenLink=$broken, Size=$size, AllocSize=$alloc, MTime=$mtime, ATime=$atime, CTime=$ctime,
-                Inode=$inode, Dev=$dev, NLink=$nlink, Detected=$detected, QuickHash=NULL, FullHash=NULL, HashedAt=NULL, CorruptAt=NULL, Error=0, TotalSize=$size, TotalAlloc=$alloc
-            WHERE Id=$id
-            """, "$isLink", "$target", "$broken", "$size", "$alloc", "$mtime", "$atime", "$ctime", "$inode", "$dev", "$nlink", "$detected", "$id");
-        _updateATime = Cmd("UPDATE Entries SET ATime=$atime, NLink=$nlink WHERE Id=$id", "$atime", "$nlink", "$id");
+            UPDATE Entries SET IsSymlink=@isLink, LinkTarget=@target, BrokenLink=@broken, Size=@size, AllocSize=@alloc, MTime=@mtime, ATime=@atime, CTime=@ctime,
+                Inode=@inode, Dev=@dev, NLink=@nlink, Detected=@detected, QuickHash=NULL, FullHash=NULL, HashedAt=NULL, CorruptAt=NULL, Error=FALSE, TotalSize=@size, TotalAlloc=@alloc
+            WHERE Id=@id
+            """, "@isLink", "@target", "@broken", "@size", "@alloc", "@mtime", "@atime", "@ctime", "@inode", "@dev", "@nlink", "@detected", "@id");
+        _updateATime = Cmd("UPDATE Entries SET ATime=@atime, NLink=@nlink WHERE Id=@id", "@atime", "@nlink", "@id");
         _updateDir = Cmd("""
-            UPDATE Entries SET TotalSize=$size, TotalAlloc=$alloc, FileCount=$files, DirCount=$dirs, MTime=$mtime, ATime=$atime, CTime=$ctime,
-                Inode=$inode, Dev=$dev, NLink=$nlink, Error=$error
-            WHERE Id=$id
-            """, "$size", "$alloc", "$files", "$dirs", "$mtime", "$atime", "$ctime", "$inode", "$dev", "$nlink", "$error", "$id");
-        _deleteOne = Cmd("DELETE FROM Entries WHERE Id=$id", "$id");
-        _deleteTree = Cmd("DELETE FROM Entries WHERE RootId=$root AND RelPath >= $from AND RelPath < $to", "$root", "$from", "$to");
-        _updatePartial = Cmd("UPDATE Entries SET TotalSize=$size, TotalAlloc=$alloc, FileCount=$files, DirCount=$dirs WHERE Id=$id",
-            "$size", "$alloc", "$files", "$dirs", "$id");
-        _setOtherFs = Cmd("UPDATE Entries SET OtherFilesystem=$v WHERE Id=$id", "$v", "$id");
+            UPDATE Entries SET TotalSize=@size, TotalAlloc=@alloc, FileCount=@files, DirCount=@dirs, MTime=@mtime, ATime=@atime, CTime=@ctime,
+                Inode=@inode, Dev=@dev, NLink=@nlink, Error=@error
+            WHERE Id=@id
+            """, "@size", "@alloc", "@files", "@dirs", "@mtime", "@atime", "@ctime", "@inode", "@dev", "@nlink", "@error", "@id");
+        _deleteOne = Cmd("DELETE FROM Entries WHERE Id=@id", "@id");
+        _deleteTree = Cmd("DELETE FROM Entries WHERE RootId=@root AND RelPath >= @from AND RelPath < @to", "@root", "@from", "@to");
+        _updatePartial = Cmd("UPDATE Entries SET TotalSize=@size, TotalAlloc=@alloc, FileCount=@files, DirCount=@dirs WHERE Id=@id",
+            "@size", "@alloc", "@files", "@dirs", "@id");
+        _setOtherFs = Cmd("UPDATE Entries SET OtherFilesystem=@v WHERE Id=@id", "@v", "@id");
     }
 
     public readonly record struct Agg(long Size, long Alloc, long Files, long Dirs, bool Error);
@@ -107,8 +108,8 @@ internal sealed class Walker : IDisposable
     /// <summary>Creates the root directory entry if needed; returns its id.</summary>
     public long EnsureRootEntry(FileStat st)
     {
-        using var find = Cmd("SELECT Id FROM Entries WHERE RootId=$r AND RelPath=''", "$r");
-        find.Parameters["$r"].Value = _rootId;
+        using var find = Cmd("SELECT Id FROM Entries WHERE RootId=@r AND RelPath=''", "@r");
+        find.Parameters["@r"].Value = _rootId;
         if (find.ExecuteScalar() is long id)
         {
             return id;
@@ -136,9 +137,9 @@ internal sealed class Walker : IDisposable
                 break;
             }
 
-            using var find = Cmd("SELECT Id FROM Entries WHERE RootId=$r AND RelPath=$p", "$r", "$p");
-            find.Parameters["$r"].Value = _rootId;
-            find.Parameters["$p"].Value = childRel;
+            using var find = Cmd("SELECT Id FROM Entries WHERE RootId=@r AND RelPath=@p", "@r", "@p");
+            find.Parameters["@r"].Value = _rootId;
+            find.Parameters["@p"].Value = childRel;
             id = find.ExecuteScalar() is long existing ? existing : Insert(id, name, childRel, depth + 1, st, isDir: true, linkTarget: null, broken: false);
             rel = childRel;
             depth++;
@@ -150,8 +151,8 @@ internal sealed class Walker : IDisposable
     /// <summary>Scans one directory recursively and stores its aggregates.</summary>
     public Agg ScanDirectory(long dirId, string fullPath, string relPath, int depth, long rootDev)
     {
-        using var known = Cmd("SELECT FileCount FROM Entries WHERE Id=$id", "$id");
-        known.Parameters["$id"].Value = dirId;
+        using var known = Cmd("SELECT FileCount FROM Entries WHERE Id=@id", "@id");
+        known.Parameters["@id"].Value = dirId;
         var fresh = known.ExecuteScalar() is not long files || files == 0;
         var agg = Walk(dirId, fullPath, relPath, depth, rootDev, fresh);
         var st = Native.LStat(fullPath);
@@ -345,9 +346,9 @@ internal sealed class Walker : IDisposable
                 }
                 else if (Math.Abs(old.ATime - st.ATime) > 86400)
                 {
-                    _updateATime.Parameters["$atime"].Value = st.ATime;
-                    _updateATime.Parameters["$nlink"].Value = st.NLink;
-                    _updateATime.Parameters["$id"].Value = old.Id;
+                    _updateATime.Parameters["@atime"].Value = st.ATime;
+                    _updateATime.Parameters["@nlink"].Value = st.NLink;
+                    _updateATime.Parameters["@id"].Value = old.Id;
                     Exec(_updateATime);
                 }
 
@@ -380,7 +381,7 @@ internal sealed class Walker : IDisposable
     private Dictionary<string, Existing> LoadChildren(long parentId)
     {
         var d = new Dictionary<string, Existing>(StringComparer.Ordinal);
-        _selChildren.Parameters["$p"].Value = parentId;
+        _selChildren.Parameters["@p"].Value = parentId;
         using var r = _selChildren.ExecuteReader();
         while (r.Read())
         {
@@ -397,32 +398,32 @@ internal sealed class Walker : IDisposable
         var p = _insert.Parameters;
         var size = !isDir && st.IsRegular ? st.Size : 0;
         var alloc = !isDir && st.IsRegular ? st.AllocSize : 0;
-        p["$root"].Value = _rootId;
-        p["$parent"].Value = (object?)parentId ?? DBNull.Value;
-        p["$name"].Value = name;
-        p["$rel"].Value = relPath;
-        p["$depth"].Value = depth;
-        p["$isDir"].Value = isDir;
-        p["$isLink"].Value = st.IsSymlink;
-        p["$target"].Value = (object?)linkTarget ?? DBNull.Value;
-        p["$broken"].Value = broken;
-        p["$size"].Value = size;
-        p["$alloc"].Value = alloc;
-        p["$mtime"].Value = st.MTime;
-        p["$atime"].Value = st.ATime;
-        p["$ctime"].Value = st.CTime;
-        p["$inode"].Value = st.Inode;
-        p["$dev"].Value = st.Dev;
-        p["$nlink"].Value = st.NLink;
+        p["@root"].Value = _rootId;
+        p["@parent"].Value = (object?)parentId ?? DBNull.Value;
+        p["@name"].Value = name;
+        p["@rel"].Value = relPath;
+        p["@depth"].Value = depth;
+        p["@isDir"].Value = isDir;
+        p["@isLink"].Value = st.IsSymlink;
+        p["@target"].Value = (object?)linkTarget ?? DBNull.Value;
+        p["@broken"].Value = broken;
+        p["@size"].Value = size;
+        p["@alloc"].Value = alloc;
+        p["@mtime"].Value = st.MTime;
+        p["@atime"].Value = st.ATime;
+        p["@ctime"].Value = st.CTime;
+        p["@inode"].Value = st.Inode;
+        p["@dev"].Value = st.Dev;
+        p["@nlink"].Value = st.NLink;
         var ext = isDir ? null : FileTypes.ExtensionOf(name);
-        p["$ext"].Value = (object?)ext ?? DBNull.Value;
+        p["@ext"].Value = (object?)ext ?? DBNull.Value;
         // Type from the extension right away (previews work while the scan runs); detection refines it later.
         var byExt = !isDir && st.IsRegular ? FileTypes.FromExtension(ext) : null;
-        p["$mime"].Value = (object?)byExt?.Mime ?? DBNull.Value;
-        p["$kind"].Value = (int)(byExt?.Kind ?? Domain.FileKind.Unknown);
+        p["@mime"].Value = (object?)byExt?.Mime ?? DBNull.Value;
+        p["@kind"].Value = (int)(byExt?.Kind ?? Domain.FileKind.Unknown);
         // Directories and symlinks need no content detection.
-        p["$detected"].Value = isDir || !st.IsRegular;
-        p["$files"].Value = isDir ? 0 : 1;
+        p["@detected"].Value = isDir || !st.IsRegular;
+        p["@files"].Value = isDir ? 0 : 1;
         var id = (long)_insert.ExecuteScalar()!;
         Tick();
         return id;
@@ -431,50 +432,50 @@ internal sealed class Walker : IDisposable
     private void UpdateFile(long id, FileStat st, string? linkTarget, bool broken)
     {
         var p = _updateFile.Parameters;
-        p["$isLink"].Value = st.IsSymlink;
-        p["$target"].Value = (object?)linkTarget ?? DBNull.Value;
-        p["$broken"].Value = broken;
-        p["$size"].Value = st.IsRegular ? st.Size : 0;
-        p["$alloc"].Value = st.IsRegular ? st.AllocSize : 0;
-        p["$mtime"].Value = st.MTime;
-        p["$atime"].Value = st.ATime;
-        p["$ctime"].Value = st.CTime;
-        p["$inode"].Value = st.Inode;
-        p["$dev"].Value = st.Dev;
-        p["$nlink"].Value = st.NLink;
-        p["$detected"].Value = !st.IsRegular;
-        p["$id"].Value = id;
+        p["@isLink"].Value = st.IsSymlink;
+        p["@target"].Value = (object?)linkTarget ?? DBNull.Value;
+        p["@broken"].Value = broken;
+        p["@size"].Value = st.IsRegular ? st.Size : 0;
+        p["@alloc"].Value = st.IsRegular ? st.AllocSize : 0;
+        p["@mtime"].Value = st.MTime;
+        p["@atime"].Value = st.ATime;
+        p["@ctime"].Value = st.CTime;
+        p["@inode"].Value = st.Inode;
+        p["@dev"].Value = st.Dev;
+        p["@nlink"].Value = st.NLink;
+        p["@detected"].Value = !st.IsRegular;
+        p["@id"].Value = id;
         Exec(_updateFile);
     }
 
     private void UpdateDir(long id, Agg agg, FileStat st)
     {
         var p = _updateDir.Parameters;
-        p["$size"].Value = agg.Size;
-        p["$alloc"].Value = agg.Alloc;
-        p["$files"].Value = agg.Files;
-        p["$dirs"].Value = agg.Dirs;
-        p["$mtime"].Value = st.MTime;
-        p["$atime"].Value = st.ATime;
-        p["$ctime"].Value = st.CTime;
-        p["$inode"].Value = st.Inode;
-        p["$dev"].Value = st.Dev;
-        p["$nlink"].Value = st.NLink;
-        p["$error"].Value = agg.Error;
-        p["$id"].Value = id;
+        p["@size"].Value = agg.Size;
+        p["@alloc"].Value = agg.Alloc;
+        p["@files"].Value = agg.Files;
+        p["@dirs"].Value = agg.Dirs;
+        p["@mtime"].Value = st.MTime;
+        p["@atime"].Value = st.ATime;
+        p["@ctime"].Value = st.CTime;
+        p["@inode"].Value = st.Inode;
+        p["@dev"].Value = st.Dev;
+        p["@nlink"].Value = st.NLink;
+        p["@error"].Value = agg.Error;
+        p["@id"].Value = id;
         Exec(_updateDir);
     }
 
     private void SetOtherFs(long id, bool value)
     {
-        _setOtherFs.Parameters["$v"].Value = value;
-        _setOtherFs.Parameters["$id"].Value = id;
+        _setOtherFs.Parameters["@v"].Value = value;
+        _setOtherFs.Parameters["@id"].Value = id;
         Exec(_setOtherFs);
     }
 
     private void DeleteOne(long id)
     {
-        _deleteOne.Parameters["$id"].Value = id;
+        _deleteOne.Parameters["@id"].Value = id;
         _ctx.Removed += Exec(_deleteOne);
     }
 
@@ -487,14 +488,14 @@ internal sealed class Walker : IDisposable
     /// <summary>Deletes everything below <paramref name="relPath"/>, keeping the folder itself.</summary>
     private void DeleteBelow(string relPath)
     {
-        _deleteTree.Parameters["$root"].Value = _rootId;
-        _deleteTree.Parameters["$from"].Value = relPath + "/";
+        _deleteTree.Parameters["@root"].Value = _rootId;
+        _deleteTree.Parameters["@from"].Value = relPath + "/";
         // '0' is the character after '/', so this range is exactly the paths below relPath.
-        _deleteTree.Parameters["$to"].Value = relPath + "0";
+        _deleteTree.Parameters["@to"].Value = relPath + "0";
         _ctx.Removed += Exec(_deleteTree);
     }
 
-    private int Exec(SqliteCommand cmd)
+    private int Exec(DbCommand cmd)
     {
         var n = cmd.ExecuteNonQuery();
         Tick();
@@ -539,27 +540,27 @@ internal sealed class Walker : IDisposable
             if (f.Fresh)
             {
                 var p = _updatePartial.Parameters;
-                p["$size"].Value = below.Size;
-                p["$alloc"].Value = below.Alloc;
-                p["$files"].Value = below.Files;
-                p["$dirs"].Value = below.Dirs;
-                p["$id"].Value = f.Id;
+                p["@size"].Value = below.Size;
+                p["@alloc"].Value = below.Alloc;
+                p["@files"].Value = below.Files;
+                p["@dirs"].Value = below.Dirs;
+                p["@id"].Value = f.Id;
                 _updatePartial.ExecuteNonQuery();
             }
         }
     }
 
-    private SqliteCommand Cmd(string sql, params string[] parameters)
+    private DbCommand Cmd(string sql, params string[] parameters)
     {
         var c = _db.CreateCommand();
         c.CommandText = sql;
         c.Transaction = _tx;
         foreach (var p in parameters)
         {
-            c.Parameters.Add(new SqliteParameter(p, null));
+            c.Parameters.AddWithValue(p, null);
         }
 
-        c.Prepare();
+        c.PrepareReused();
         return c;
     }
 

@@ -55,7 +55,7 @@ public sealed class PlanQueue
 /// </summary>
 public sealed class PlanExecutor(
     IDbContextFactory<AnalyzeDbContext> dbf,
-    SqliteSetup sqlite,
+    DbSetup database,
     RootRegistry roots,
     SettingsStore settings,
     ScanService scanner,
@@ -88,7 +88,7 @@ public sealed class PlanExecutor(
         // Files whose content an item replaced: the backup comparison re-checks them (IHashListener).
         var replaced = new List<long>();
         var cancelled = false;
-        using var conn = sqlite.Open();
+        using var conn = database.Open();
 
         void Report(string state, string? current = null, string? message = null) => board.Report(new JobProgress
         {
@@ -185,7 +185,7 @@ public sealed class PlanExecutor(
                 {
                     l.OnHashed(conn, replaced);
                 }
-                catch (Exception e) when (e is Microsoft.Data.Sqlite.SqliteException or InvalidOperationException)
+                catch (Exception e) when (e is System.Data.Common.DbException or InvalidOperationException)
                 {
                     log.LogWarning(e, "Re-check after plan {Plan} failed", plan.Id);
                 }
@@ -209,7 +209,7 @@ public sealed class PlanExecutor(
         Report(cancelled ? JobStates.Cancelled : JobStates.Completed, message: plan.Message);
     }
 
-    private async Task ApplyAsync(ActionPlan plan, ActionItem item, Microsoft.Data.Sqlite.SqliteConnection conn, HashSet<(int, string)> rescan, List<long> replaced, CancellationToken ct)
+    private async Task ApplyAsync(ActionPlan plan, ActionItem item, System.Data.Common.DbConnection conn, HashSet<(int, string)> rescan, List<long> replaced, CancellationToken ct)
     {
         var root = roots.Require(item.RootId);
         var src = RootRegistry.Combine(root.Path, item.SourcePath);
@@ -334,7 +334,7 @@ public sealed class PlanExecutor(
     /// backup has one), gets the owner, permissions and modification time of the file it replaces, then the damaged file goes to the
     /// trash (so the plan can be undone) and the copy takes its place.
     /// </summary>
-    private async Task RestoreAsync(ActionPlan plan, ActionItem item, string rootPath, string src, FileStat st, Microsoft.Data.Sqlite.SqliteConnection conn, CancellationToken ct)
+    private async Task RestoreAsync(ActionPlan plan, ActionItem item, string rootPath, string src, FileStat st, System.Data.Common.DbConnection conn, CancellationToken ct)
     {
         if (item.EntryId is not { } id || item.IsDir || !st.IsRegular)
         {
@@ -471,7 +471,7 @@ public sealed class PlanExecutor(
         }
     }
 
-    private void Undo(ActionItem item, Microsoft.Data.Sqlite.SqliteConnection conn, HashSet<(int, string)> rescan, List<long> replaced)
+    private void Undo(ActionItem item, System.Data.Common.DbConnection conn, HashSet<(int, string)> rescan, List<long> replaced)
     {
         var root = roots.Require(item.RootId);
         if (item.UndoPath is null)
@@ -510,12 +510,12 @@ public sealed class PlanExecutor(
     }
 
     /// <summary>Removes a path that is gone from disk (and everything under it) from the index.</summary>
-    private static void DropIndexed(Microsoft.Data.Sqlite.SqliteConnection conn, int rootId, string relPath)
+    private static void DropIndexed(System.Data.Common.DbConnection conn, int rootId, string relPath)
     {
         using var find = conn.CreateCommand();
-        find.CommandText = "SELECT Id FROM Entries WHERE RootId = $r AND RelPath = $p";
-        find.Parameters.AddWithValue("$r", rootId);
-        find.Parameters.AddWithValue("$p", relPath);
+        find.CommandText = "SELECT Id FROM Entries WHERE RootId = @r AND RelPath = @p";
+        find.Parameters.AddWithValue("@r", rootId);
+        find.Parameters.AddWithValue("@p", relPath);
         if (find.ExecuteScalar() is long goneId)
         {
             EntryMaintenance.DeleteEntry(conn, goneId);
@@ -526,7 +526,7 @@ public sealed class PlanExecutor(
     /// Puts the damaged file back in place of the backup's copy, unless the copy was changed since (it carries the damaged file's
     /// modification time until then). The file is hashed again by the background hashing.
     /// </summary>
-    private static void UndoRestore(ActionItem item, string from, string to, string rootPath, Microsoft.Data.Sqlite.SqliteConnection conn)
+    private static void UndoRestore(ActionItem item, string from, string to, string rootPath, System.Data.Common.DbConnection conn)
     {
         if (File.Exists(to))
         {
@@ -554,7 +554,7 @@ public sealed class PlanExecutor(
         }
     }
 
-    private static void RemoveFromIndex(Microsoft.Data.Sqlite.SqliteConnection conn, ActionItem item)
+    private static void RemoveFromIndex(System.Data.Common.DbConnection conn, ActionItem item)
     {
         if (item.EntryId is { } id)
         {

@@ -11,13 +11,11 @@ namespace ANalyze.Infrastructure;
 
 public static class DependencyInjection
 {
-    public static IServiceCollection AddAnalyzeInfrastructure(this IServiceCollection services, string databasePath)
+    public static IServiceCollection AddAnalyzeInfrastructure(this IServiceCollection services, DbSetup database)
     {
-        var sqlite = new SqliteSetup(databasePath);
-        services.AddSingleton(sqlite);
-        services.AddDbContextFactory<AnalyzeDbContext>(o => o
-            .UseSqlite(sqlite.ConnectionString, x => x.CommandTimeout(120))
-            .AddInterceptors(new SqlitePragmaInterceptor()));
+        services.AddSingleton(database);
+        services.AddSingleton<IDbContextFactory<AnalyzeDbContext>>(new AnalyzeDbContextFactory(database));
+        services.AddScoped(sp => sp.GetRequiredService<IDbContextFactory<AnalyzeDbContext>>().CreateDbContext());
         services.AddSingleton<SettingsStore>();
         services.AddSingleton<RootRegistry>();
         services.AddSingleton<SecretProtector>();

@@ -115,15 +115,15 @@ public class RestoreTests
         await app.ScanAsync(http);
         (await http.PutAsJsonAsync("/api/v1/integrations/parent", new { enabled = true, syncAfterScan = false, values = new { url = "http://localhost" } })).EnsureSuccessStatusCode();
 
-        var sqlite = app.Services.GetRequiredService<ANalyze.Infrastructure.Data.SqliteSetup>();
+        var database = app.Services.GetRequiredService<ANalyze.Infrastructure.Data.DbSetup>();
         long entryId;
-        using (var conn = sqlite.Open())
+        using (var conn = database.Open())
         {
             entryId = ANalyze.Integrations.Items.Db.Query(conn, "SELECT Id FROM Entries WHERE RelPath = 'home/docs/v.bin'", r => r.GetInt64(0)).Single();
             ANalyze.Integrations.Items.Db.Query(conn, """
                 INSERT INTO BackupFiles (State, IsDir, EntryId, LocalRootId, LocalRelPath, Size, ParentSize, ParentHash, Verified, Children, SyncedChildren)
-                VALUES ('corrupt', 0, $e, 1, 'home/docs/v.bin', 200000, 300000, $h, 0, 0, 0) RETURNING Id
-                """, r => r.GetInt64(0), ("$e", entryId), ("$h", Hash(good)));
+                VALUES ('corrupt', FALSE, @e, 1, 'home/docs/v.bin', 200000, 300000, @h, FALSE, 0, 0) RETURNING Id
+                """, r => r.GetInt64(0), ("@e", entryId), ("@h", Hash(good)));
         }
 
         var info = new ANalyze.Integrations.Backup.ExportInfo("ANalyze", "test", "nas1", ANalyze.Integrations.Backup.BackupExport.HashAlgorithm, true, 0,
@@ -148,9 +148,9 @@ public class RestoreTests
         plan = await app.WaitPlanAsync(http, id, "done", "failed");
         Assert.Equal(1, plan.GetProperty("summary").GetProperty("done").GetInt32());
         Assert.Equal(good, await File.ReadAllBytesAsync(path));
-        using (var conn = sqlite.Open())
+        using (var conn = database.Open())
         {
-            var row = ANalyze.Integrations.Items.Db.Query(conn, "SELECT State, Verified FROM BackupFiles WHERE EntryId = $e", r => (r.GetString(0), r.GetBoolean(1)), ("$e", entryId)).Single();
+            var row = ANalyze.Integrations.Items.Db.Query(conn, "SELECT State, Verified FROM BackupFiles WHERE EntryId = @e", r => (r.GetString(0), r.GetBoolean(1)), ("@e", entryId)).Single();
             Assert.Equal(("synced", true), row);
         }
     }

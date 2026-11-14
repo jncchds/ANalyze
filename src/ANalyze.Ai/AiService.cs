@@ -42,7 +42,7 @@ public sealed record AiTestResult(bool Ok, string? Reply, long Milliseconds, str
 public sealed class AiService(
     IAiClientFactory clients,
     IDbContextFactory<AnalyzeDbContext> dbf,
-    SqliteSetup sqlite,
+    DbSetup database,
     SettingsStore settings,
     RootRegistry roots,
     Categorizer categorizer,
@@ -579,9 +579,9 @@ public sealed class AiService(
     {
         var match = RuleEngine.CompileCondition(condition);
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        using var conn = sqlite.Open();
+        using var conn = database.Open();
         using var q = conn.CreateCommand();
-        q.CommandText = "SELECT Name, RelPath, Ext, Mime, Kind, Size, MTime, ATime, Depth FROM Entries WHERE IsDir = 0 AND CategoryId IS NULL";
+        q.CommandText = "SELECT Name, RelPath, Ext, Mime, Kind, Size, MTime, ATime, Depth FROM Entries WHERE IsDir = FALSE AND CategoryId IS NULL";
         using var r = q.ExecuteReader();
         var count = 0;
         long bytes = 0;
@@ -601,11 +601,11 @@ public sealed class AiService(
 
     private object? BuildSummary()
     {
-        using var conn = sqlite.Open();
+        using var conn = database.Open();
         long total, bytes;
         using (var c = conn.CreateCommand())
         {
-            c.CommandText = "SELECT COUNT(*), COALESCE(SUM(Size),0) FROM Entries WHERE IsDir = 0 AND CategoryId IS NULL";
+            c.CommandText = "SELECT COUNT(*), COALESCE(SUM(Size),0) FROM Entries WHERE IsDir = FALSE AND CategoryId IS NULL";
             using var r = c.ExecuteReader();
             r.Read();
             total = r.GetInt64(0);
@@ -621,7 +621,7 @@ public sealed class AiService(
         using (var c = conn.CreateCommand())
         {
             c.CommandText = """
-                SELECT COALESCE(Ext, ''), COUNT(*), SUM(Size) FROM Entries WHERE IsDir = 0 AND CategoryId IS NULL
+                SELECT COALESCE(Ext, ''), COUNT(*), SUM(Size) FROM Entries WHERE IsDir = FALSE AND CategoryId IS NULL
                 GROUP BY Ext ORDER BY SUM(Size) DESC LIMIT 40
                 """;
             using var r = c.ExecuteReader();
@@ -635,9 +635,9 @@ public sealed class AiService(
             {
                 using var s = conn.CreateCommand();
                 s.CommandText = ext.Length == 0
-                    ? "SELECT RelPath FROM Entries WHERE IsDir = 0 AND CategoryId IS NULL AND Ext IS NULL ORDER BY Size DESC LIMIT 6"
-                    : "SELECT RelPath FROM Entries WHERE IsDir = 0 AND CategoryId IS NULL AND Ext = $e ORDER BY Size DESC LIMIT 6";
-                s.Parameters.AddWithValue("$e", ext);
+                    ? "SELECT RelPath FROM Entries WHERE IsDir = FALSE AND CategoryId IS NULL AND Ext IS NULL ORDER BY Size DESC LIMIT 6"
+                    : "SELECT RelPath FROM Entries WHERE IsDir = FALSE AND CategoryId IS NULL AND Ext = @e ORDER BY Size DESC LIMIT 6";
+                s.Parameters.AddWithValue("@e", ext);
                 var samples = new List<string>();
                 using var sr = s.ExecuteReader();
                 while (sr.Read())
@@ -654,7 +654,7 @@ public sealed class AiService(
         {
             c.CommandText = """
                 SELECT p.Name, COUNT(*), SUM(e.Size) FROM Entries e JOIN Entries p ON p.Id = e.ParentId
-                WHERE e.IsDir = 0 AND e.CategoryId IS NULL GROUP BY p.Name ORDER BY SUM(e.Size) DESC LIMIT 25
+                WHERE e.IsDir = FALSE AND e.CategoryId IS NULL GROUP BY p.Name ORDER BY SUM(e.Size) DESC LIMIT 25
                 """;
             using var r = c.ExecuteReader();
             while (r.Read())

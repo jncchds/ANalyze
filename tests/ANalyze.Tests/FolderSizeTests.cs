@@ -2,7 +2,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using ANalyze.Infrastructure.Data;
 using ANalyze.Scanner;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace ANalyze.Tests;
@@ -10,12 +10,12 @@ namespace ANalyze.Tests;
 public class FolderSizeTests
 {
     /// <summary>Folders whose stored total differs from the sum of their children.</summary>
-    private static List<string> Inconsistent(SqliteConnection c)
+    private static List<string> Inconsistent(DbConnection c)
     {
         using var q = c.CreateCommand();
         q.CommandText = """
             SELECT d.RelPath, d.TotalSize, COALESCE((SELECT SUM(x.TotalSize) FROM Entries x WHERE x.ParentId = d.Id), 0) AS kids
-            FROM Entries d WHERE d.IsDir = 1 AND d.TotalSize <> COALESCE((SELECT SUM(x.TotalSize) FROM Entries x WHERE x.ParentId = d.Id), 0)
+            FROM Entries d WHERE d.IsDir = TRUE AND d.TotalSize <> COALESCE((SELECT SUM(x.TotalSize) FROM Entries x WHERE x.ParentId = d.Id), 0)
             """;
         using var r = q.ExecuteReader();
         var list = new List<string>();
@@ -45,7 +45,7 @@ public class FolderSizeTests
         File.WriteAllBytes(Path.Combine(app.Library, "Bulk", "d3", "e33", "extra.bin"), new byte[1000]);
         await app.ScanAsync(http);
 
-        using var c = app.Services.GetRequiredService<SqliteSetup>().Open();
+        using var c = app.Services.GetRequiredService<DbSetup>().Open();
         Assert.Empty(Inconsistent(c));
         using var q = c.CreateCommand();
         q.CommandText = "SELECT TotalSize FROM Entries WHERE RelPath = 'Bulk'";
@@ -60,12 +60,12 @@ public class FolderSizeTests
         using var http = app.CreateClient();
         await app.ScanAsync(http);
 
-        using var c = app.Services.GetRequiredService<SqliteSetup>().Open();
+        using var c = app.Services.GetRequiredService<DbSetup>().Open();
         int rootId;
         using (var broke = c.CreateCommand())
         {
             // What an interrupted first scan leaves behind: finished deep folders, parents still at 0.
-            broke.CommandText = "UPDATE Entries SET TotalSize = 0, FileCount = 0 WHERE IsDir = 1 AND Depth <= 1; SELECT MIN(RootId) FROM Entries";
+            broke.CommandText = "UPDATE Entries SET TotalSize = 0, FileCount = 0 WHERE IsDir = TRUE AND Depth <= 1; SELECT MIN(RootId) FROM Entries";
             rootId = Convert.ToInt32(broke.ExecuteScalar());
         }
 
@@ -81,12 +81,12 @@ public class FolderSizeTests
         using var http = app.CreateClient();
         await app.ScanAsync(http);
 
-        using var c = app.Services.GetRequiredService<SqliteSetup>().Open();
+        using var c = app.Services.GetRequiredService<DbSetup>().Open();
         long id;
         using (var reset = c.CreateCommand())
         {
             // A file the detection step has not reached yet (first scan still walking, or stopped early).
-            reset.CommandText = "UPDATE Entries SET Kind = 0, Mime = NULL, Detected = 0 WHERE Name = 'Heat.mkv'; SELECT Id FROM Entries WHERE Name = 'Heat.mkv'";
+            reset.CommandText = "UPDATE Entries SET Kind = 0, Mime = NULL, Detected = FALSE WHERE Name = 'Heat.mkv'; SELECT Id FROM Entries WHERE Name = 'Heat.mkv'";
             id = (long)reset.ExecuteScalar()!;
         }
 

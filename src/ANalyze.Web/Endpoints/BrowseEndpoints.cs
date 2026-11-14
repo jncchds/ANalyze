@@ -24,8 +24,8 @@ public static class BrowseEndpoints
     public static void MapBrowseEndpoints(this RouteGroupBuilder api)
     {
         // Totals and breakdowns for everything, one root, or one folder.
-        api.MapGet("/overview", async (int? rootId, string? path, SqliteSetup sqlite, Caches caches) =>
-            await caches.GetAsync($"overview:{rootId}:{path}", () => Task.FromResult(Overview(sqlite, rootId, path))));
+        api.MapGet("/overview", async (int? rootId, string? path, DbSetup database, Caches caches) =>
+            await caches.GetAsync($"overview:{rootId}:{path}", () => Task.FromResult(Overview(database, rootId, path))));
 
         api.MapGet("/entries/{id:long}", async (long id, AnalyzeDbContext db, RootRegistry roots, CancellationToken ct) =>
         {
@@ -193,11 +193,11 @@ public static class BrowseEndpoints
         });
 
         // Nested sizes for the treemap/sunburst; small children are folded into "other".
-        api.MapGet("/entries/{id:long}/tree", (long id, int? depth, int? maxChildren, SqliteSetup sqlite) =>
+        api.MapGet("/entries/{id:long}/tree", (long id, int? depth, int? maxChildren, DbSetup database) =>
         {
-            using var c = sqlite.Open();
-            var top = Sql.Query(c, "SELECT Id, Name, TotalSize, IsDir, CategoryId, FileCount FROM Entries WHERE Id = $id",
-                r => new TreeNode(r.GetInt64(0), r.GetString(1), r.GetInt64(2), r.GetBoolean(3), r.NullableInt(4), r.GetInt64(5), null), ("$id", id)).FirstOrDefault();
+            using var c = database.Open();
+            var top = Sql.Query(c, "SELECT Id, Name, TotalSize, IsDir, CategoryId, FileCount FROM Entries WHERE Id = @id",
+                r => new TreeNode(r.GetInt64(0), r.GetString(1), r.GetInt64(2), r.GetBoolean(3), r.NullableInt(4), r.GetInt64(5), null), ("@id", id)).FirstOrDefault();
             if (top is null)
             {
                 return Results.NotFound();
@@ -333,15 +333,15 @@ public static class BrowseEndpoints
         return (agg?.Count ?? 0, agg?.Size ?? 0);
     }
 
-    private static TreeNode Expand(Microsoft.Data.Sqlite.SqliteConnection c, TreeNode node, int depth, int maxChildren)
+    private static TreeNode Expand(System.Data.Common.DbConnection c, TreeNode node, int depth, int maxChildren)
     {
         if (!node.IsDir || depth == 0)
         {
             return node;
         }
 
-        var children = Sql.Query(c, $"SELECT Id, Name, TotalSize, IsDir, CategoryId, FileCount FROM Entries WHERE ParentId = $id ORDER BY TotalSize DESC LIMIT {maxChildren + 1}",
-            r => new TreeNode(r.GetInt64(0), r.GetString(1), r.GetInt64(2), r.GetBoolean(3), r.NullableInt(4), r.GetInt64(5), null), ("$id", node.Id));
+        var children = Sql.Query(c, $"SELECT Id, Name, TotalSize, IsDir, CategoryId, FileCount FROM Entries WHERE ParentId = @id ORDER BY TotalSize DESC LIMIT {maxChildren + 1}",
+            r => new TreeNode(r.GetInt64(0), r.GetString(1), r.GetInt64(2), r.GetBoolean(3), r.NullableInt(4), r.GetInt64(5), null), ("@id", node.Id));
         var list = new List<TreeNode>();
         long shown = 0;
         foreach (var ch in children.Take(maxChildren))
@@ -365,24 +365,24 @@ public static class BrowseEndpoints
         return node with { Children = list };
     }
 
-    private static object Overview(SqliteSetup sqlite, int? rootId, string? path)
+    private static object Overview(DbSetup database, int? rootId, string? path)
     {
-        using var c = sqlite.Open();
+        using var c = database.Open();
         var (scope, args) = Sql.ScopeOf(rootId, path);
         // Everything or a whole root: read the table front to back. Left to itself SQLite walks an index (size, category, parent…)
         // and fetches each file's row from wherever it lies, which is many times slower on spinning or busy disks.
         // A folder keeps the (RootId, RelPath) range index.
-        var files = string.IsNullOrEmpty(path?.Trim('/')) ? Sql.FullScan : "Entries e";
+        var files = string.IsNullOrEmpty(path?.Trim('/')) ? Sql.FullScan(c) : "Entries e";
         // One pass over the files for all breakdowns (each used to read the whole index again: slow on a busy disk).
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var groups = Sql.Query(c, $"""
             SELECT e.CategoryId, e.Kind, COALESCE(e.Ext, ''),
                 CASE
-                    WHEN $now - e.MTime < 2592000 THEN 0
-                    WHEN $now - e.MTime < 31536000 THEN 1
-                    WHEN $now - e.MTime < 94608000 THEN 2
-                    WHEN $now - e.MTime < 157680000 THEN 3
-                    WHEN $now - e.MTime < 315360000 THEN 4
+                    WHEN @now - e.MTime < 2592000 THEN 0
+                    WHEN @now - e.MTime < 31536000 THEN 1
+                    WHEN @now - e.MTime < 94608000 THEN 2
+                    WHEN @now - e.MTime < 157680000 THEN 3
+                    WHEN @now - e.MTime < 315360000 THEN 4
                     ELSE 5 END,
                 CASE
                     WHEN e.Size < 1048576 THEN 0
@@ -391,11 +391,11 @@ public static class BrowseEndpoints
                     WHEN e.Size < 10737418240 THEN 3
                     ELSE 4 END,
                 COUNT(*), SUM(e.Size), SUM(e.AllocSize)
-            FROM {files} WHERE e.IsDir = 0 {scope} GROUP BY 1, 2, 3, 4, 5
+            FROM {files} WHERE e.IsDir = FALSE {scope} GROUP BY 1, 2, 3, 4, 5
             """, r => (Category: r.NullableInt(0), Kind: (FileKind)r.GetInt32(1), Ext: r.GetString(2), Age: r.GetInt32(3), SizeBucket: r.GetInt32(4),
-                Files: r.GetInt64(5), Size: r.GetInt64(6), Alloc: r.GetInt64(7)), [.. args, ("$now", now)]);
+                Files: r.GetInt64(5), Size: r.GetInt64(6), Alloc: r.GetInt64(7)), [.. args, ("@now", now)]);
         var totals = new { files = groups.Sum(g => g.Files), size = groups.Sum(g => g.Size), alloc = groups.Sum(g => g.Alloc) };
-        var dirs = Sql.Scalar<long>(c, $"SELECT COUNT(*) FROM Entries e WHERE IsDir = 1 {scope}", args);
+        var dirs = Sql.Scalar<long>(c, $"SELECT COUNT(*) FROM Entries e WHERE IsDir = TRUE {scope}", args);
         var byCategory = groups.GroupBy(g => g.Category).Select(x => new { categoryId = x.Key, files = x.Sum(g => g.Files), size = x.Sum(g => g.Size) })
             .OrderByDescending(x => x.size).ToList();
         var byKind = groups.GroupBy(g => g.Kind).Select(x => new { kind = x.Key, files = x.Sum(g => g.Files), size = x.Sum(g => g.Size) })
@@ -409,7 +409,7 @@ public static class BrowseEndpoints
 
         var largestFiles = Sql.Query(c, $"""
             SELECT e.Id, e.RootId, e.Name, e.RelPath, e.Size, e.CategoryId, e.Kind, e.MTime FROM Entries e
-            WHERE e.IsDir = 0 {scope} ORDER BY e.Size DESC LIMIT 25
+            WHERE e.IsDir = FALSE {scope} ORDER BY e.Size DESC LIMIT 25
             """, r => new { id = r.GetInt64(0), rootId = r.GetInt32(1), name = r.GetString(2), relPath = r.GetString(3), size = r.GetInt64(4), categoryId = r.NullableInt(5), kind = (FileKind)r.GetInt32(6), mtime = r.GetInt64(7) }, args);
 
         // "Heaviest folders": by bytes of the files directly inside them, so parents do not drown out the real culprits.
@@ -417,7 +417,7 @@ public static class BrowseEndpoints
         var heaviest = Sql.Query(c, $"""
             SELECT p.Id, p.RootId, p.Name, p.RelPath, x.direct, x.n, p.TotalSize FROM (
                 SELECT e.ParentId AS pid, SUM(e.Size) AS direct, COUNT(*) AS n FROM {files}
-                WHERE e.IsDir = 0 {scope} GROUP BY e.ParentId ORDER BY direct DESC LIMIT 25) x
+                WHERE e.IsDir = FALSE {scope} GROUP BY e.ParentId ORDER BY direct DESC LIMIT 25) x
             JOIN Entries p ON p.Id = x.pid ORDER BY x.direct DESC
             """, r => new { id = r.GetInt64(0), rootId = r.GetInt32(1), name = r.GetString(2), relPath = r.GetString(3), direct = r.GetInt64(4), files = r.GetInt64(5), total = r.GetInt64(6) }, args);
 

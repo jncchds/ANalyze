@@ -23,11 +23,48 @@ public sealed class TestApp : WebApplicationFactory<Program>
 
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) } };
 
+    /// <summary>
+    /// Set to a PostgreSQL connection string without a database (e.g. "Host=127.0.0.1;Username=analyze;Password=…") to run
+    /// every test against PostgreSQL: each app gets its own database, dropped afterwards. Unset: SQLite.
+    /// </summary>
+    public static readonly string? Postgres = Environment.GetEnvironmentVariable("ANALYZE_TEST_POSTGRES");
+
+    /// <summary>PostgreSQL runs: ANalyze__Database__ImportFrom.</summary>
+    public string? ImportFrom { get; init; }
+
+    /// <summary>Always SQLite, also when the suite runs against PostgreSQL.</summary>
+    public bool UseSqlite { get; init; }
+
+    private string? _pgDatabase;
+
     public TestApp()
     {
         Data = Path.Combine(Path.GetDirectoryName(Library)!, "data");
         Directory.CreateDirectory(Library);
         Samples.Create(Library);
+    }
+
+    public static string PgConnection(string database) =>
+        new Npgsql.NpgsqlConnectionStringBuilder(Postgres) { Database = database, Pooling = true }.ConnectionString;
+
+    /// <summary>A new empty PostgreSQL database (name returned); <see cref="DropPgDatabase"/> removes it.</summary>
+    public static string CreatePgDatabase()
+    {
+        var name = "analyze_test_" + Guid.NewGuid().ToString("N")[..12];
+        using var admin = new Npgsql.NpgsqlConnection(PgConnection("postgres"));
+        admin.Open();
+        using var cmd = new Npgsql.NpgsqlCommand($"CREATE DATABASE {name}", admin);
+        cmd.ExecuteNonQuery();
+        return name;
+    }
+
+    public static void DropPgDatabase(string name)
+    {
+        Npgsql.NpgsqlConnection.ClearAllPools();
+        using var admin = new Npgsql.NpgsqlConnection(PgConnection("postgres"));
+        admin.Open();
+        using var cmd = new Npgsql.NpgsqlCommand($"DROP DATABASE IF EXISTS {name} WITH (FORCE)", admin);
+        cmd.ExecuteNonQuery();
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -36,6 +73,17 @@ public sealed class TestApp : WebApplicationFactory<Program>
         builder.UseSetting("ANalyze:Roots:0", Library);
         builder.UseSetting("ANalyze:DataDir", Data);
         builder.UseSetting("ANalyze:ReadOnly", ReadOnly ? "true" : "false");
+        if (Postgres is not null && !UseSqlite)
+        {
+            _pgDatabase ??= CreatePgDatabase();
+            builder.UseSetting("ANalyze:Database:Provider", "postgres");
+            builder.UseSetting("ANalyze:Database:ConnectionString", PgConnection(_pgDatabase));
+            if (ImportFrom is not null)
+            {
+                builder.UseSetting("ANalyze:Database:ImportFrom", ImportFrom);
+            }
+        }
+
         builder.ConfigureServices(s =>
         {
             if (AiReply is not null)
@@ -115,6 +163,11 @@ public sealed class TestApp : WebApplicationFactory<Program>
     protected override void Dispose(bool disposing)
     {
         base.Dispose(disposing);
+        if (_pgDatabase is not null)
+        {
+            DropPgDatabase(_pgDatabase);
+        }
+
         try
         {
             Directory.Delete(Path.GetDirectoryName(Library)!, recursive: true);

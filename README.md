@@ -135,7 +135,10 @@ For development: `npm run server` once (publishes the server into `desktop/serve
 | `ANalyze__ReadOnly` | `false` | Analysis only; no actions even on writable mounts. |
 | `ANalyze__Password` | — | Protects the UI and API. **Set it** if the port is reachable by others. |
 | `ANalyze__ApiToken` | — | Token for scripts: `Authorization: Bearer <token>`. |
-| `ANalyze__DataDir` | `/data` | Database (`analyze.db`, SQLite), thumbnails, logs, encryption keys. Keep it on a volume. |
+| `ANalyze__DataDir` | `/data` | Database (`analyze.db`, SQLite), thumbnails, logs, encryption keys. Keep it on a volume (also with PostgreSQL: the keys decrypt saved secrets). |
+| `ANalyze__Database__Provider` | `sqlite` | `sqlite` or `postgres` (see [PostgreSQL](#postgresql)). |
+| `ANalyze__Database__ConnectionString` | — | PostgreSQL: required, e.g. `Host=db;Database=analyze;Username=analyze;Password=…`. SQLite: optional, overrides the file in the data folder. |
+| `ANalyze__Database__ImportFrom` | — | PostgreSQL: a SQLite `analyze.db` to copy over at startup while the PostgreSQL database has never been scanned. |
 | `ANalyze__Integrations__<id>__<field>` | — | Seeds an integration's settings until they are saved in the UI (see [Plex](#plex)). |
 | `TZ` | `UTC` | Time zone for schedules and dates. |
 
@@ -143,6 +146,37 @@ Everything else (scan schedule, ignore patterns, duplicate search, hashing threa
 hashes, trash retention, AI) is set in **Settings**.
 
 Build without ffmpeg (no video thumbnails, smaller image): `docker build -f docker/Dockerfile --build-arg FFMPEG=false .`
+
+### PostgreSQL
+
+The index lives in SQLite (`/data/analyze.db`) unless you choose PostgreSQL — worth it for very large libraries, when the data
+volume sits on a slow disk, or if you already run a PostgreSQL server. Everything works the same on both.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d   # ANalyze + a PostgreSQL 17 container
+```
+
+or point ANalyze at your own server (PostgreSQL 12 or newer, built with ICU like the official images; the user needs to be
+able to create tables in the database):
+
+```yaml
+      ANalyze__Database__Provider: postgres
+      ANalyze__Database__ConnectionString: "Host=db;Database=analyze;Username=analyze;Password=change-me"
+```
+
+The tables are created on first start. Keep the `/data` volume: thumbnails, logs and the keys that decrypt saved
+integration secrets stay there.
+
+**Moving an existing SQLite index to PostgreSQL** (scans, hashes, rules, plans, settings — everything):
+
+- At startup: also set `ANalyze__Database__ImportFrom: /data/analyze.db`. While the PostgreSQL database has never been scanned,
+  ANalyze copies the SQLite database into it before it starts (the log says how many rows); afterwards the setting is ignored,
+  so it can stay. The SQLite file is left in place (brought up to date first) — delete it once you are happy.
+- Or as a one-off command, with ANalyze stopped: `docker compose run --rm analyze --import-sqlite /data/analyze.db`
+  (outside Docker: `ANalyze.Web --import-sqlite path/to/analyze.db`). It refuses to overwrite a PostgreSQL database that
+  holds scans unless you add `--force`, which replaces its contents.
+
+To go back to SQLite, remove the two `ANalyze__Database__…` variables (the old `analyze.db` is used again as it was).
 
 ## How actions stay safe
 
@@ -346,6 +380,7 @@ ANalyze__Integrations__plex__mappings=/data/movies=/library/Movies;/data/tv=/lib
 ```bash
 dotnet build                                   # backend (warnings are errors)
 dotnet test tests/ANalyze.Tests                # unit + integration tests (temp folders, real SQLite)
+ANALYZE_TEST_POSTGRES="Host=127.0.0.1;Username=postgres;Password=…" dotnet test tests/ANalyze.Tests   # the same against PostgreSQL
 cd src/ANalyze.Web/ClientApp && npm ci && npm run typecheck && npm run lint && npm run build
 docker compose -f docker-compose.dev.yml up --build
 ```

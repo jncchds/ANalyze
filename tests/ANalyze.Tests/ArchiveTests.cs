@@ -193,14 +193,14 @@ public class ArchiveTests
         (await http.PostAsJsonAsync("/api/v1/ignore", new { rootId = 1, relPath = "Snapshots" })).EnsureSuccessStatusCode();
         await WaitAsync(async () => !(await DuplicatePaths(http)).Contains("Snapshots/old/photo.jpg"));
 
-        using var c = app.Services.GetRequiredService<SqliteSetup>().Open();
+        using var c = app.Services.GetRequiredService<DbSetup>().Open();
         using var q = c.CreateCommand();
         q.CommandText = "SELECT COUNT(*) FROM Entries WHERE RelPath = 'Snapshots' OR RelPath LIKE 'Snapshots/%'";
         Assert.Equal(0L, (long)q.ExecuteScalar()!);
         q.CommandText = "SELECT TotalSize FROM Entries WHERE RelPath = ''";
         var rootSize = (long)q.ExecuteScalar()!;
         q.CommandText = "SELECT COALESCE(SUM(TotalSize), 0) FROM Entries WHERE Depth = 1";
-        Assert.Equal((long)q.ExecuteScalar()!, rootSize);
+        Assert.Equal(Convert.ToInt64(q.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture), rootSize);
     }
 
     private static async Task<List<string>> DuplicatePaths(HttpClient http)

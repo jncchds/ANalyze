@@ -1,0 +1,32 @@
+# ANalyze with its index in PostgreSQL instead of SQLite. Use together with docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+# Moving an existing SQLite index over: keep ANalyze__Database__ImportFrom below (copied once, while PostgreSQL has never
+# been scanned), or run once with ANalyze stopped:
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml run --rm analyze --import-sqlite /data/analyze.db
+services:
+  analyze:
+    environment:
+      ANalyze__Database__Provider: postgres
+      ANalyze__Database__ConnectionString: "Host=db;Database=analyze;Username=analyze;Password=${ANALYZE_DB_PASSWORD:-change-me}"
+      ANalyze__Database__ImportFrom: /data/analyze.db
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: analyze
+      POSTGRES_USER: analyze
+      POSTGRES_PASSWORD: "${ANALYZE_DB_PASSWORD:-change-me}"
+    volumes:
+      - analyze-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U analyze -d analyze"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  analyze-db:

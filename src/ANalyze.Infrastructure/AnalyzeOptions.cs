@@ -22,7 +22,29 @@ public sealed class AnalyzeOptions
     /// <summary>Optional token for scripts: send "Authorization: Bearer &lt;token&gt;".</summary>
     public string? ApiToken { get; set; }
 
+    /// <summary>Where the index is stored: SQLite (default, <c>analyze.db</c> in the data folder) or PostgreSQL.</summary>
+    public DatabaseOptions Database { get; set; } = new();
+
     public string DatabasePath => Path.Combine(DataDir, "analyze.db");
 
     public string ThumbsDir => Path.Combine(DataDir, "thumbs");
+}
+
+/// <summary>Section "ANalyze:Database" (env vars ANalyze__Database__X).</summary>
+public sealed class DatabaseOptions
+{
+    /// <summary>"sqlite" (default) or "postgres".</summary>
+    public string Provider { get; set; } = "sqlite";
+
+    /// <summary>
+    /// PostgreSQL: required, e.g. "Host=db;Database=analyze;Username=analyze;Password=…". SQLite: optional, overrides the file
+    /// in the data folder.
+    /// </summary>
+    public string? ConnectionString { get; set; }
+
+    /// <summary>
+    /// PostgreSQL only: an ANalyze SQLite database (e.g. /data/analyze.db) to copy into PostgreSQL at startup while the
+    /// PostgreSQL database has never been scanned. Ignored afterwards, so it can stay set.
+    /// </summary>
+    public string? ImportFrom { get; set; }
 }

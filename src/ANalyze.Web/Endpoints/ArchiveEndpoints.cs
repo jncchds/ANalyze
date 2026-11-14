@@ -5,7 +5,7 @@ using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Roots;
 using ANalyze.Scanner;
 using ANalyze.Web.Api;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 
 namespace ANalyze.Web.Endpoints;
 
@@ -34,10 +34,10 @@ public static class ArchiveEndpoints
     public static void MapArchiveEndpoints(this RouteGroupBuilder api)
     {
         // ?state=complete|verified|partial|bad&rootId=&q=&sort=size|matched|name&offset=&limit=
-        api.MapGet("/archives/extractions", (string? state, int? rootId, string? q, string? sort, int? offset, int? limit, SqliteSetup sqlite, RootRegistry roots) =>
+        api.MapGet("/archives/extractions", (string? state, int? rootId, string? q, string? sort, int? offset, int? limit, DbSetup database, RootRegistry roots) =>
         {
-            using var c = sqlite.Open();
-            var (where, args) = Where(state, rootId, q);
+            using var c = database.Open();
+            var (where, args) = Where(c, state, rootId, q);
             var order = sort switch
             {
                 "matched" => "x.MatchedBytes DESC",
@@ -47,39 +47,39 @@ public static class ArchiveEndpoints
             var items = Sql.Query(c, $"{Select} WHERE 1 = 1 {where} ORDER BY {order}, x.Id LIMIT {Math.Clamp(limit ?? 50, 1, 500)} OFFSET {Math.Max(0, offset ?? 0)}",
                 r => Map(r, roots), args);
             var total = Sql.Scalar<long>(c, $"SELECT COUNT(*) FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId WHERE 1 = 1 {where}", args);
-            var (scope, scopeArgs) = Where(null, rootId, null);
+            var (scope, scopeArgs) = Where(c, null, rootId, null);
             var counts = Sql.Query(c, $"""
-                SELECT COALESCE(SUM(x.State = 0), 0), COALESCE(SUM(x.State = 0 AND {Verified}), 0), COALESCE(SUM(x.State = 1), 0), COALESCE(SUM(x.VerifiedBad > 0), 0),
+                SELECT COALESCE(SUM(CASE WHEN x.State = 0 THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN x.State = 0 AND {Verified} THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN x.State = 1 THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN x.VerifiedBad > 0 THEN 1 ELSE 0 END), 0),
                        COALESCE(SUM(CASE WHEN x.State = 0 THEN a.Size END), 0)
                 FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId WHERE 1 = 1 {scope}
                 """, r => new { complete = r.GetInt64(0), verified = r.GetInt64(1), partial = r.GetInt64(2), bad = r.GetInt64(3), completeArchiveBytes = r.GetInt64(4) },
                 scopeArgs).First();
-            var listed = Sql.Query(c, "SELECT COUNT(*), COALESCE(SUM(Error IS NOT NULL), 0) FROM ArchiveListings", r => new { archives = r.GetInt64(0), unreadable = r.GetInt64(1) }).First();
+            var listed = Sql.Query(c, "SELECT COUNT(*), COALESCE(SUM(CASE WHEN Error IS NOT NULL THEN 1 ELSE 0 END), 0) FROM ArchiveListings", r => new { archives = r.GetInt64(0), unreadable = r.GetInt64(1) }).First();
             return new { items, total, counts, listed };
         });
 
         // The extractions of one archive (entry drawer).
-        api.MapGet("/archives/{entryId:long}/extractions", (long entryId, SqliteSetup sqlite, RootRegistry roots) =>
+        api.MapGet("/archives/{entryId:long}/extractions", (long entryId, DbSetup database, RootRegistry roots) =>
         {
-            using var c = sqlite.Open();
-            var listing = Sql.Query(c, "SELECT Format, Streamed, Files, FileBytes, Error, ListedAt FROM ArchiveListings WHERE EntryId = $id",
+            using var c = database.Open();
+            var listing = Sql.Query(c, "SELECT Format, Streamed, Files, FileBytes, Error, ListedAt FROM ArchiveListings WHERE EntryId = @id",
                 r => new { format = r.NullableString(0), streamed = r.GetBoolean(1), files = r.GetInt32(2), bytes = r.GetInt64(3), error = r.NullableString(4), listedAt = r.GetInt64(5) },
-                ("$id", entryId)).FirstOrDefault();
-            var items = Sql.Query(c, $"{Select} WHERE x.ArchiveId = $id ORDER BY x.State, x.MatchedBytes DESC", r => Map(r, roots), ("$id", entryId));
+                ("@id", entryId)).FirstOrDefault();
+            var items = Sql.Query(c, $"{Select} WHERE x.ArchiveId = @id ORDER BY x.State, x.MatchedBytes DESC", r => Map(r, roots), ("@id", entryId));
             return new { listing, items };
         });
 
         // Every file of the archive and what was found for it; ?problems=true leaves out the matched files that are fine.
-        api.MapGet("/archives/extractions/{id:long}", (long id, bool? problems, int? limit, SqliteSetup sqlite, RootRegistry roots) =>
+        api.MapGet("/archives/extractions/{id:long}", (long id, bool? problems, int? limit, DbSetup database, RootRegistry roots) =>
         {
-            using var c = sqlite.Open();
-            var x = Sql.Query(c, $"{Select} WHERE x.Id = $id", r => Map(r, roots), ("$id", id)).FirstOrDefault();
+            using var c = database.Open();
+            var x = Sql.Query(c, $"{Select} WHERE x.Id = @id", r => Map(r, roots), ("@id", id)).FirstOrDefault();
             if (x is null)
             {
                 return Results.NotFound();
             }
 
-            var badJson = Sql.Scalar<string>(c, "SELECT BadPaths FROM ArchiveExtractions WHERE Id = $id", ("$id", id));
+            var badJson = Sql.Scalar<string>(c, "SELECT BadPaths FROM ArchiveExtractions WHERE Id = @id", ("@id", id));
             var bad = badJson is null ? [] : JsonSerializer.Deserialize<HashSet<string>>(badJson) ?? [];
             var files = ExtractionMatcher.Compare(c, ExtractionMatcher.LoadMembers(c, x.Archive.Id!.Value), x.Folder.RootId, x.BaseRelPath, x.Strip)
                 .Select(m => new FileDto(m.Path, m.Size, bad.Contains(m.Path) ? "corrupt" : m.State.ToString().ToLowerInvariant(), m.Target, m.EntryId, m.DiskSize, m.Crc is not null))
@@ -90,13 +90,13 @@ public static class ArchiveEndpoints
         });
 
         // Reads the extracted files and compares them with the archive's CRC32s (a job on the scan queue). Ids, or every extraction in a state.
-        api.MapPost("/archives/extractions/verify", (VerifyBody body, SqliteSetup sqlite, ScanQueue queue) =>
+        api.MapPost("/archives/extractions/verify", (VerifyBody body, DbSetup database, ScanQueue queue) =>
         {
             var ids = body.Ids?.ToList();
             if (ids is null)
             {
-                using var c = sqlite.Open();
-                var (where, args) = Where(body.State ?? "complete", body.RootId, null);
+                using var c = database.Open();
+                var (where, args) = Where(c, body.State ?? "complete", body.RootId, null);
                 ids = Sql.Query(c, $"SELECT x.Id FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId WHERE 1 = 1 {where}", r => r.GetInt64(0), args);
             }
 
@@ -110,7 +110,7 @@ public static class ArchiveEndpoints
         });
 
         // Draft plan that removes the archives (complete extractions only) or the extracted copies of their files.
-        api.MapPost("/archives/extractions/plan", async (PlanBody body, SqliteSetup sqlite, PlanBuilder builder, CancellationToken ct) =>
+        api.MapPost("/archives/extractions/plan", async (PlanBody body, DbSetup database, PlanBuilder builder, CancellationToken ct) =>
         {
             if (body.Op is not (ActionOp.Trash or ActionOp.Delete))
             {
@@ -119,12 +119,12 @@ public static class ArchiveEndpoints
 
             var archives = body.Remove == "archive";
             var entryIds = new List<long>();
-            using (var c = sqlite.Open())
+            using (var c = database.Open())
             {
                 foreach (var id in body.Ids.Distinct())
                 {
-                    var row = Sql.Query(c, "SELECT ArchiveId, State, RootId, BaseRelPath, Strip FROM ArchiveExtractions WHERE Id = $id",
-                        r => (Archive: r.GetInt64(0), State: (ExtractionState)r.GetInt32(1), Root: r.GetInt32(2), Base: r.GetString(3), Strip: r.GetString(4)), ("$id", id)).FirstOrDefault();
+                    var row = Sql.Query(c, "SELECT ArchiveId, State, RootId, BaseRelPath, Strip FROM ArchiveExtractions WHERE Id = @id",
+                        r => (Archive: r.GetInt64(0), State: (ExtractionState)r.GetInt32(1), Root: r.GetInt32(2), Base: r.GetString(3), Strip: r.GetString(4)), ("@id", id)).FirstOrDefault();
                     if (row.Archive == 0)
                     {
                         continue;
@@ -167,7 +167,7 @@ public static class ArchiveEndpoints
 
     private const string Verified = "x.VerifiedAt IS NOT NULL AND x.VerifiedBad = 0 AND x.Unverified = 0";
 
-    private static (string, (string, object?)[]) Where(string? state, int? rootId, string? q)
+    private static (string, (string, object?)[]) Where(DbConnection c, string? state, int? rootId, string? q)
     {
         var sql = state switch
         {
@@ -181,20 +181,20 @@ public static class ArchiveEndpoints
         var args = new List<(string, object?)>();
         if (rootId is not null)
         {
-            sql += " AND (a.RootId = $root OR x.RootId = $root)";
-            args.Add(("$root", rootId));
+            sql += " AND (a.RootId = @root OR x.RootId = @root)";
+            args.Add(("@root", rootId));
         }
 
         if (!string.IsNullOrWhiteSpace(q))
         {
-            sql += " AND (a.RelPath LIKE $q ESCAPE '\\' OR x.FolderRelPath LIKE $q ESCAPE '\\')";
-            args.Add(("$q", "%" + q.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%"));
+            sql += $" AND (a.RelPath {c.Like()} @q ESCAPE '\\' OR x.FolderRelPath {c.Like()} @q ESCAPE '\\')";
+            args.Add(("@q", "%" + q.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%"));
         }
 
         return (sql, [.. args]);
     }
 
-    private static ExtractionDto Map(SqliteDataReader r, RootRegistry roots) => new(
+    private static ExtractionDto Map(DbDataReader r, RootRegistry roots) => new(
         r.GetInt64(0), (ExtractionState)r.GetInt32(1),
         new Place(r.GetInt64(2), r.GetInt32(3), roots.Get(r.GetInt32(3))?.Name, r.GetString(4)), r.GetInt64(5), r.GetInt64(6), r.NullableString(7),
         new Place(r.NullableLong(9), r.GetInt32(8), roots.Get(r.GetInt32(8))?.Name, r.GetString(10)), r.GetString(11), r.GetString(12),

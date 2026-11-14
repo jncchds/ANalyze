@@ -124,10 +124,10 @@ public class BackupSyncTests
         Assert.Contains(files, f => f.P == "empty" && f.D);
         Assert.Contains(files, f => f.P == "docs/a.txt" && f.H is not null);
 
-        var sqlite = app.Services.GetRequiredService<SqliteSetup>();
+        var database = app.Services.GetRequiredService<DbSetup>();
         var roots = app.Services.GetRequiredService<RootRegistry>();
         BackupSyncResult result;
-        using (var conn = sqlite.Open())
+        using (var conn = database.Open())
         {
             result = await new BackupSync(conn, roots).RunAsync(parent, [new PathMapping("/backup/nas1", app.Library + "/home")],
                 (_, _, _) => Task.FromResult(new ExportPage(files, null)), new Progress<IntegrationProgress>(), CancellationToken.None);
@@ -140,9 +140,9 @@ public class BackupSyncTests
         Assert.Equal(1, result.Files[BackupStates.Missing]);  // e
         Assert.Equal(4, result.Files[BackupStates.Unsynced]); // p2–p5: their folder is not synchronized
 
-        using (var conn = sqlite.Open())
+        using (var conn = database.Open())
         {
-            var states = Db.Query(conn, "SELECT LocalRelPath, State, Children, SyncedChildren FROM BackupFiles WHERE IsDir = 1", r => (r.GetString(0), r.GetString(1), r.GetInt32(2), r.GetInt32(3)))
+            var states = Db.Query(conn, "SELECT LocalRelPath, State, Children, SyncedChildren FROM BackupFiles WHERE IsDir = TRUE", r => (r.GetString(0), r.GetString(1), r.GetInt32(2), r.GetInt32(3)))
                 .ToDictionary(x => x.Item1);
             Assert.Equal(("home/docs", "synced", 5, 4), states["home/docs"]);      // 80%
             Assert.Equal(("home/photos", "unsynced", 5, 1), states["home/photos"]);
@@ -192,9 +192,9 @@ public class BackupSyncTests
         File.WriteAllText(path, "SAME content");
         File.SetLastWriteTimeUtc(path, t);
         await settings.SaveAsync(settings.Current with { VerifyAfterDays = 1 });
-        using (var conn = app.Services.GetRequiredService<SqliteSetup>().Open())
+        using (var conn = app.Services.GetRequiredService<DbSetup>().Open())
         {
-            Db.Query(conn, "UPDATE Entries SET HashedAt = 1 WHERE IsDir = 0 RETURNING Id", r => r.GetInt64(0));
+            Db.Query(conn, "UPDATE Entries SET HashedAt = 1 WHERE IsDir = FALSE RETURNING Id", r => r.GetInt64(0));
         }
 
         await app.ScanAsync(http);
@@ -230,8 +230,8 @@ public class BackupSyncTests
             new("docs/c.txt", 5, 0, await Hash("DOC C")),
         };
         var info = new ExportInfo("ANalyze", "test", "nas1", BackupExport.HashAlgorithm, true, 0, [new ExportRoot(1, "/backup", "backup", 3, 15, 3, null)]);
-        var sqlite = app.Services.GetRequiredService<SqliteSetup>();
-        using (var conn = sqlite.Open())
+        var database = app.Services.GetRequiredService<DbSetup>();
+        using (var conn = database.Open())
         {
             var result = await new BackupSync(conn, app.Services.GetRequiredService<RootRegistry>()).RunAsync(info, [new PathMapping("/backup", app.Library + "/home")],
                 (_, _, _) => Task.FromResult(new ExportPage(files, null)), new Progress<IntegrationProgress>(), CancellationToken.None);
@@ -242,9 +242,9 @@ public class BackupSyncTests
         // Hashing every file now: each stored batch re-checks those files at once.
         await settings.SaveAsync(settings.Current with { HashAllFiles = true });
         await app.ScanAsync(http);
-        using (var conn = sqlite.Open())
+        using (var conn = database.Open())
         {
-            var rows = Db.Query(conn, "SELECT LocalRelPath, State, Verified FROM BackupFiles WHERE IsDir = 0", r => (r.GetString(0), r.GetString(1), r.GetBoolean(2)))
+            var rows = Db.Query(conn, "SELECT LocalRelPath, State, Verified FROM BackupFiles WHERE IsDir = FALSE", r => (r.GetString(0), r.GetString(1), r.GetBoolean(2)))
                 .ToDictionary(x => x.Item1);
             Assert.Equal(("home/docs/a.txt", BackupStates.Synced, true), rows["home/docs/a.txt"]);
             Assert.Equal(("home/docs/c.txt", BackupStates.Corrupt, false), rows["home/docs/c.txt"]);
@@ -275,7 +275,7 @@ public class BackupSyncTests
         var files = Enumerable.Range(0, 4).Select(i => new ExportFile($"media/music/song{i}.mp3", 100 + i, 0))
             .Prepend(new ExportFile("media/music", 406, 0, D: true)).Prepend(new ExportFile("media", 406, 0, D: true)).ToList();
         var info = new ExportInfo("ANalyze", "test", "nas1", BackupExport.HashAlgorithm, false, 0, [new ExportRoot(1, "/srv", "srv", 4, 0, 0, null)]);
-        using var conn = app.Services.GetRequiredService<SqliteSetup>().Open();
+        using var conn = app.Services.GetRequiredService<DbSetup>().Open();
         var result = await new BackupSync(conn, app.Services.GetRequiredService<RootRegistry>())
             .RunAsync(info, [], (_, _, _) => Task.FromResult(new ExportPage(files, null)), new Progress<IntegrationProgress>(), CancellationToken.None);
         Assert.Equal(new PathMapping("/srv/media", app.Library + "/copy"), Assert.Single(result.Detected));
@@ -300,7 +300,7 @@ public class BackupSyncTests
             .Concat(Enumerable.Range(0, 4).Select(i => new ExportFile($"media/other/doc{i}.txt", 50 + i, 0)))
             .Prepend(new ExportFile("media/other", 206, 0, D: true)).Prepend(new ExportFile("media/music", 406, 0, D: true)).Prepend(new ExportFile("media", 612, 0, D: true)).ToList();
         var info = new ExportInfo("ANalyze", "test", "nas1", BackupExport.HashAlgorithm, false, 0, [new ExportRoot(1, "/srv", "srv", 8, 0, 0, null)]);
-        using var conn = app.Services.GetRequiredService<SqliteSetup>().Open();
+        using var conn = app.Services.GetRequiredService<DbSetup>().Open();
         var roots = app.Services.GetRequiredService<RootRegistry>();
         Task<BackupSyncResult> Run(params PathMapping[] notBackups) => new BackupSync(conn, roots, notBackups)
             .RunAsync(info, [], (_, _, _) => Task.FromResult(new ExportPage(files, null)), new Progress<IntegrationProgress>(), CancellationToken.None);

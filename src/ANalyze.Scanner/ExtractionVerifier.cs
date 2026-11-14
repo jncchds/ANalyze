@@ -1,9 +1,10 @@
+using ANalyze.Infrastructure.Data;
 using System.IO.Hashing;
 using System.Text.Json;
 using ANalyze.Infrastructure;
 using ANalyze.Infrastructure.Logging;
 using ANalyze.Infrastructure.Roots;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Scanner;
@@ -12,7 +13,7 @@ namespace ANalyze.Scanner;
 /// Checks extracted files against their archive: each matched file is read and its CRC32 compared with the CRC32 the archive
 /// stores for it (read from the headers, or computed when a tar/compressed archive was listed). The archive itself is not read.
 /// </summary>
-internal sealed class ExtractionVerifier(SqliteConnection read, SqliteConnection write, ScanContext ctx, IReadOnlyDictionary<int, string> rootPaths, int threads)
+internal sealed class ExtractionVerifier(DbConnection read, DbConnection write, ScanContext ctx, IReadOnlyDictionary<int, string> rootPaths, int threads)
 {
     private const int MaxBadPaths = 500;
 
@@ -26,16 +27,22 @@ internal sealed class ExtractionVerifier(SqliteConnection read, SqliteConnection
         {
             using var q = read.CreateCommand();
             q.CommandText = """
-                SELECT x.ArchiveId, x.RootId, x.BaseRelPath, x.Strip, e.RelPath FROM ArchiveExtractions x JOIN Entries e ON e.Id = x.ArchiveId WHERE x.Id = $id
+                SELECT x.ArchiveId, x.RootId, x.BaseRelPath, x.Strip, e.RelPath FROM ArchiveExtractions x JOIN Entries e ON e.Id = x.ArchiveId WHERE x.Id = @id
                 """;
-            q.Parameters.AddWithValue("$id", id);
-            using var r = q.ExecuteReader();
-            if (!r.Read())
+            q.Parameters.AddWithValue("@id", id);
+            (long, int, string, string, string) row;
+            using (var r = q.ExecuteReader())
             {
-                continue;
+                if (!r.Read())
+                {
+                    continue;
+                }
+
+                row = (r.GetInt64(0), r.GetInt32(1), r.GetString(2), r.GetString(3), r.GetString(4));
             }
 
-            var (archiveId, rootId, basePath, strip, archivePath) = (r.GetInt64(0), r.GetInt32(1), r.GetString(2), r.GetString(3), r.GetString(4));
+            // The reader is closed first: PostgreSQL runs one command at a time per connection.
+            var (archiveId, rootId, basePath, strip, archivePath) = row;
             var files = ExtractionMatcher.Compare(read, ExtractionMatcher.LoadMembers(read, archiveId), rootId, basePath, strip)
                 .Where(m => m.State == MemberState.Matched).ToList();
             jobs.Add(new Job(id, archiveId, rootId, basePath, strip, archivePath, files));
@@ -151,14 +158,14 @@ internal sealed class ExtractionVerifier(SqliteConnection read, SqliteConnection
     {
         using var u = write.CreateCommand();
         u.CommandText = """
-            UPDATE ArchiveExtractions SET VerifiedAt = $now, VerifiedOk = $ok, VerifiedBad = $bad, Unverified = $un, BadPaths = $paths WHERE Id = $id
+            UPDATE ArchiveExtractions SET VerifiedAt = @now, VerifiedOk = @ok, VerifiedBad = @bad, Unverified = @un, BadPaths = @paths WHERE Id = @id
             """;
-        u.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-        u.Parameters.AddWithValue("$ok", ok);
-        u.Parameters.AddWithValue("$bad", bad.Count);
-        u.Parameters.AddWithValue("$un", unverified);
-        u.Parameters.AddWithValue("$paths", bad.Count == 0 ? DBNull.Value : JsonSerializer.Serialize(bad.Take(MaxBadPaths)));
-        u.Parameters.AddWithValue("$id", job.Id);
+        u.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        u.Parameters.AddWithValue("@ok", ok);
+        u.Parameters.AddWithValue("@bad", bad.Count);
+        u.Parameters.AddWithValue("@un", unverified);
+        u.Parameters.AddWithValue("@paths", bad.Count == 0 ? DBNull.Value : JsonSerializer.Serialize(bad.Take(MaxBadPaths)));
+        u.Parameters.AddWithValue("@id", job.Id);
         u.ExecuteNonQuery();
     }
 }

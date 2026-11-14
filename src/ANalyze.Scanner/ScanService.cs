@@ -5,7 +5,7 @@ using ANalyze.Infrastructure.Jobs;
 using ANalyze.Infrastructure.Logging;
 using ANalyze.Infrastructure.Roots;
 using ANalyze.Infrastructure.Settings;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -29,7 +29,7 @@ public sealed record ScanRequest(int? RootId = null, string? SubPath = null, boo
 /// background next to other shared work and steps aside for the next walk.
 /// </summary>
 public sealed class ScanService(
-    SqliteSetup sqlite,
+    DbSetup database,
     IDbContextFactory<AnalyzeDbContext> dbf,
     RootRegistry roots,
     SettingsStore settings,
@@ -126,7 +126,7 @@ public sealed class ScanService(
         string? message = null;
         try
         {
-            using var conn = sqlite.Open();
+            using var conn = database.Open();
             foreach (var root in targets)
             {
                 WalkRoot(conn, ctx, root, req.SubPath, s);
@@ -163,13 +163,13 @@ public sealed class ScanService(
             try
             {
                 log.LogInformation("Recomputing folder sizes after the {Status} scan", status.ToString().ToLowerInvariant());
-                using var conn = sqlite.Open();
+                using var conn = database.Open();
                 foreach (var root in targets)
                 {
                     RollupDirectories(conn, root.Id);
                 }
             }
-            catch (Exception e) when (e is SqliteException or InvalidOperationException)
+            catch (Exception e) when (e is DbException or InvalidOperationException)
             {
                 log.LogWarning(e, "Could not recompute folder sizes after scan {Id}", run.Id);
             }
@@ -228,7 +228,7 @@ public sealed class ScanService(
         string state = JobStates.Completed, message;
         try
         {
-            using var conn = sqlite.Open();
+            using var conn = database.Open();
             if (req.PruneIgnored)
             {
                 ctx.StartPhase("pruning");
@@ -243,7 +243,7 @@ public sealed class ScanService(
             }
             else
             {
-                using var write = sqlite.Open();
+                using var write = database.Open();
                 var rootPaths = roots.All.ToDictionary(r => r.Id, r => r.Path);
                 var (ok, bad) = await new ExtractionVerifier(conn, write, ctx, rootPaths, settings.Current.WorkerThreads()).RunAsync(req.VerifyExtractions!);
                 message = bad > 0 ? $"{bad} extracted files differ from their archive, {ok} match" : $"{ok} extracted files match their archive";
@@ -255,7 +255,7 @@ public sealed class ScanService(
         {
             (state, message) = (JobStates.Cancelled, "Cancelled");
         }
-        catch (Exception e) when (e is SqliteException or IOException or InvalidOperationException)
+        catch (Exception e) when (e is DbException or IOException or InvalidOperationException)
         {
             log.LogError(e, "{Title} failed", title);
             (state, message) = (JobStates.Failed, e.Message);
@@ -265,7 +265,7 @@ public sealed class ScanService(
         ctx.Report(state, message, force: true);
     }
 
-    private void WalkRoot(SqliteConnection conn, ScanContext ctx, Root root, string? subPath, AppSettings s)
+    private void WalkRoot(DbConnection conn, ScanContext ctx, Root root, string? subPath, AppSettings s)
     {
         var rootStat = Native.LStat(root.Path);
         if (!rootStat.Exists)
@@ -282,9 +282,9 @@ public sealed class ScanService(
         {
             root.RootEntryId = rootEntryId;
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "UPDATE Roots SET RootEntryId = $e WHERE Id = $r";
-            cmd.Parameters.AddWithValue("$e", rootEntryId);
-            cmd.Parameters.AddWithValue("$r", root.Id);
+            cmd.CommandText = "UPDATE Roots SET RootEntryId = @e WHERE Id = @r";
+            cmd.Parameters.AddWithValue("@e", rootEntryId);
+            cmd.Parameters.AddWithValue("@r", root.Id);
             cmd.ExecuteNonQuery();
         }
 
@@ -296,9 +296,9 @@ public sealed class ScanService(
             while (rel.Length > 0)
             {
                 using var find = conn.CreateCommand();
-                find.CommandText = "SELECT Id, Depth FROM Entries WHERE RootId = $r AND RelPath = $p AND IsDir = 1";
-                find.Parameters.AddWithValue("$r", root.Id);
-                find.Parameters.AddWithValue("$p", rel);
+                find.CommandText = "SELECT Id, Depth FROM Entries WHERE RootId = @r AND RelPath = @p AND IsDir = TRUE";
+                find.Parameters.AddWithValue("@r", root.Id);
+                find.Parameters.AddWithValue("@p", rel);
                 using var r = find.ExecuteReader();
                 if (r.Read() && Directory.Exists(RootRegistry.Combine(root.Path, rel)))
                 {
@@ -337,13 +337,13 @@ public sealed class ScanService(
     }
 
     /// <summary>Recomputes every folder's totals of a root from its children, deepest folders first.</summary>
-    public static void RollupDirectories(SqliteConnection conn, int rootId)
+    public static void RollupDirectories(DbConnection conn, int rootId)
     {
         using var tx = conn.BeginTransaction();
         using var max = conn.CreateCommand();
         max.Transaction = tx;
-        max.CommandText = "SELECT COALESCE(MAX(Depth), 0) FROM Entries WHERE RootId = $r AND IsDir = 1";
-        max.Parameters.AddWithValue("$r", rootId);
+        max.CommandText = "SELECT COALESCE(MAX(Depth), 0) FROM Entries WHERE RootId = @r AND IsDir = TRUE";
+        max.Parameters.AddWithValue("@r", rootId);
         var deepest = Convert.ToInt32(max.ExecuteScalar());
         using var update = conn.CreateCommand();
         update.Transaction = tx;
@@ -352,14 +352,14 @@ public sealed class ScanService(
                 TotalSize = COALESCE((SELECT SUM(TotalSize) FROM Entries c WHERE c.ParentId = Entries.Id), 0),
                 TotalAlloc = COALESCE((SELECT SUM(TotalAlloc) FROM Entries c WHERE c.ParentId = Entries.Id), 0),
                 FileCount = COALESCE((SELECT SUM(FileCount) FROM Entries c WHERE c.ParentId = Entries.Id), 0),
-                DirCount = COALESCE((SELECT SUM(DirCount + IsDir) FROM Entries c WHERE c.ParentId = Entries.Id), 0)
-            WHERE RootId = $r AND IsDir = 1 AND Depth = $d
+                DirCount = COALESCE((SELECT SUM(DirCount + CASE WHEN IsDir THEN 1 ELSE 0 END) FROM Entries c WHERE c.ParentId = Entries.Id), 0)
+            WHERE RootId = @r AND IsDir = TRUE AND Depth = @d
             """;
-        update.Parameters.AddWithValue("$r", rootId);
-        update.Parameters.Add(new SqliteParameter("$d", null));
+        update.Parameters.AddWithValue("@r", rootId);
+        update.Parameters.AddWithValue("@d", null);
         for (var d = deepest; d >= 0; d--)
         {
-            update.Parameters["$d"].Value = d;
+            update.Parameters["@d"].Value = d;
             update.ExecuteNonQuery();
         }
 
@@ -367,57 +367,65 @@ public sealed class ScanService(
     }
 
     /// <summary>After a subtree scan, refresh the aggregates of every directory above it.</summary>
-    public static void RecomputeAncestors(SqliteConnection conn, long entryId)
+    public static void RecomputeAncestors(DbConnection conn, long entryId)
     {
         using var parent = conn.CreateCommand();
-        parent.CommandText = "SELECT ParentId FROM Entries WHERE Id = $id";
-        parent.Parameters.Add(new SqliteParameter("$id", null));
+        parent.CommandText = "SELECT ParentId FROM Entries WHERE Id = @id";
+        parent.Parameters.AddWithValue("@id", null);
         using var update = conn.CreateCommand();
         update.CommandText = """
             UPDATE Entries SET
-                TotalSize = COALESCE((SELECT SUM(TotalSize) FROM Entries c WHERE c.ParentId = $id), 0),
-                TotalAlloc = COALESCE((SELECT SUM(TotalAlloc) FROM Entries c WHERE c.ParentId = $id), 0),
-                FileCount = COALESCE((SELECT SUM(FileCount) FROM Entries c WHERE c.ParentId = $id), 0),
-                DirCount = COALESCE((SELECT SUM(DirCount + IsDir) FROM Entries c WHERE c.ParentId = $id), 0)
-            WHERE Id = $id
+                TotalSize = COALESCE((SELECT SUM(TotalSize) FROM Entries c WHERE c.ParentId = @id), 0),
+                TotalAlloc = COALESCE((SELECT SUM(TotalAlloc) FROM Entries c WHERE c.ParentId = @id), 0),
+                FileCount = COALESCE((SELECT SUM(FileCount) FROM Entries c WHERE c.ParentId = @id), 0),
+                DirCount = COALESCE((SELECT SUM(DirCount + CASE WHEN IsDir THEN 1 ELSE 0 END) FROM Entries c WHERE c.ParentId = @id), 0)
+            WHERE Id = @id
             """;
-        update.Parameters.Add(new SqliteParameter("$id", null));
+        update.Parameters.AddWithValue("@id", null);
 
         long? current = entryId;
         while (true)
         {
-            parent.Parameters["$id"].Value = current;
+            parent.Parameters["@id"].Value = current;
             var p = parent.ExecuteScalar();
             if (p is not long pid)
             {
                 break;
             }
 
-            update.Parameters["$id"].Value = pid;
+            update.Parameters["@id"].Value = pid;
             update.ExecuteNonQuery();
             current = pid;
         }
     }
 
-    private static void Snapshot(SqliteConnection conn, long scanId, int rootId, int depth)
+    private static void Snapshot(DbConnection conn, long scanId, int rootId, int depth)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT OR REPLACE INTO DirSizeHistory (ScanId, EntryId, RootId, RelPath, TotalSize, FileCount, At)
-            SELECT $scan, Id, RootId, RelPath, TotalSize, FileCount, $at FROM Entries
-            WHERE RootId = $root AND IsDir = 1 AND Depth <= $depth
+            INSERT INTO DirSizeHistory (ScanId, EntryId, RootId, RelPath, TotalSize, FileCount, At)
+            SELECT @scan, Id, RootId, RelPath, TotalSize, FileCount, @at FROM Entries
+            WHERE RootId = @root AND IsDir = TRUE AND Depth <= @depth
+            ON CONFLICT (ScanId, EntryId) DO UPDATE SET RootId = excluded.RootId, RelPath = excluded.RelPath, TotalSize = excluded.TotalSize,
+                FileCount = excluded.FileCount, At = excluded.At
             """;
-        cmd.Parameters.AddWithValue("$scan", scanId);
-        cmd.Parameters.AddWithValue("$root", rootId);
-        cmd.Parameters.AddWithValue("$depth", Math.Clamp(depth, 0, 4));
+        cmd.Parameters.AddWithValue("@scan", scanId);
+        cmd.Parameters.AddWithValue("@root", rootId);
+        cmd.Parameters.AddWithValue("@depth", Math.Clamp(depth, 0, 4));
         // Same encoding EF uses for DateTimeOffset (DateTimeOffsetToBinaryConverter).
-        cmd.Parameters.AddWithValue("$at", new Microsoft.EntityFrameworkCore.Storage.ValueConversion.DateTimeOffsetToBinaryConverter()
+        cmd.Parameters.AddWithValue("@at", new Microsoft.EntityFrameworkCore.Storage.ValueConversion.DateTimeOffsetToBinaryConverter()
             .ConvertToProvider(DateTimeOffset.UtcNow));
         cmd.ExecuteNonQuery();
     }
 
-    internal static void Optimize(SqliteConnection conn)
+    /// <summary>SQLite: refresh the planner's statistics. PostgreSQL's autovacuum does that by itself.</summary>
+    internal static void Optimize(DbConnection conn)
     {
+        if (conn.IsPostgres())
+        {
+            return;
+        }
+
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "PRAGMA optimize;";
         cmd.ExecuteNonQuery();

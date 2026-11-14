@@ -62,11 +62,11 @@ public sealed record SearchFilter
         {
             foreach (var term in Q.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                // LIKE is case-insensitive for ASCII in SQLite; '*' works as a wildcard.
-                var like = "%" + term.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_").Replace('*', '%') + "%";
+                // Case-insensitive on both databases (PostgreSQL's LIKE is not, SQLite's is for ASCII); '*' works as a wildcard.
+                var like = "%" + term.ToLowerInvariant().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_").Replace('*', '%') + "%";
                 q = term.Contains('/')
-                    ? q.Where(e => EF.Functions.Like(e.RelPath, like, "\\"))
-                    : q.Where(e => EF.Functions.Like(e.Name, like, "\\"));
+                    ? q.Where(e => EF.Functions.Like(e.RelPath.ToLower(), like, "\\"))
+                    : q.Where(e => EF.Functions.Like(e.Name.ToLower(), like, "\\"));
             }
         }
 

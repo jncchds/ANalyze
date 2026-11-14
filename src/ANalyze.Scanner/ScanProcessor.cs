@@ -5,7 +5,7 @@ using ANalyze.Infrastructure.Jobs;
 using ANalyze.Infrastructure.Logging;
 using ANalyze.Infrastructure.Roots;
 using ANalyze.Infrastructure.Settings;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -54,7 +54,7 @@ public sealed record ProcessRequest(Scope Scope, bool Full, bool SkipHashing, bo
 public interface IHashListener
 {
     /// <summary>Runs on the processor's write connection, after the batch is committed.</summary>
-    void OnHashed(SqliteConnection conn, IReadOnlyList<long> entryIds);
+    void OnHashed(DbConnection conn, IReadOnlyList<long> entryIds);
 }
 
 /// <summary>
@@ -65,7 +65,7 @@ public interface IHashListener
 /// scopes merged, when another walk asked for processing meanwhile.
 /// </summary>
 public sealed class ScanProcessor(
-    SqliteSetup sqlite,
+    DbSetup database,
     IDbContextFactory<AnalyzeDbContext> dbf,
     RootRegistry roots,
     SettingsStore settings,
@@ -251,7 +251,7 @@ public sealed class ScanProcessor(
                 await using var db = await dbf.CreateDbContextAsync(CancellationToken.None);
                 await db.Scans.Where(s => s.Id == scanId).ExecuteUpdateAsync(u => u.SetProperty(s => s.Hashed, s => s.Hashed + hashed), CancellationToken.None);
             }
-            catch (Exception e) when (e is SqliteException or InvalidOperationException)
+            catch (Exception e) when (e is DbException or InvalidOperationException)
             {
                 log.LogWarning(e, "Could not store the hash count of scan {Id}", scanId);
             }
@@ -267,8 +267,8 @@ public sealed class ScanProcessor(
     {
         var s = settings.Current;
         var rootPaths = roots.All.ToDictionary(r => r.Id, r => r.Path);
-        using var conn = sqlite.Open();
-        using var write = sqlite.Open();
+        using var conn = database.Open();
+        using var write = database.Open();
         var clock = System.Diagnostics.Stopwatch.StartNew();
 
         // A walk that finished meanwhile: start over with both scopes.
@@ -413,7 +413,7 @@ public sealed class ScanProcessor(
         }
     }
 
-    private void Notify(SqliteConnection conn, IReadOnlyList<long> ids)
+    private void Notify(DbConnection conn, IReadOnlyList<long> ids)
     {
         foreach (var l in listeners)
         {
@@ -421,7 +421,7 @@ public sealed class ScanProcessor(
             {
                 l.OnHashed(conn, ids);
             }
-            catch (Exception e) when (e is SqliteException or InvalidOperationException)
+            catch (Exception e) when (e is DbException or InvalidOperationException)
             {
                 log.LogWarning(e, "{Listener} could not use the new hashes", l.GetType().Name);
             }

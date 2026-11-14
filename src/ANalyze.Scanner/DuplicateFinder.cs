@@ -1,7 +1,7 @@
 using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Roots;
 using ANalyze.Infrastructure.Logging;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Scanner;
@@ -11,7 +11,7 @@ namespace ANalyze.Scanner;
 /// Hard links (same device and inode) share storage, so they are hashed once and never count as duplicates.
 /// Hashes are cached in the Entries table and reset by the walker when a file changes.
 /// </summary>
-internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection write, ScanContext ctx, IReadOnlyDictionary<int, string> rootPaths, long minSize, int threads)
+internal sealed class DuplicateFinder(DbConnection read, DbConnection write, ScanContext ctx, IReadOnlyDictionary<int, string> rootPaths, long minSize, int threads)
 {
     private const int BatchFiles = 400;
 
@@ -22,7 +22,7 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
     internal const string IdentitySql = "CASE WHEN Inode = 0 THEN 'i' || Id ELSE Dev || ':' || Inode END";
 
     internal static string CandidateSizesSql => $"""
-        SELECT Size FROM Entries WHERE IsDir = 0 AND IsSymlink = 0 AND Size >= $min
+        SELECT Size FROM Entries WHERE IsDir = FALSE AND IsSymlink = FALSE AND Size >= @min
         GROUP BY Size HAVING COUNT(DISTINCT {IdentitySql}) > 1
         """;
 
@@ -53,17 +53,17 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
         using (var c = read.CreateCommand())
         {
             c.CommandText = $"""
-                CREATE TEMP TABLE IF NOT EXISTS DupSizes (Size INTEGER PRIMARY KEY);
+                CREATE TEMP TABLE IF NOT EXISTS DupSizes (Size {read.IdKey()});
                 DELETE FROM DupSizes;
                 INSERT INTO DupSizes {CandidateSizesSql};
                 """;
-            c.Parameters.AddWithValue("$min", minSize);
+            c.Parameters.AddWithValue("@min", minSize);
             c.ExecuteNonQuery();
         }
 
         using (var c = read.CreateCommand())
         {
-            c.CommandText = $"SELECT COUNT(*), COALESCE(SUM(Size), 0) FROM Entries INDEXED BY {AnalyzeDbContext.UnhashedIndex} WHERE IsDir=0 AND IsSymlink=0 AND FullHash IS NULL AND Size IN (SELECT Size FROM DupSizes)";
+            c.CommandText = $"SELECT COUNT(*), COALESCE(SUM(Size), 0) FROM Entries{read.IndexedBy(AnalyzeDbContext.UnhashedIndex)} WHERE IsDir = {read.Bool(false)} AND IsSymlink = {read.Bool(false)} AND FullHash IS NULL AND Size IN (SELECT Size FROM DupSizes)";
             using var r = c.ExecuteReader();
             r.Read();
             ctx.Total = r.GetInt64(0);
@@ -78,7 +78,7 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
         using var q = read.CreateCommand();
         q.CommandText = $"""
             SELECT Id, RootId, RelPath, Size, {IdentitySql}, QuickHash, FullHash, MTime FROM Entries
-            WHERE IsDir = 0 AND IsSymlink = 0 AND Size IN (SELECT Size FROM DupSizes)
+            WHERE IsDir = FALSE AND IsSymlink = FALSE AND Size IN (SELECT Size FROM DupSizes)
             ORDER BY Size DESC, Id
             """;
 
@@ -149,11 +149,14 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
         ctx.Log.LogInformation("Finding duplicates: counting the sets of identical files");
         using var groups = read.CreateCommand();
         groups.CommandText = $"""
-            DROP TABLE IF EXISTS temp.DupSizes;
-            SELECT COUNT(*) FROM (SELECT FullHash FROM Entries WHERE FullHash IS NOT NULL AND IsDir = 0 AND IsSymlink = 0
-            GROUP BY FullHash HAVING COUNT(DISTINCT {IdentitySql}) > 1)
+            SELECT COUNT(*) FROM (SELECT FullHash FROM Entries WHERE FullHash IS NOT NULL AND IsDir = FALSE AND IsSymlink = FALSE
+            GROUP BY FullHash HAVING COUNT(DISTINCT {IdentitySql}) > 1) g
             """;
-        return (long)groups.ExecuteScalar()!;
+        var sets = Convert.ToInt64(groups.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+        using var drop = read.CreateCommand();
+        drop.CommandText = "DROP TABLE IF EXISTS DupSizes";
+        drop.ExecuteNonQuery();
+        return sets;
     }
 
     private async Task ProcessAsync(List<List<Row>> groups)
@@ -178,16 +181,16 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
         using var upd = write.CreateCommand();
         upd.Transaction = tx;
         upd.CommandText = """
-            UPDATE Entries SET QuickHash = $q, FullHash = $f,
-                HashedAt = CASE WHEN $f IS NOT NULL AND (FullHash IS NULL OR HashedAt IS NULL) THEN $now ELSE HashedAt END
-            WHERE Id = $id AND Size = $size AND MTime = $mtime
+            UPDATE Entries SET QuickHash = @q, FullHash = @f,
+                HashedAt = CASE WHEN CAST(@f AS TEXT) IS NOT NULL AND (FullHash IS NULL OR HashedAt IS NULL) THEN @now ELSE HashedAt END
+            WHERE Id = @id AND Size = @size AND MTime = @mtime
             """;
-        upd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-        upd.Parameters.Add(new SqliteParameter("$q", null));
-        upd.Parameters.Add(new SqliteParameter("$f", null));
-        upd.Parameters.Add(new SqliteParameter("$id", null));
-        upd.Parameters.Add(new SqliteParameter("$size", null));
-        upd.Parameters.Add(new SqliteParameter("$mtime", null));
+        upd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        upd.Parameters.AddWithValue("@q", null);
+        upd.Parameters.AddWithValue("@f", null);
+        upd.Parameters.AddWithValue("@id", null);
+        upd.Parameters.AddWithValue("@size", null);
+        upd.Parameters.AddWithValue("@mtime", null);
         var stored = new List<long>();
         foreach (var g in groups)
         {
@@ -200,11 +203,11 @@ internal sealed class DuplicateFinder(SqliteConnection read, SqliteConnection wr
                     continue;
                 }
 
-                upd.Parameters["$q"].Value = (object?)rep.Quick ?? DBNull.Value;
-                upd.Parameters["$f"].Value = (object?)rep.Full ?? DBNull.Value;
-                upd.Parameters["$id"].Value = row.Id;
-                upd.Parameters["$size"].Value = row.Size;
-                upd.Parameters["$mtime"].Value = row.MTime;
+                upd.Parameters["@q"].Value = (object?)rep.Quick ?? DBNull.Value;
+                upd.Parameters["@f"].Value = (object?)rep.Full ?? DBNull.Value;
+                upd.Parameters["@id"].Value = row.Id;
+                upd.Parameters["@size"].Value = row.Size;
+                upd.Parameters["@mtime"].Value = row.MTime;
                 if (upd.ExecuteNonQuery() > 0 && rep.Full is not null)
                 {
                     stored.Add(row.Id);

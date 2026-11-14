@@ -1,6 +1,6 @@
 using ANalyze.Domain;
 using ANalyze.Infrastructure.Data;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 
 namespace ANalyze.Scanner;
@@ -8,7 +8,7 @@ namespace ANalyze.Scanner;
 /// <summary>
 /// Applies the rule set to files. Precedence: manual &gt; rule &gt; AI. Tags are always recomputed from rules.
 /// </summary>
-public sealed class Categorizer(SqliteSetup sqlite, IDbContextFactory<AnalyzeDbContext> dbf)
+public sealed class Categorizer(DbSetup database, IDbContextFactory<AnalyzeDbContext> dbf)
 {
     private const int Page = 5000;
 
@@ -22,25 +22,25 @@ public sealed class Categorizer(SqliteSetup sqlite, IDbContextFactory<AnalyzeDbC
     public async Task<long> RunAsync(Scope scope, Action<long, long>? progress, CancellationToken ct)
     {
         var engine = await LoadEngineAsync(ct);
-        using var db = sqlite.Open();
+        using var db = database.Open();
         return Run(db, engine, scope, progress, ct);
     }
 
-    internal static long Run(SqliteConnection db, RuleEngine engine, Scope scope, Action<long, long>? progress, CancellationToken ct, Action? betweenPages = null)
+    internal static long Run(DbConnection db, RuleEngine engine, Scope scope, Action<long, long>? progress, CancellationToken ct, Action? betweenPages = null)
     {
         long total;
         using (var c = db.CreateCommand())
         {
-            c.CommandText = $"SELECT COUNT(*) FROM Entries WHERE IsDir=0 {scope.Sql}";
+            c.CommandText = $"SELECT COUNT(*) FROM Entries WHERE IsDir=FALSE {scope.Sql}";
             scope.Bind(c);
             total = (long)c.ExecuteScalar()!;
         }
 
         using var update = db.CreateCommand();
-        update.CommandText = "UPDATE Entries SET CategoryId=$cat, CategorySource=$src, Tags=$tags WHERE Id=$id";
-        foreach (var p in new[] { "$cat", "$src", "$tags", "$id" })
+        update.CommandText = "UPDATE Entries SET CategoryId=@cat, CategorySource=@src, Tags=@tags WHERE Id=@id";
+        foreach (var p in new[] { "@cat", "@src", "@tags", "@id" })
         {
-            update.Parameters.Add(new SqliteParameter(p, null));
+            update.Parameters.AddWithValue(p, null);
         }
 
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -53,9 +53,9 @@ public sealed class Categorizer(SqliteSetup sqlite, IDbContextFactory<AnalyzeDbC
             {
                 q.CommandText = $"""
                     SELECT Id, Name, RelPath, Ext, Mime, Kind, Size, MTime, ATime, Depth, CategoryId, CategorySource, Tags
-                    FROM Entries WHERE IsDir=0 AND Id > $last {scope.Sql} ORDER BY Id LIMIT {Page}
+                    FROM Entries WHERE IsDir=FALSE AND Id > @last {scope.Sql} ORDER BY Id LIMIT {Page}
                     """;
-                q.Parameters.AddWithValue("$last", lastId);
+                q.Parameters.AddWithValue("@last", lastId);
                 scope.Bind(q);
                 using var r = q.ExecuteReader();
                 while (r.Read())
@@ -100,10 +100,10 @@ public sealed class Categorizer(SqliteSetup sqlite, IDbContextFactory<AnalyzeDbC
 
                 if (newCat != cat || newSrc != src || newTags != tags)
                 {
-                    update.Parameters["$cat"].Value = (object?)newCat ?? DBNull.Value;
-                    update.Parameters["$src"].Value = (int)newSrc;
-                    update.Parameters["$tags"].Value = (object?)newTags ?? DBNull.Value;
-                    update.Parameters["$id"].Value = id;
+                    update.Parameters["@cat"].Value = (object?)newCat ?? DBNull.Value;
+                    update.Parameters["@src"].Value = (int)newSrc;
+                    update.Parameters["@tags"].Value = (object?)newTags ?? DBNull.Value;
+                    update.Parameters["@id"].Value = id;
                     update.ExecuteNonQuery();
                     changed++;
                 }

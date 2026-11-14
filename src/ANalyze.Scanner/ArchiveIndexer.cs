@@ -1,8 +1,9 @@
+using ANalyze.Infrastructure.Data;
 using System.IO.Hashing;
 using ANalyze.Infrastructure.Logging;
 using ANalyze.Infrastructure.Roots;
 using ANalyze.Infrastructure.Settings;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 using Microsoft.Extensions.Logging;
 using SharpCompress.Archives;
 using SharpCompress.Readers;
@@ -31,7 +32,7 @@ internal static class ArchiveIndexer
     private sealed record Candidate(long Id, int RootId, string RelPath, string Name, long Size, long MTime, string Ext);
 
     /// <summary>Lists new and changed archives in scope and drops listings of archives that are gone; returns how many listings changed.</summary>
-    public static long Run(SqliteConnection read, SqliteConnection write, ScanContext ctx, IReadOnlyDictionary<int, string> rootPaths, Scope scope, AppSettings s)
+    public static long Run(DbConnection read, DbConnection write, ScanContext ctx, IReadOnlyDictionary<int, string> rootPaths, Scope scope, AppSettings s)
     {
         ctx.StartPhase("archives");
         var removed = DropStale(read, write);
@@ -43,15 +44,15 @@ internal static class ArchiveIndexer
         {
             var header = string.Join(",", HeaderFormats.Select(f => $"'{f}'"));
             var stream = string.Join(",", StreamedFormats.Select(f => $"'{f}'"));
-            var formats = streamed ? $"(Ext IN ({header}) OR (Ext IN ({stream}) AND e.Size <= $cap))" : $"Ext IN ({header})";
+            var formats = streamed ? $"(Ext IN ({header}) OR (Ext IN ({stream}) AND e.Size <= @cap))" : $"Ext IN ({header})";
             q.CommandText = $"""
                 SELECT e.Id, e.RootId, e.RelPath, e.Name, e.Size, e.MTime, e.Ext FROM Entries e
                 LEFT JOIN ArchiveListings l ON l.EntryId = e.Id
-                WHERE {formats} AND IsDir = 0 AND IsSymlink = 0 AND e.Size > 0 {scope.Sql}
+                WHERE {formats} AND IsDir = FALSE AND IsSymlink = FALSE AND e.Size > 0 {scope.Sql}
                   AND (l.EntryId IS NULL OR l.Size <> e.Size OR l.MTime <> e.MTime)
                 ORDER BY e.Id
                 """;
-            q.Parameters.AddWithValue("$cap", cap);
+            q.Parameters.AddWithValue("@cap", cap);
             scope.Bind(q);
             using var r = q.ExecuteReader();
             while (r.Read())
@@ -246,7 +247,7 @@ internal static class ArchiveIndexer
     }
 
     /// <summary>Drops listings (with their members and extractions) of archives that were removed or changed since they were listed.</summary>
-    private static long DropStale(SqliteConnection read, SqliteConnection write)
+    private static long DropStale(DbConnection read, DbConnection write)
     {
         var stale = new List<long>();
         using (var q = read.CreateCommand())
@@ -280,20 +281,20 @@ internal static class ArchiveIndexer
         return stale.Count;
     }
 
-    private static void Delete(SqliteConnection write, SqliteTransaction tx, long archiveId)
+    private static void Delete(DbConnection write, DbTransaction tx, long archiveId)
     {
         using var d = write.CreateCommand();
         d.Transaction = tx;
         d.CommandText = """
-            DELETE FROM ArchiveMembers WHERE ArchiveId = $a;
-            DELETE FROM ArchiveExtractions WHERE ArchiveId = $a;
-            DELETE FROM ArchiveListings WHERE EntryId = $a;
+            DELETE FROM ArchiveMembers WHERE ArchiveId = @a;
+            DELETE FROM ArchiveExtractions WHERE ArchiveId = @a;
+            DELETE FROM ArchiveListings WHERE EntryId = @a;
             """;
-        d.Parameters.AddWithValue("$a", archiveId);
+        d.Parameters.AddWithValue("@a", archiveId);
         d.ExecuteNonQuery();
     }
 
-    private static void Store(SqliteConnection write, Candidate[] chunk, Listed[] results)
+    private static void Store(DbConnection write, Candidate[] chunk, Listed[] results)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         using var tx = write.BeginTransaction();
@@ -301,42 +302,42 @@ internal static class ArchiveIndexer
         listing.Transaction = tx;
         listing.CommandText = """
             INSERT INTO ArchiveListings (EntryId, Size, MTime, Format, Streamed, ListedAt, Error, Files, FileBytes)
-            VALUES ($id, $size, $mtime, $format, $streamed, $now, $error, $files, $bytes)
+            VALUES (@id, @size, @mtime, @format, @streamed, @now, @error, @files, @bytes)
             """;
-        foreach (var p in new[] { "$id", "$size", "$mtime", "$format", "$streamed", "$error", "$files", "$bytes" })
+        foreach (var p in new[] { "@id", "@size", "@mtime", "@format", "@streamed", "@error", "@files", "@bytes" })
         {
-            listing.Parameters.Add(new SqliteParameter(p, null));
+            listing.Parameters.AddWithValue(p, null);
         }
 
-        listing.Parameters.AddWithValue("$now", now);
+        listing.Parameters.AddWithValue("@now", now);
         using var member = write.CreateCommand();
         member.Transaction = tx;
-        member.CommandText = "INSERT INTO ArchiveMembers (ArchiveId, Path, Name, Size, Crc) VALUES ($a, $p, $n, $s, $c)";
-        foreach (var p in new[] { "$a", "$p", "$n", "$s", "$c" })
+        member.CommandText = "INSERT INTO ArchiveMembers (ArchiveId, Path, Name, Size, Crc) VALUES (@a, @p, @n, @s, @c)";
+        foreach (var p in new[] { "@a", "@p", "@n", "@s", "@c" })
         {
-            member.Parameters.Add(new SqliteParameter(p, null));
+            member.Parameters.AddWithValue(p, null);
         }
 
         for (var i = 0; i < chunk.Length; i++)
         {
             var (c, r) = (chunk[i], results[i]);
             Delete(write, tx, c.Id);
-            listing.Parameters["$id"].Value = c.Id;
-            listing.Parameters["$size"].Value = c.Size;
-            listing.Parameters["$mtime"].Value = c.MTime;
-            listing.Parameters["$format"].Value = (object?)r.Format ?? DBNull.Value;
-            listing.Parameters["$streamed"].Value = r.Streamed;
-            listing.Parameters["$error"].Value = (object?)r.Error ?? DBNull.Value;
-            listing.Parameters["$files"].Value = r.Members.Count;
-            listing.Parameters["$bytes"].Value = r.Members.Sum(m => m.Size);
+            listing.Parameters["@id"].Value = c.Id;
+            listing.Parameters["@size"].Value = c.Size;
+            listing.Parameters["@mtime"].Value = c.MTime;
+            listing.Parameters["@format"].Value = (object?)r.Format ?? DBNull.Value;
+            listing.Parameters["@streamed"].Value = r.Streamed;
+            listing.Parameters["@error"].Value = (object?)r.Error ?? DBNull.Value;
+            listing.Parameters["@files"].Value = r.Members.Count;
+            listing.Parameters["@bytes"].Value = r.Members.Sum(m => m.Size);
             listing.ExecuteNonQuery();
-            member.Parameters["$a"].Value = c.Id;
+            member.Parameters["@a"].Value = c.Id;
             foreach (var m in r.Members)
             {
-                member.Parameters["$p"].Value = m.Path;
-                member.Parameters["$n"].Value = m.Name;
-                member.Parameters["$s"].Value = m.Size;
-                member.Parameters["$c"].Value = (object?)m.Crc ?? DBNull.Value;
+                member.Parameters["@p"].Value = m.Path.Replace("\0", "", StringComparison.Ordinal); // PostgreSQL text cannot hold NUL
+                member.Parameters["@n"].Value = m.Name.Replace("\0", "", StringComparison.Ordinal);
+                member.Parameters["@s"].Value = m.Size;
+                member.Parameters["@c"].Value = (object?)m.Crc ?? DBNull.Value;
                 member.ExecuteNonQuery();
             }
         }

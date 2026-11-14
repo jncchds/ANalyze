@@ -250,34 +250,34 @@ public static class Annotations
 {
     public sealed record Item(long EntryId, string Kind, string Label, string? Detail = null, string? State = null, string? Url = null);
 
-    public static void Replace(Microsoft.Data.Sqlite.SqliteConnection conn, string source, IEnumerable<Item> items)
+    public static void Replace(System.Data.Common.DbConnection conn, string source, IEnumerable<Item> items)
     {
         using var tx = conn.BeginTransaction();
         using (var del = conn.CreateCommand())
         {
             del.Transaction = tx;
-            del.CommandText = "DELETE FROM Annotations WHERE Source = $s";
-            del.Parameters.AddWithValue("$s", source);
+            del.CommandText = "DELETE FROM Annotations WHERE Source = @s";
+            del.Parameters.AddWithValue("@s", source);
             del.ExecuteNonQuery();
         }
 
         using var ins = conn.CreateCommand();
         ins.Transaction = tx;
-        ins.CommandText = "INSERT INTO Annotations (EntryId, Source, Kind, Label, Detail, State, Url) VALUES ($e, $s, $k, $l, $d, $st, $u)";
-        foreach (var p in new[] { "$e", "$s", "$k", "$l", "$d", "$st", "$u" })
+        ins.CommandText = "INSERT INTO Annotations (EntryId, Source, Kind, Label, Detail, State, Url) VALUES (@e, @s, @k, @l, @d, @st, @u)";
+        foreach (var p in new[] { "@e", "@s", "@k", "@l", "@d", "@st", "@u" })
         {
-            ins.Parameters.Add(new Microsoft.Data.Sqlite.SqliteParameter(p, null));
+            ins.Parameters.AddWithValue(p, null);
         }
 
         foreach (var a in items)
         {
-            ins.Parameters["$e"].Value = a.EntryId;
-            ins.Parameters["$s"].Value = source;
-            ins.Parameters["$k"].Value = a.Kind;
-            ins.Parameters["$l"].Value = a.Label;
-            ins.Parameters["$d"].Value = (object?)a.Detail ?? DBNull.Value;
-            ins.Parameters["$st"].Value = (object?)a.State ?? DBNull.Value;
-            ins.Parameters["$u"].Value = (object?)a.Url ?? DBNull.Value;
+            ins.Parameters["@e"].Value = a.EntryId;
+            ins.Parameters["@s"].Value = source;
+            ins.Parameters["@k"].Value = a.Kind;
+            ins.Parameters["@l"].Value = a.Label;
+            ins.Parameters["@d"].Value = (object?)a.Detail ?? DBNull.Value;
+            ins.Parameters["@st"].Value = (object?)a.State ?? DBNull.Value;
+            ins.Parameters["@u"].Value = (object?)a.Url ?? DBNull.Value;
             ins.ExecuteNonQuery();
         }
 

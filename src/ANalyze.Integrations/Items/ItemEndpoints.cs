@@ -3,7 +3,7 @@ using ANalyze.Infrastructure.Data;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 
 namespace ANalyze.Integrations.Items;
 
@@ -11,31 +11,31 @@ namespace ANalyze.Integrations.Items;
 internal static class ItemEndpoints
 {
     // Size of the scanned file or folder when matched, otherwise what the app reports.
-    private const string SizeExpr = "COALESCE(CASE WHEN e.IsDir = 1 THEN e.TotalSize ELSE e.Size END, i.Size)";
+    private const string SizeExpr = "COALESCE(CASE WHEN e.IsDir = TRUE THEN e.TotalSize ELSE e.Size END, i.Size)";
 
     public static void Map(RouteGroupBuilder g, ItemIntegration plugin)
     {
         var src = plugin.Id;
 
-        g.MapGet("/summary", (SqliteSetup sqlite) =>
+        g.MapGet("/summary", (DbSetup database) =>
         {
-            using var c = sqlite.Open();
+            using var c = database.Open();
             var totals = Db.Query(c, $"""
                 SELECT COUNT(*), COALESCE(SUM({SizeExpr}), 0), SUM(CASE WHEN i.EntryId IS NOT NULL THEN 1 ELSE 0 END),
                        COUNT(DISTINCT COALESCE(i.GroupKey, i.ExternalId))
-                FROM IntegrationItems i LEFT JOIN Entries e ON e.Id = i.EntryId WHERE i.Source = $s
-                """, r => new { items = r.GetInt64(0), size = r.GetInt64(1), matched = r.IsDBNull(2) ? 0 : r.GetInt64(2), groups = r.GetInt64(3) }, ("$s", src)).First();
-            var byKind = Db.Query(c, $"SELECT i.Kind, COUNT(*), COALESCE(SUM({SizeExpr}), 0) FROM IntegrationItems i LEFT JOIN Entries e ON e.Id = i.EntryId WHERE i.Source = $s GROUP BY i.Kind ORDER BY 3 DESC",
-                r => new { kind = r.GetString(0), items = r.GetInt64(1), size = r.GetInt64(2) }, ("$s", src));
-            var byState = Db.Query(c, $"SELECT COALESCE(i.State, ''), COUNT(*), COALESCE(SUM({SizeExpr}), 0) FROM IntegrationItems i LEFT JOIN Entries e ON e.Id = i.EntryId WHERE i.Source = $s GROUP BY 1 ORDER BY 3 DESC",
-                r => new { state = r.GetString(0), items = r.GetInt64(1), size = r.GetInt64(2) }, ("$s", src));
-            var roots = Db.Query(c, "SELECT a.EntryId, a.Label, a.Detail, e.RootId, e.RelPath, e.TotalSize FROM Annotations a JOIN Entries e ON e.Id = a.EntryId WHERE a.Source = $s AND a.Kind = 'root' ORDER BY e.TotalSize DESC",
-                r => new { entryId = r.GetInt64(0), label = r.GetString(1), detail = r.IsDBNull(2) ? null : r.GetString(2), rootId = r.GetInt32(3), relPath = r.GetString(4), size = r.GetInt64(5) }, ("$s", src));
+                FROM IntegrationItems i LEFT JOIN Entries e ON e.Id = i.EntryId WHERE i.Source = @s
+                """, r => new { items = r.GetInt64(0), size = r.GetInt64(1), matched = r.IsDBNull(2) ? 0 : r.GetInt64(2), groups = r.GetInt64(3) }, ("@s", src)).First();
+            var byKind = Db.Query(c, $"SELECT i.Kind, COUNT(*), COALESCE(SUM({SizeExpr}), 0) FROM IntegrationItems i LEFT JOIN Entries e ON e.Id = i.EntryId WHERE i.Source = @s GROUP BY i.Kind ORDER BY 3 DESC",
+                r => new { kind = r.GetString(0), items = r.GetInt64(1), size = r.GetInt64(2) }, ("@s", src));
+            var byState = Db.Query(c, $"SELECT COALESCE(i.State, ''), COUNT(*), COALESCE(SUM({SizeExpr}), 0) FROM IntegrationItems i LEFT JOIN Entries e ON e.Id = i.EntryId WHERE i.Source = @s GROUP BY 1 ORDER BY 3 DESC",
+                r => new { state = r.GetString(0), items = r.GetInt64(1), size = r.GetInt64(2) }, ("@s", src));
+            var roots = Db.Query(c, "SELECT a.EntryId, a.Label, a.Detail, e.RootId, e.RelPath, e.TotalSize FROM Annotations a JOIN Entries e ON e.Id = a.EntryId WHERE a.Source = @s AND a.Kind = 'root' ORDER BY e.TotalSize DESC",
+                r => new { entryId = r.GetInt64(0), label = r.GetString(1), detail = r.IsDBNull(2) ? null : r.GetString(2), rootId = r.GetInt32(3), relPath = r.GetString(4), size = r.GetInt64(5) }, ("@s", src));
             return new { totals, byKind, byState, roots };
         });
 
         // Titles (movies, shows, artists, torrents…) ranked by size.
-        g.MapGet("/groups", async (string? kind, string? state, string? filter, string? q, string? key, string? sort, int? offset, int? limit, SqliteSetup sqlite, IntegrationHost host, CancellationToken ct) =>
+        g.MapGet("/groups", async (string? kind, string? state, string? filter, string? q, string? key, string? sort, int? offset, int? limit, DbSetup database, IntegrationHost host, CancellationToken ct) =>
         {
             var settings = await host.LoadAsync(src, ct);
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -55,22 +55,22 @@ internal static class ItemEndpoints
                 "added" => "added DESC",
                 _ => "size DESC",
             };
-            var where = "i.Source = $s" + (string.IsNullOrEmpty(kind) ? "" : " AND i.Kind = $kind") + (string.IsNullOrEmpty(state) ? "" : " AND i.State = $state")
-                + (string.IsNullOrWhiteSpace(q) ? "" : " AND (i.Title LIKE $q OR i.GroupTitle LIKE $q)")
-                + (string.IsNullOrEmpty(key) ? "" : " AND COALESCE(i.GroupKey, i.ExternalId) = $key");
+            using var c = database.Open();
+            var where = "i.Source = @s" + (string.IsNullOrEmpty(kind) ? "" : " AND i.Kind = @kind") + (string.IsNullOrEmpty(state) ? "" : " AND i.State = @state")
+                + (string.IsNullOrWhiteSpace(q) ? "" : $" AND (i.Title {c.Like()} @q OR i.GroupTitle {c.Like()} @q)")
+                + (string.IsNullOrEmpty(key) ? "" : " AND COALESCE(i.GroupKey, i.ExternalId) = @key");
             var sql = $"""
                 SELECT COALESCE(i.GroupKey, i.ExternalId) AS k, MIN(COALESCE(i.GroupTitle, i.Title)) AS title, MIN(i.Year), COUNT(*) AS files, SUM({SizeExpr}) AS size,
                        SUM(CASE WHEN i.PlayCount > 0 THEN 1 ELSE 0 END), MAX(i.LastUsedAt) AS lastUsed, MIN(i.AddedAt) AS added,
-                       SUM(CASE WHEN i.EntryId IS NULL THEN 1 ELSE 0 END), MIN(CASE WHEN e.IsDir = 1 THEN e.Id ELSE e.ParentId END), MIN(i.Url),
-                       GROUP_CONCAT(DISTINCT i.Detail), GROUP_CONCAT(DISTINCT i.State), MIN(i.Kind)
+                       SUM(CASE WHEN i.EntryId IS NULL THEN 1 ELSE 0 END), MIN(CASE WHEN e.IsDir = TRUE THEN e.Id ELSE e.ParentId END), MIN(i.Url),
+                       {c.GroupConcatDistinct("i.Detail")}, {c.GroupConcatDistinct("i.State")}, MIN(i.Kind)
                 FROM IntegrationItems i LEFT JOIN Entries e ON e.Id = i.EntryId
                 WHERE {where}
                 GROUP BY k {having}
                 """;
-            using var c = sqlite.Open();
-            var args = new (string, object?)[] { ("$s", src), ("$kind", kind), ("$state", state), ("$q", "%" + q + "%"), ("$key", key) };
-            var totals = Db.Query(c, $"SELECT COUNT(*), COALESCE(SUM(size), 0) FROM ({sql})", r => (r.GetInt64(0), r.GetInt64(1)), args).First();
-            var items = Db.Query(c, $"{sql} ORDER BY {order} LIMIT {Math.Clamp(limit ?? 100, 1, 1000)} OFFSET {Math.Max(0, offset ?? 0)}", r => new
+            var args = new (string, object?)[] { ("@s", src), ("@kind", kind), ("@state", state), ("@q", "%" + q + "%"), ("@key", key) };
+            var totals = Db.Query(c, $"SELECT COUNT(*), COALESCE(SUM(size), 0) FROM ({sql}) g", r => (r.GetInt64(0), r.GetInt64(1)), args).First();
+            var items = Db.Query(c, $"SELECT * FROM ({sql}) g ORDER BY {order} LIMIT {Math.Clamp(limit ?? 100, 1, 1000)} OFFSET {Math.Max(0, offset ?? 0)}", r => new
             {
                 key = r.GetString(0),
                 title = r.IsDBNull(1) ? "?" : r.GetString(1),
@@ -92,9 +92,9 @@ internal static class ItemEndpoints
 
         // Where a labelled file or folder belongs on this page (from a label in the browser): the title it is part of, when there is
         // exactly one; a folder holding several titles (a library) opens the list.
-        g.MapGet("/locate", (long entryId, SqliteSetup sqlite) =>
+        g.MapGet("/locate", (long entryId, DbSetup database) =>
         {
-            using var c = sqlite.Open();
+            using var c = database.Open();
             if (Db.EntryScope(c, entryId) is not { } args)
             {
                 return Results.NotFound();
@@ -102,20 +102,20 @@ internal static class ItemEndpoints
 
             var keys = Db.Query(c, $"""
                 SELECT DISTINCT COALESCE(i.GroupKey, i.ExternalId) FROM IntegrationItems i JOIN Entries e ON e.Id = i.EntryId
-                WHERE i.Source = $s AND {Db.InScope("e")} LIMIT 2
-                """, r => r.GetString(0), [.. args, ("$s", src)]);
+                WHERE i.Source = @s AND {Db.InScope("e")} LIMIT 2
+                """, r => r.GetString(0), [.. args, ("@s", src)]);
             return Results.Ok(new { key = keys.Count == 1 ? keys[0] : null });
         });
 
         // Files of one title.
-        g.MapGet("/group", (string key, SqliteSetup sqlite, RootRegistry roots) =>
+        g.MapGet("/group", (string key, DbSetup database, RootRegistry roots) =>
         {
-            using var c = sqlite.Open();
+            using var c = database.Open();
             return Db.Query(c, $"""
                 SELECT i.Id, i.Title, i.SubTitle, i.Kind, i.State, i.Detail, i.PlayCount, i.LastUsedAt, i.AddedAt, i.ExternalPath, {SizeExpr},
                        i.EntryId, e.RelPath, i.Url, i.MatchedBy, i.IsDir, i.CheckedPath, e.RootId
                 FROM IntegrationItems i LEFT JOIN Entries e ON e.Id = i.EntryId
-                WHERE i.Source = $s AND COALESCE(i.GroupKey, i.ExternalId) = $key ORDER BY i.SubTitle, i.Title
+                WHERE i.Source = @s AND COALESCE(i.GroupKey, i.ExternalId) = @key ORDER BY i.SubTitle, i.Title
                 """, r => new
             {
                 id = r.GetInt64(0), title = r.GetString(1), subTitle = r.IsDBNull(2) ? null : r.GetString(2), kind = r.GetString(3),
@@ -126,48 +126,48 @@ internal static class ItemEndpoints
                 matchedBy = r.IsDBNull(14) ? null : r.GetString(14), isDir = r.GetBoolean(15),
                 checkedPath = r.IsDBNull(16) ? null : r.GetString(16),
                 localPath = r.IsDBNull(17) ? null : roots.Get(r.GetInt32(17)) is { } root ? RootRegistry.Combine(root.Path, r.GetString(12)) : null,
-            }, ("$s", src), ("$key", key));
+            }, ("@s", src), ("@key", key));
         });
 
         // Items the app lists but ANalyze cannot find: usually a missing path mapping.
-        g.MapGet("/unmatched", (int? limit, SqliteSetup sqlite) =>
+        g.MapGet("/unmatched", (int? limit, DbSetup database) =>
         {
-            using var c = sqlite.Open();
-            return Db.Query(c, $"SELECT Kind, Title, GroupTitle, ExternalPath, Size, State, CheckedPath FROM IntegrationItems WHERE Source = $s AND EntryId IS NULL ORDER BY Size DESC LIMIT {Math.Clamp(limit ?? 100, 1, 1000)}",
+            using var c = database.Open();
+            return Db.Query(c, $"SELECT Kind, Title, GroupTitle, ExternalPath, Size, State, CheckedPath FROM IntegrationItems WHERE Source = @s AND EntryId IS NULL ORDER BY Size DESC LIMIT {Math.Clamp(limit ?? 100, 1, 1000)}",
                 r => new { kind = r.GetString(0), title = r.GetString(1), group = r.IsDBNull(2) ? null : r.GetString(2), externalPath = r.GetString(3), size = r.GetInt64(4), state = r.IsDBNull(5) ? null : r.GetString(5), checkedPath = r.IsDBNull(6) ? null : r.GetString(6) },
-                ("$s", src));
+                ("@s", src));
         });
 
         // Inside the app's root folders, what the app does not track: files (mode=files) or top-level folders and files (mode=top).
-        g.MapGet("/untracked", (string? mode, int? offset, int? limit, SqliteSetup sqlite) =>
+        g.MapGet("/untracked", (string? mode, int? offset, int? limit, DbSetup database) =>
         {
-            using var c = sqlite.Open();
+            using var c = database.Open();
             var list = Untracked.Find(c, src, mode == "top", plugin.Views.UntrackedKinds);
             var page = list.Skip(Math.Max(0, offset ?? 0)).Take(Math.Clamp(limit ?? 100, 1, 1000));
             return new { total = (long)list.Count, totalSize = list.Sum(x => x.Size), items = page };
         });
 
         // Files outside the app's items with the same content as one of its files (hash), not hard-linked to it.
-        g.MapGet("/copies", (int? offset, int? limit, SqliteSetup sqlite) =>
+        g.MapGet("/copies", (int? offset, int? limit, DbSetup database) =>
         {
-            using var c = sqlite.Open();
+            using var c = database.Open();
             var sql = """
                 WITH f AS (
                     SELECT DISTINCT x.Id, x.FullHash, x.Dev, x.Inode, i.Title, COALESCE(i.GroupTitle, i.Title) AS GroupTitle
                     FROM IntegrationItems i JOIN Entries d ON d.Id = i.EntryId
-                    JOIN Entries x ON x.RootId = d.RootId AND (x.Id = d.Id OR (d.IsDir = 1 AND x.RelPath >= d.RelPath || '/' AND x.RelPath < d.RelPath || '0'))
-                    WHERE i.Source = $s AND x.IsDir = 0 AND x.FullHash IS NOT NULL)
+                    JOIN Entries x ON x.RootId = d.RootId AND (x.Id = d.Id OR (d.IsDir = TRUE AND x.RelPath >= d.RelPath || '/' AND x.RelPath < d.RelPath || '0'))
+                    WHERE i.Source = @s AND x.IsDir = FALSE AND x.FullHash IS NOT NULL)
                 SELECT o.Id, o.RootId, o.RelPath, o.Size AS Size, o.MTime, MIN(f.GroupTitle), MIN(f.Id)
                 FROM f JOIN Entries o ON o.FullHash = f.FullHash
-                WHERE o.IsDir = 0 AND o.Id NOT IN (SELECT Id FROM f) AND NOT (o.Dev = f.Dev AND o.Inode = f.Inode)
+                WHERE o.IsDir = FALSE AND o.Id NOT IN (SELECT Id FROM f) AND NOT (o.Dev = f.Dev AND o.Inode = f.Inode)
                 GROUP BY o.Id
                 """;
-            var totals = Db.Query(c, $"SELECT COUNT(*), COALESCE(SUM(Size), 0) FROM ({sql})", r => (r.GetInt64(0), r.GetInt64(1)), ("$s", src)).First();
+            var totals = Db.Query(c, $"SELECT COUNT(*), COALESCE(SUM(Size), 0) FROM ({sql}) g", r => (r.GetInt64(0), r.GetInt64(1)), ("@s", src)).First();
             var items = Db.Query(c, $"{sql} ORDER BY o.Size DESC LIMIT {Math.Clamp(limit ?? 100, 1, 1000)} OFFSET {Math.Max(0, offset ?? 0)}", r => new
             {
                 id = r.GetInt64(0), rootId = r.GetInt32(1), relPath = r.GetString(2), size = r.GetInt64(3), mtime = r.GetInt64(4),
                 itemTitle = r.IsDBNull(5) ? null : r.GetString(5), itemEntryId = r.GetInt64(6),
-            }, ("$s", src));
+            }, ("@s", src));
             return new { total = totals.Item1, totalSize = totals.Item2, items };
         });
 
@@ -192,17 +192,17 @@ internal static class Untracked
 {
     public sealed record Row(long Id, int RootId, string RelPath, bool IsDir, long Size, long MTime);
 
-    public static List<Row> Find(SqliteConnection c, string source, bool topLevel, IReadOnlyList<Domain.FileKind>? kinds)
+    public static List<Row> Find(DbConnection c, string source, bool topLevel, IReadOnlyList<Domain.FileKind>? kinds)
     {
-        var roots = Db.Query(c, "SELECT e.Id, e.RootId, e.RelPath FROM Annotations a JOIN Entries e ON e.Id = a.EntryId WHERE a.Source = $s AND a.Kind = 'root' AND e.IsDir = 1",
-            r => (Id: r.GetInt64(0), RootId: r.GetInt32(1), Rel: r.GetString(2)), ("$s", source));
+        var roots = Db.Query(c, "SELECT e.Id, e.RootId, e.RelPath FROM Annotations a JOIN Entries e ON e.Id = a.EntryId WHERE a.Source = @s AND a.Kind = 'root' AND e.IsDir = TRUE",
+            r => (Id: r.GetInt64(0), RootId: r.GetInt32(1), Rel: r.GetString(2)), ("@s", source));
         if (roots.Count == 0)
         {
             return [];
         }
 
-        var covered = Db.Query(c, "SELECT e.RootId, e.RelPath, e.IsDir FROM IntegrationItems i JOIN Entries e ON e.Id = i.EntryId WHERE i.Source = $s",
-            r => (RootId: r.GetInt32(0), Rel: r.GetString(1), IsDir: r.GetBoolean(2)), ("$s", source));
+        var covered = Db.Query(c, "SELECT e.RootId, e.RelPath, e.IsDir FROM IntegrationItems i JOIN Entries e ON e.Id = i.EntryId WHERE i.Source = @s",
+            r => (RootId: r.GetInt32(0), Rel: r.GetString(1), IsDir: r.GetBoolean(2)), ("@s", source));
         var coveredFiles = covered.Where(x => !x.IsDir).Select(x => Key(x.RootId, x.Rel)).ToHashSet(StringComparer.Ordinal);
         var coveredDirs = covered.Where(x => x.IsDir).Select(x => Key(x.RootId, x.Rel)).ToHashSet(StringComparer.Ordinal);
         bool IsCovered(int root, string rel)
@@ -239,8 +239,8 @@ internal static class Untracked
 
             foreach (var root in roots)
             {
-                foreach (var r in Db.Query(c, "SELECT Id, RootId, RelPath, IsDir, CASE WHEN IsDir = 1 THEN TotalSize ELSE Size END, MTime FROM Entries WHERE ParentId = $p",
-                    Map, ("$p", root.Id)))
+                foreach (var r in Db.Query(c, "SELECT Id, RootId, RelPath, IsDir, CASE WHEN IsDir = TRUE THEN TotalSize ELSE Size END, MTime FROM Entries WHERE ParentId = @p",
+                    Map, ("@p", root.Id)))
                 {
                     if (!containers.Contains(Key(r.RootId, r.RelPath)) && !IsCovered(r.RootId, r.RelPath) && !IsTrash(r.RelPath))
                     {
@@ -255,8 +255,8 @@ internal static class Untracked
             foreach (var root in roots)
             {
                 var (from, to) = root.Rel.Length == 0 ? ("", "￿") : (root.Rel + "/", root.Rel + "0");
-                foreach (var r in Db.Query(c, $"SELECT Id, RootId, RelPath, IsDir, Size, MTime FROM Entries WHERE RootId = $r AND RelPath >= $f AND RelPath < $t AND IsDir = 0{kindFilter}",
-                    Map, ("$r", root.RootId), ("$f", from), ("$t", to)))
+                foreach (var r in Db.Query(c, $"SELECT Id, RootId, RelPath, IsDir, Size, MTime FROM Entries WHERE RootId = @r AND RelPath >= @f AND RelPath < @t AND IsDir = FALSE{kindFilter}",
+                    Map, ("@r", root.RootId), ("@f", from), ("@t", to)))
                 {
                     if (!IsCovered(r.RootId, r.RelPath) && !IsTrash(r.RelPath))
                     {
@@ -268,7 +268,7 @@ internal static class Untracked
 
         return rows.Values.OrderByDescending(r => r.Size).ToList();
 
-        static Row Map(SqliteDataReader r) => new(r.GetInt64(0), r.GetInt32(1), r.GetString(2), r.GetBoolean(3), r.GetInt64(4), r.GetInt64(5));
+        static Row Map(DbDataReader r) => new(r.GetInt64(0), r.GetInt32(1), r.GetString(2), r.GetBoolean(3), r.GetInt64(4), r.GetInt64(5));
     }
 
     private static string Key(int root, string rel) => root + ":" + rel;
@@ -283,23 +283,23 @@ internal static class Untracked
 public static class Db
 {
     /// <summary>Parameters for <see cref="InScope"/>: the entry and, for a folder, its subtree range. Null when the entry does not exist.</summary>
-    public static (string Name, object? Value)[]? EntryScope(SqliteConnection c, long entryId)
+    public static (string Name, object? Value)[]? EntryScope(DbConnection c, long entryId)
     {
-        var e = Query(c, "SELECT RootId, RelPath, IsDir FROM Entries WHERE Id = $id", r => (Root: r.GetInt32(0), Rel: r.GetString(1), Dir: r.GetBoolean(2)), ("$id", entryId));
+        var e = Query(c, "SELECT RootId, RelPath, IsDir FROM Entries WHERE Id = @id", r => (Root: r.GetInt32(0), Rel: r.GetString(1), Dir: r.GetBoolean(2)), ("@id", entryId));
         if (e.Count == 0)
         {
             return null;
         }
 
         var (root, rel, dir) = e[0];
-        return [("$entry", entryId), ("$edir", dir), ("$eroot", root), ("$eall", rel.Length == 0), ("$efrom", rel + "/"), ("$eto", rel + "0")];
+        return [("@entry", entryId), ("@edir", dir), ("@eroot", root), ("@eall", rel.Length == 0), ("@efrom", rel + "/"), ("@eto", rel + "0")];
     }
 
     /// <summary>SQL condition: the entry alias is the entry from <see cref="EntryScope"/> or lies inside it (index-friendly range).</summary>
     public static string InScope(string e) =>
-        $"({e}.Id = $entry OR ($edir = 1 AND {e}.RootId = $eroot AND ($eall = 1 OR ({e}.RelPath >= $efrom AND {e}.RelPath < $eto))))";
+        $"({e}.Id = @entry OR (@edir = TRUE AND {e}.RootId = @eroot AND (@eall = TRUE OR ({e}.RelPath >= @efrom AND {e}.RelPath < @eto))))";
 
-    public static List<T> Query<T>(SqliteConnection c, string sql, Func<SqliteDataReader, T> map, params (string Name, object? Value)[] args)
+    public static List<T> Query<T>(DbConnection c, string sql, Func<DbDataReader, T> map, params (string Name, object? Value)[] args)
     {
         using var cmd = c.CreateCommand();
         cmd.CommandText = sql;

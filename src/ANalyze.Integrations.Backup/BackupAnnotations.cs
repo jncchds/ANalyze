@@ -1,4 +1,5 @@
-using Microsoft.Data.Sqlite;
+using ANalyze.Infrastructure.Data;
+using System.Data.Common;
 
 namespace ANalyze.Integrations.Backup;
 
@@ -17,7 +18,7 @@ internal static class BackupAnnotations
     public static string CorruptDetail(string parentName, long size, long parentSize) =>
         size == parentSize ? $"{parentName} has other content of the same size" : $"{parentName} has {Format.Bytes(parentSize)}, here {Format.Bytes(size)}";
 
-    public static int Write(SqliteConnection conn, string source, string parentName, IReadOnlyList<BackupTarget> targets)
+    public static int Write(DbConnection conn, string source, string parentName, IReadOnlyList<BackupTarget> targets)
     {
         var notes = new List<Annotations.Item>();
         var files = 0;
@@ -25,7 +26,7 @@ internal static class BackupAnnotations
         {
             q.CommandText = $"""
                 SELECT EntryId, IsDir, State, Children, SyncedChildren, Size, ParentSize FROM BackupFiles
-                WHERE IsDir = 1 OR (IsDir = 0 AND State IN ('{BackupStates.Corrupt}', '{BackupStates.Missing}'))
+                WHERE IsDir = TRUE OR (IsDir = FALSE AND State IN ('{BackupStates.Corrupt}', '{BackupStates.Missing}'))
                 """;
             using var r = q.ExecuteReader();
             while (r.Read())

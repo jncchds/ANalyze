@@ -39,6 +39,24 @@ if (args.Contains("--healthcheck"))
     }
 }
 
+// One-off: copy an ANalyze SQLite database into the configured PostgreSQL database, then exit.
+//   ANalyze.Web --import-sqlite /data/analyze.db [--force]
+string? importSqlite = null;
+var importForce = false;
+var importAt = Array.IndexOf(args, "--import-sqlite");
+if (importAt >= 0)
+{
+    if (importAt + 1 >= args.Length || args[importAt + 1].StartsWith("--", StringComparison.Ordinal))
+    {
+        Console.Error.WriteLine("Usage: --import-sqlite <path to analyze.db> [--force]");
+        return 2;
+    }
+
+    importSqlite = args[importAt + 1];
+    importForce = args.Contains("--force");
+    args = args.Where((a, i) => i != importAt && i != importAt + 1 && a != "--force").ToArray();
+}
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true);
 
@@ -65,7 +83,7 @@ builder.Host.UseSerilog((ctx, sp, lc) => lc
     .WriteTo.Sink(new ActivityLogSink(sp.GetRequiredService<ActivityLog>()))
     .WriteTo.File(Path.Combine(analyze.DataDir, "logs", "analyze-.log"), rollingInterval: RollingInterval.Day, retainedFileCountLimit: 14));
 
-builder.Services.AddAnalyzeInfrastructure(analyze.DatabasePath);
+builder.Services.AddAnalyzeInfrastructure(DbSetup.FromOptions(analyze));
 builder.Services.AddAnalyzeScanner();
 builder.Services.AddAnalyzeActions();
 builder.Services.AddAnalyzeAi();
@@ -112,6 +130,22 @@ builder.Services.AddOpenApi();
 builder.Services.AddHealthChecks();
 
 var app = builder.Build();
+
+if (importSqlite is not null)
+{
+    await using var scope = app.Services.CreateAsyncScope();
+    try
+    {
+        await scope.ServiceProvider.GetRequiredService<DatabaseInitializer>().MigrateAsync();
+        await SqliteImporter.RunAsync(importSqlite, app.Services.GetRequiredService<DbSetup>(), importForce, app.Logger);
+        return 0;
+    }
+    catch (Exception e) when (e is InvalidOperationException or FileNotFoundException or System.Data.Common.DbException)
+    {
+        app.Logger.LogError("Import failed: {Error}", e.Message);
+        return 1;
+    }
+}
 
 await using (var scope = app.Services.CreateAsyncScope())
 {

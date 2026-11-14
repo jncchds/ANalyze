@@ -1,4 +1,5 @@
-using Microsoft.Data.Sqlite;
+using ANalyze.Infrastructure.Data;
+using System.Data.Common;
 using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Scanner;
@@ -10,14 +11,14 @@ namespace ANalyze.Scanner;
 internal static class IgnorePruner
 {
     /// <summary>Returns how many entries (outermost ignored ones; their contents go with them) were removed.</summary>
-    public static int Run(SqliteConnection conn, ScanContext ctx, int rootId, IgnoreMatcher matcher)
+    public static int Run(DbConnection conn, ScanContext ctx, int rootId, IgnoreMatcher matcher)
     {
         var ignored = new List<long>();
         var ignoredPaths = new HashSet<string>(StringComparer.Ordinal);
         using (var q = conn.CreateCommand())
         {
-            q.CommandText = "SELECT Id, RelPath FROM Entries WHERE RootId = $r AND RelPath <> '' ORDER BY RelPath";
-            q.Parameters.AddWithValue("$r", rootId);
+            q.CommandText = "SELECT Id, RelPath FROM Entries WHERE RootId = @r AND RelPath <> '' ORDER BY RelPath";
+            q.Parameters.AddWithValue("@r", rootId);
             using var r = q.ExecuteReader();
             while (r.Read())
             {

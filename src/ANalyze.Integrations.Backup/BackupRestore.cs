@@ -9,7 +9,7 @@ namespace ANalyze.Integrations.Backup;
 /// The parent's copies as a source for "replace with the backup's copy" plans (<see cref="IBackupSource"/>): what the last comparison
 /// knows about each file, and the copy itself streamed from the parent's <c>/backup/content</c>.
 /// </summary>
-internal sealed class BackupRestoreSource(IntegrationHost host, ParentIntegration plugin, BackupCompare compare, RootRegistry roots, SqliteSetup sqlite)
+internal sealed class BackupRestoreSource(IntegrationHost host, ParentIntegration plugin, BackupCompare compare, RootRegistry roots, DbSetup database)
     : IBackupSource
 {
     public async Task<IReadOnlyDictionary<long, BackupCopy>> FindAsync(IReadOnlyCollection<long> entryIds, CancellationToken ct)
@@ -20,14 +20,14 @@ internal sealed class BackupRestoreSource(IntegrationHost host, ParentIntegratio
             return found;
         }
 
-        using var c = sqlite.Open();
+        using var c = database.Open();
         foreach (var chunk in entryIds.Distinct().Chunk(500))
         {
             // Ids are numbers, so they can go into the statement as they are.
             var rows = Db.Query(c, $"""
                 SELECT b.EntryId, b.LocalRootId, b.LocalRelPath, b.ParentSize, b.ParentHash, b.State, b.Verified, e.CorruptAt IS NOT NULL
                 FROM BackupFiles b JOIN Entries e ON e.Id = b.EntryId
-                WHERE b.IsDir = 0 AND b.ParentSize IS NOT NULL AND b.EntryId IN ({string.Join(',', chunk)})
+                WHERE b.IsDir = FALSE AND b.ParentSize IS NOT NULL AND b.EntryId IN ({string.Join(',', chunk)})
                 """, r => (Id: r.GetInt64(0), Root: r.GetInt32(1), Rel: r.GetString(2), Size: r.GetInt64(3), Hash: r.IsDBNull(4) ? null : r.GetString(4),
                     State: r.GetString(5), Verified: r.GetBoolean(6), Flagged: r.GetBoolean(7)));
             foreach (var x in rows)
@@ -47,10 +47,10 @@ internal sealed class BackupRestoreSource(IntegrationHost host, ParentIntegratio
             return [];
         }
 
-        using var c = sqlite.Open();
+        using var c = database.Open();
         return Db.Query(c, $"""
             SELECT b.EntryId FROM BackupFiles b JOIN Entries e ON e.Id = b.EntryId
-            WHERE b.IsDir = 0 AND b.ParentSize IS NOT NULL AND (b.State = '{BackupStates.Corrupt}' OR e.CorruptAt IS NOT NULL)
+            WHERE b.IsDir = FALSE AND b.ParentSize IS NOT NULL AND (b.State = '{BackupStates.Corrupt}' OR e.CorruptAt IS NOT NULL)
             ORDER BY b.EntryId
             """, r => r.GetInt64(0));
     }

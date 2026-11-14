@@ -13,7 +13,7 @@ namespace ANalyze.Integrations.Docker;
 /// ANalyze's paths: "/movies" in the Radarr container is host "/mnt/media/movies", which is "/library/movies" here. Other
 /// integrations use these mappings automatically. Also labels folders that are mounted into other containers.
 /// </summary>
-public sealed class DockerIntegration(DockerState state, SqliteSetup sqlite, RootRegistry roots) : IIntegration
+public sealed class DockerIntegration(DockerState state, DbSetup database, RootRegistry roots) : IIntegration
 {
     public string Id => "docker";
 
@@ -59,7 +59,7 @@ public sealed class DockerIntegration(DockerState state, SqliteSetup sqlite, Roo
         }
 
         // Label local folders that other containers mount.
-        using var conn = sqlite.Open();
+        using var conn = database.Open();
         var matcher = new PathMatcher(conn, roots, []);
         var notes = new Dictionary<(long, string), Annotations.Item>();
         foreach (var c in snap.Containers.Where(c => c.Id != snap.Self?.Id))

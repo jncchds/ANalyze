@@ -160,6 +160,11 @@ export default function Settings() {
             ))}
           </ul>
           <p className="mt-3 text-xs muted">Video thumbnails: {config.data?.ffmpeg ? 'ffmpeg available' : 'ffmpeg not found'}</p>
+          {config.data && (
+            <p className="mt-1 text-xs muted" title="Set with ANalyze__Database__Provider and ANalyze__Database__ConnectionString">
+              Index database: {config.data.database === 'postgres' ? 'PostgreSQL' : 'SQLite'} · <span className="font-mono">{config.data.databaseLocation}</span>
+            </p>
+          )}
         </Section>
 
         <Section title="Scanning">

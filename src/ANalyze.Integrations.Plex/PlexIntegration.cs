@@ -2,7 +2,7 @@ using System.Text.Json.Nodes;
 using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Roots;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 using Microsoft.Extensions.Logging;
 
 namespace ANalyze.Integrations.Plex;
@@ -12,7 +12,7 @@ namespace ANalyze.Integrations.Plex;
 /// and which titles take the most space. Plex often runs in its own container where the same files have other paths,
 /// so matching tries configured mappings, then mappings detected from sample files, then file name + size.
 /// </summary>
-public sealed class PlexIntegration(IHttpClientFactory http, SqliteSetup sqlite, RootRegistry roots, IntegrationPaths paths, ILogger<PlexIntegration> log) : IIntegration
+public sealed class PlexIntegration(IHttpClientFactory http, DbSetup database, RootRegistry roots, IntegrationPaths paths, ILogger<PlexIntegration> log) : IIntegration
 {
     public const string HttpClientName = "plex";
     public const string HttpClientInsecure = "plex-insecure";
@@ -87,7 +87,7 @@ public sealed class PlexIntegration(IHttpClientFactory http, SqliteSetup sqlite,
         }
 
         progress.Report(new IntegrationProgress("matching", 0, files.Count));
-        using var conn = sqlite.Open();
+        using var conn = database.Open();
         var mappings = await paths.ForAsync(this, settings, ct);
         log.LogInformation("Plex: {Files} media files read from {Sections} libraries; path mappings: {Mappings}", files.Count, sections.Count,
             mappings.Count == 0 ? "none (paths are used as they are)" : string.Join(", ", mappings.Select(m => $"{m.From} → {m.To}")));
@@ -104,7 +104,7 @@ public sealed class PlexIntegration(IHttpClientFactory http, SqliteSetup sqlite,
         return new IntegrationSyncResult(true, $"{files.Count} files from {sections.Count} libraries, {stored.Matched} found on disk{extra}", files.Count, stored.Matched);
     }
 
-    private (int Matched, int Annotations) Store(SqliteConnection conn, List<PlexClient.MediaFile> files, IReadOnlyList<PlexClient.Section> sections, PathMatcher matcher,
+    private (int Matched, int Annotations) Store(DbConnection conn, List<PlexClient.MediaFile> files, IReadOnlyList<PlexClient.Section> sections, PathMatcher matcher,
         string baseUrl, string? machineId, IProgress<IntegrationProgress> progress)
     {
         string? Link(string ratingKey) => machineId is null ? null
@@ -148,11 +148,11 @@ public sealed class PlexIntegration(IHttpClientFactory http, SqliteSetup sqlite,
         ins.CommandText = """
             INSERT INTO PlexItems (RatingKey, SectionKey, SectionTitle, Type, Title, ShowTitle, ParentTitle, Season, Episode, Year, ViewCount,
                 LastViewedAt, AddedAt, PlexPath, Size, Resolution, Versions, EntryId, MatchedBy, Url, CheckedPath)
-            VALUES ($rk, $sk, $st, $type, $title, $show, $parent, $season, $ep, $year, $views, $last, $added, $path, $size, $res, $versions, $entry, $by, $url, $checked)
+            VALUES (@rk, @sk, @st, @type, @title, @show, @parent, @season, @ep, @year, @views, @last, @added, @path, @size, @res, @versions, @entry, @by, @url, @checked)
             """;
-        foreach (var p in new[] { "$rk", "$sk", "$st", "$type", "$title", "$show", "$parent", "$season", "$ep", "$year", "$views", "$last", "$added", "$path", "$size", "$res", "$versions", "$entry", "$by", "$url", "$checked" })
+        foreach (var p in new[] { "@rk", "@sk", "@st", "@type", "@title", "@show", "@parent", "@season", "@ep", "@year", "@views", "@last", "@added", "@path", "@size", "@res", "@versions", "@entry", "@by", "@url", "@checked" })
         {
-            ins.Parameters.Add(new SqliteParameter(p, null));
+            ins.Parameters.AddWithValue(p, null);
         }
 
         var i = 0;
@@ -161,28 +161,28 @@ public sealed class PlexIntegration(IHttpClientFactory http, SqliteSetup sqlite,
             var (entryId, by) = matcher.Match(f.File, f.Size);
             var url = Link(f.RatingKey);
             object V(object? v) => v ?? DBNull.Value;
-            ins.Parameters["$rk"].Value = f.RatingKey;
-            ins.Parameters["$sk"].Value = f.SectionKey;
-            ins.Parameters["$st"].Value = f.SectionTitle;
-            ins.Parameters["$type"].Value = f.Type;
-            ins.Parameters["$title"].Value = f.Title;
-            ins.Parameters["$show"].Value = V(f.ShowTitle);
-            ins.Parameters["$parent"].Value = V(f.ParentTitle);
-            ins.Parameters["$season"].Value = V(f.Season);
-            ins.Parameters["$ep"].Value = V(f.Episode);
-            ins.Parameters["$year"].Value = V(f.Year);
-            ins.Parameters["$views"].Value = f.ViewCount;
-            ins.Parameters["$last"].Value = V(f.LastViewedAt);
-            ins.Parameters["$added"].Value = V(f.AddedAt);
-            ins.Parameters["$path"].Value = f.File;
-            ins.Parameters["$size"].Value = f.Size;
-            ins.Parameters["$res"].Value = V(f.Resolution);
-            ins.Parameters["$versions"].Value = f.Versions;
-            ins.Parameters["$entry"].Value = V(entryId);
-            ins.Parameters["$by"].Value = V(by);
-            ins.Parameters["$url"].Value = V(url);
+            ins.Parameters["@rk"].Value = f.RatingKey;
+            ins.Parameters["@sk"].Value = f.SectionKey;
+            ins.Parameters["@st"].Value = f.SectionTitle;
+            ins.Parameters["@type"].Value = f.Type;
+            ins.Parameters["@title"].Value = f.Title;
+            ins.Parameters["@show"].Value = V(f.ShowTitle);
+            ins.Parameters["@parent"].Value = V(f.ParentTitle);
+            ins.Parameters["@season"].Value = V(f.Season);
+            ins.Parameters["@ep"].Value = V(f.Episode);
+            ins.Parameters["@year"].Value = V(f.Year);
+            ins.Parameters["@views"].Value = f.ViewCount;
+            ins.Parameters["@last"].Value = V(f.LastViewedAt);
+            ins.Parameters["@added"].Value = V(f.AddedAt);
+            ins.Parameters["@path"].Value = f.File;
+            ins.Parameters["@size"].Value = f.Size;
+            ins.Parameters["@res"].Value = V(f.Resolution);
+            ins.Parameters["@versions"].Value = f.Versions;
+            ins.Parameters["@entry"].Value = V(entryId);
+            ins.Parameters["@by"].Value = V(by);
+            ins.Parameters["@url"].Value = V(url);
             var local = matcher.LocalPath(f.File);
-            ins.Parameters["$checked"].Value = local;
+            ins.Parameters["@checked"].Value = local;
             ins.ExecuteNonQuery();
             if (entryId is null)
             {
