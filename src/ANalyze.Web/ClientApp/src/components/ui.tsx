@@ -182,18 +182,25 @@ function annotationTone(state?: string) {
 }
 
 /** Integration labels (e.g. Plex) shown next to files and folders; each opens its integration's page at that file or folder. */
-export function AnnotationBadges({ items, compact }: { items?: Annotation[]; compact?: boolean }) {
+export function AnnotationBadges({ items, compact, max }: { items?: Annotation[]; compact?: boolean; max?: number }) {
   if (!items?.length) return null
+  const describe = (a: Annotation) => `${a.source}: ${a.label}${a.detail ? ` · ${a.detail}` : ''}${a.state ? ` · ${a.state}` : ''}`
+  // With `max`, the badges stay on one line (table rows have a fixed height): the first `max` are shown and the rest
+  // collapse into a "+N" pill whose tooltip lists them; max={0} shows only a count.
+  const limited = max != null
+  const shown = limited ? items.slice(0, max) : items
+  const rest = items.slice(shown.length)
   return (
-    <span className="inline-flex flex-wrap items-center gap-1">
-      {items.map((a) => (
+    <span className={clsx('inline-flex items-center gap-1', limited ? 'min-w-0 flex-nowrap overflow-hidden' : 'flex-wrap')}>
+      {shown.map((a) => (
         <Link
           key={a.source + a.kind}
           to={`/integrations/${a.source}?entry=${a.entryId}`}
           onClick={(e) => e.stopPropagation()}
-          title={`${a.source}: ${a.label}${a.detail ? ` · ${a.detail}` : ''}${a.state ? ` · ${a.state}` : ''}`}
+          title={describe(a)}
           className={clsx(
-            'inline-flex max-w-[22rem] items-center gap-1 truncate rounded px-1.5 py-0.5 text-[0.7rem] no-underline hover:underline',
+            'inline-flex items-center gap-1 truncate rounded px-1.5 py-0.5 text-[0.7rem] no-underline hover:underline',
+            limited ? 'min-w-0 max-w-[14rem]' : 'max-w-[22rem]',
             annotationTone(a.state),
           )}
         >
@@ -202,6 +209,11 @@ export function AnnotationBadges({ items, compact }: { items?: Annotation[]; com
           {a.state === 'watched' && <span title="Watched">✓</span>}
         </Link>
       ))}
+      {rest.length > 0 && (
+        <span className="shrink-0 cursor-help rounded bg-accent-faint px-1.5 py-0.5 text-[0.7rem] text-accent" title={rest.map(describe).join('\n')}>
+          {shown.length ? `+${rest.length}` : `🔗 ${rest.length}`}
+        </span>
+      )}
     </span>
   )
 }

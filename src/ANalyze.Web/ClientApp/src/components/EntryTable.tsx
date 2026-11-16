@@ -103,27 +103,41 @@ export function EntryTable({
                   <span />
                 )}
                 <div className="min-w-0">
-                  <div className="flex min-w-0 items-center gap-2 text-sm">
+                  {/* One line, never wrapping (rows have a fixed height): the name keeps at least 6rem and shrinks least,
+                      the extras after it shrink and clip; integration badges collapse into "+N" (a count on phones). */}
+                  <div className="flex min-w-0 flex-nowrap items-center gap-2 overflow-hidden text-sm">
                     <span className="shrink-0">{e.isSymlink ? '🔗' : kindIcon(e.kind, e.isDir)}</span>
-                    <span className={clsx('truncate', e.isDir && 'font-semibold', e.brokenLink && 'text-danger line-through')} title={e.relPath}>
+                    <span
+                      className={clsx('min-w-[min(100%,6rem)] shrink-[0.25] truncate', e.isDir && 'font-semibold', e.brokenLink && 'text-danger line-through')}
+                      title={e.relPath}
+                    >
                       {e.name}
                     </span>
-                    {e.isDir && <span className="shrink-0 text-xs muted">{e.files.toLocaleString()} files</span>}
+                    {e.isDir && <span className="shrink-0 text-xs whitespace-nowrap muted max-sm:hidden">{e.files.toLocaleString()} files</span>}
                     {e.otherFilesystem && (
                       <span
-                        className="pill-amber shrink-0 cursor-help"
+                        className="pill-amber shrink-0 cursor-help whitespace-nowrap"
                         title={'Another filesystem is mounted here (a separate disk, share, dataset or subvolume), so the scan did not go inside and it looks empty. Open it and choose "Enter this filesystem", or turn on "Descend into other filesystems mounted inside a root" in Settings.'}
                       >
-                        not scanned: other filesystem
+                        <span className="max-md:hidden">not scanned: </span>other filesystem
                       </span>
                     )}
                     {e.isDir && e.error && !e.otherFilesystem && (
-                      <span className="pill-amber shrink-0 cursor-help" title="A folder in here could not be read during the last scan; see the activity log.">
+                      <span className="pill-amber shrink-0 cursor-help whitespace-nowrap" title="A folder in here could not be read during the last scan; see the activity log.">
                         unreadable parts
                       </span>
                     )}
                     {e.nLink > 1 && !e.isDir && <span className="pill-muted shrink-0" title="Hard-linked">×{e.nLink}</span>}
-                    <AnnotationBadges items={annotations?.[e.id]} />
+                    {annotations?.[e.id] && (
+                      <>
+                        <span className="flex min-w-0 max-md:hidden">
+                          <AnnotationBadges items={annotations[e.id]} max={2} />
+                        </span>
+                        <span className="flex shrink-0 md:hidden">
+                          <AnnotationBadges items={annotations[e.id]} max={0} />
+                        </span>
+                      </>
+                    )}
                   </div>
                   {showPath && <div className="truncate text-xs muted">{e.relPath}</div>}
                   <ShareBar value={e.size} max={max} color={cat?.color} className="mt-1 max-w-[18rem]" />

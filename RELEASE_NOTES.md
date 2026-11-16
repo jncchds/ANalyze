@@ -1,5 +1,9 @@
 # Release Notes
 
+## v0.1.13 — 2026-11-16
+
+- fix: folder lists no longer overlap rows when a file or folder has many integration labels: they stay on one line, the first two are shown and the rest collapse into a "+N" pill (hover lists them); on phones only a count is shown, the file count is hidden and "not scanned: other filesystem" is shortened, so the name keeps its room
+
 ## v0.1.12 — 2026-11-14
 
 - feat: choose where the index is stored: SQLite (default, as before) or PostgreSQL (`ANalyze__Database__Provider=postgres` and `ANalyze__Database__ConnectionString`; `docker-compose.postgres.yml` adds a PostgreSQL 17 container). Settings → Roots shows which one is in use
