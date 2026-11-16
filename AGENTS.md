@@ -340,7 +340,8 @@ parent does not block them.
 Rules (`BackupSync`, child side):
 - a **file is synchronized** when the parent has a file at the mapped path;
 - a **folder is synchronized** when at least 80% (`BackupStates.FolderThreshold`) of its direct files and sub-folders, by count, are synchronized,
-  or when it is identical to the parent's folder (same entries, every file same size and hash; this is what makes an empty folder synchronized);
+  or when it is identical to the parent's folder (same entries, every file same size and hash; this is what makes an empty folder synchronized); a folder with no file below it that is
+  not synchronized is neutral: it is left out of its parent's `Children`/`SyncedChildren` (identity still compares all entries);
 - inside a synchronized folder (the file's direct parent), a file is **corrupt** when the parent's copy differs in size or — when both hashes are
   known — hash, and **missing** when the parent does not have it; elsewhere a file the parent lacks is **unsynced**.
 

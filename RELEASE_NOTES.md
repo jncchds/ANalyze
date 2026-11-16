@@ -2,6 +2,7 @@
 
 ## v0.1.13 — 2026-11-16
 
+- fix: backup sync: an empty folder that is missing (or different) on the backup no longer lowers its parent folder's synchronized share; one that exists empty on the backup still counts as synchronized
 - fix: folder lists no longer overlap rows when a file or folder has many integration labels: they stay on one line, the first two are shown and the rest collapse into a "+N" pill (hover lists them); on phones only a count is shown, the file count is hidden and "not scanned: other filesystem" is shortened, so the name keeps its room
 
 ## v0.1.12 — 2026-11-14

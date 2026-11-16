@@ -148,7 +148,7 @@ public class BackupSyncTests
             Assert.Equal(("home/photos", "unsynced", 5, 1), states["home/photos"]);
             Assert.Equal("synced", states["home/empty"].Item2);                    // identical (empty on both)
             Assert.Equal("unsynced", states["home/empty2"].Item2);                 // not on the parent
-            Assert.Equal(("home", "unsynced", 5, 3), states["home"]);              // docs, empty, top of 5
+            Assert.Equal(("home", "unsynced", 4, 3), states["home"]);              // docs, empty, top of 4: empty2 (empty, not on the parent) doesn't count
 
             var labels = Db.Query(conn, "SELECT e.RelPath, a.Kind, a.Label FROM Annotations a JOIN Entries e ON e.Id = a.EntryId WHERE a.Source = 'parent'",
                 r => (Path: r.GetString(0), Kind: r.GetString(1), Label: r.GetString(2)));

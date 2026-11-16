@@ -297,7 +297,8 @@ How it decides:
 
 - a **file is synchronized** when the backup has a file at the same path;
 - a **folder is synchronized** when at least 80% of what is directly inside it (files and sub-folders, by count) is
-  synchronized, or when it is identical to the backup's folder (so an empty folder that exists empty on the backup counts too);
+  synchronized, or when it is identical to the backup's folder (so an empty folder that exists empty on the backup counts too); an empty folder that is not synchronized (only empty folders
+  below it, missing or different on the backup) is left out of its parent's share, so it does not make the parent look less synchronized;
 - in a synchronized folder, a file is **corrupted** when the backup's copy has another size or content hash, and
   **missing** when the backup does not have it. Files outside synchronized folders are just *not synchronized*.
 

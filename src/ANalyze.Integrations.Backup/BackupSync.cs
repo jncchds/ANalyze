@@ -43,7 +43,9 @@ public sealed record BackupSyncResult(
 /// <list type="bullet">
 /// <item>a file is synchronized when the parent has a file at the same (mapped) path;</item>
 /// <item>a folder is synchronized when at least 80% of its direct files and sub-folders (by count) are synchronized, or when it is
-/// identical to the parent's folder (same entries, every file the same size and hash — this also covers empty folders);</item>
+/// identical to the parent's folder (same entries, every file the same size and hash — this also covers empty folders); a folder
+/// without any file below it that is not synchronized holds no data to lose, so it does not count for its parent's share (an empty
+/// folder the parent lacks does not make its parent less synchronized), while an identical one counts as synchronized;</item>
 /// <item>inside a synchronized folder, a file whose parent copy differs in size or hash is corrupt, and a file the parent lacks is missing.</item>
 /// </list>
 /// Paths are translated with the mappings (parent path → local path); a parent root whose sample files are mostly not found at the mapped
@@ -92,7 +94,12 @@ public sealed class BackupSync(DbConnection conn, RootRegistry roots, IReadOnlyL
         public long? ParentSize;
         public string? ParentHash;
         public int ParentChildren;
+        /// <summary>Direct entries, all of them (for <see cref="Identical"/>).</summary>
+        public int AllChildren;
+        /// <summary>Direct entries that count for the synchronized share (see the class summary).</summary>
         public int Children;
+        /// <summary>A file somewhere below (or this is a file).</summary>
+        public bool HasFiles;
         public int SyncedChildren;
         public bool AllIdentical = true;
         public bool Identical;
@@ -257,24 +264,31 @@ public sealed class BackupSync(DbConnection conn, RootRegistry roots, IReadOnlyL
         {
             if (n.IsDir)
             {
-                n.Identical = n.OnParent && n.AllIdentical && n.ParentChildren == n.Children;
+                n.Identical = n.OnParent && n.AllIdentical && n.ParentChildren == n.AllChildren;
                 n.Synced = FolderSynced(n.Children, n.SyncedChildren, n.Identical);
                 n.State = n.Synced ? BackupStates.Synced : BackupStates.Unsynced;
             }
             else
             {
                 n.Identical = n.OnParent && !n.Differs;
+                n.HasFiles = true;
             }
 
             if (n.ParentId is { } pid && nodes.TryGetValue(pid, out var parent))
             {
+                parent.AllChildren++;
+                parent.AllIdentical &= n.Identical;
+                parent.HasFiles |= n.HasFiles;
+                if (!n.HasFiles && !n.Synced)
+                {
+                    continue; // empty (only empty folders below) and not on the parent as it is here: neutral
+                }
+
                 parent.Children++;
                 if (n.IsDir ? n.Synced : n.OnParent)
                 {
                     parent.SyncedChildren++;
                 }
-
-                parent.AllIdentical &= n.Identical;
             }
         }
 
