@@ -19,6 +19,9 @@ public static class ArchiveEndpoints
         int Files, int Matched, int Missing, int Smaller, int Differs, long Bytes, long MatchedBytes,
         long? VerifiedAt, int VerifiedOk, int VerifiedBad, int Unverified);
 
+    /// <summary>One archive and every folder it was found extracted to (complete ones first).</summary>
+    public sealed record ArchiveGroupDto(Place Archive, long ArchiveSize, long ArchiveMTime, string? Format, IReadOnlyList<ExtractionDto> Extractions);
+
     public sealed record FileDto(string Path, long Size, string State, string? Target, long? EntryId, long? DiskSize, bool Checkable);
 
     public sealed record VerifyBody(long[]? Ids, string? State, int? RootId);
@@ -37,21 +40,35 @@ public static class ArchiveEndpoints
         api.MapGet("/archives/extractions", (string? state, int? rootId, string? q, string? sort, int? offset, int? limit, DbSetup database, RootRegistry roots) =>
         {
             using var c = database.Open();
+            // Paged by archive: one archive can be found extracted in several folders, and those come together in one group.
             var (where, args) = Where(c, state, rootId, q);
             var order = sort switch
             {
-                "matched" => "x.MatchedBytes DESC",
-                "name" => "a.Name",
-                _ => "a.Size DESC",
+                "matched" => "MAX(x.MatchedBytes) DESC",
+                "name" => "MIN(a.Name)",
+                _ => "MAX(a.Size) DESC",
             };
-            var items = Sql.Query(c, $"{Select} WHERE 1 = 1 {where} ORDER BY {order}, x.Id LIMIT {Math.Clamp(limit ?? 50, 1, 500)} OFFSET {Math.Max(0, offset ?? 0)}",
-                r => Map(r, roots), args);
-            var total = Sql.Scalar<long>(c, $"SELECT COUNT(*) FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId WHERE 1 = 1 {where}", args);
+            var page = Sql.Query(c, $"""
+                SELECT x.ArchiveId FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId WHERE 1 = 1 {where}
+                GROUP BY x.ArchiveId ORDER BY {order}, x.ArchiveId LIMIT {Math.Clamp(limit ?? 50, 1, 500)} OFFSET {Math.Max(0, offset ?? 0)}
+                """, r => r.GetInt64(0), args);
+            var extractions = (page.Count == 0 ? [] : Sql.Query(c, $"{Select} WHERE x.ArchiveId IN ({string.Join(",", page)}) {where} ORDER BY x.State, x.MatchedBytes DESC, x.Id",
+                r => Map(r, roots), args)).ToLookup(x => x.Archive.Id!.Value);
+            var items = page.Where(extractions.Contains).Select(id =>
+            {
+                var xs = extractions[id].ToList();
+                var first = xs[0];
+                return new ArchiveGroupDto(first.Archive, first.ArchiveSize, first.ArchiveMTime, first.Format, xs);
+            }).ToList();
+            var total = Sql.Scalar<long>(c, $"SELECT COUNT(DISTINCT x.ArchiveId) FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId WHERE 1 = 1 {where}", args);
+            // Counted per archive, so an archive extracted twice counts (and its size adds up) once.
             var (scope, scopeArgs) = Where(c, null, rootId, null);
             var counts = Sql.Query(c, $"""
-                SELECT COALESCE(SUM(CASE WHEN x.State = 0 THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN x.State = 0 AND {Verified} THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN x.State = 1 THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN x.VerifiedBad > 0 THEN 1 ELSE 0 END), 0),
-                       COALESCE(SUM(CASE WHEN x.State = 0 THEN a.Size END), 0)
-                FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId WHERE 1 = 1 {scope}
+                SELECT COALESCE(SUM(g.Complete), 0), COALESCE(SUM(g.Verified), 0), COALESCE(SUM(g.Partial), 0), COALESCE(SUM(g.Bad), 0),
+                       COALESCE(SUM(CASE WHEN g.Complete = 1 THEN g.Size END), 0)
+                FROM (SELECT x.ArchiveId, MAX(a.Size) AS Size, MAX(CASE WHEN x.State = 0 THEN 1 ELSE 0 END) AS Complete, MAX(CASE WHEN x.State = 1 THEN 1 ELSE 0 END) AS Partial,
+                             MAX(CASE WHEN x.State = 0 AND {Verified} THEN 1 ELSE 0 END) AS Verified, MAX(CASE WHEN x.VerifiedBad > 0 THEN 1 ELSE 0 END) AS Bad
+                      FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId WHERE 1 = 1 {scope} GROUP BY x.ArchiveId) g
                 """, r => new { complete = r.GetInt64(0), verified = r.GetInt64(1), partial = r.GetInt64(2), bad = r.GetInt64(3), completeArchiveBytes = r.GetInt64(4) },
                 scopeArgs).First();
             var listed = Sql.Query(c, "SELECT COUNT(*), COALESCE(SUM(CASE WHEN Error IS NOT NULL THEN 1 ELSE 0 END), 0) FROM ArchiveListings", r => new { archives = r.GetInt64(0), unreadable = r.GetInt64(1) }).First();

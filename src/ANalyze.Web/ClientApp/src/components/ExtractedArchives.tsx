@@ -37,8 +37,17 @@ interface Extraction {
   unverified: number
 }
 
+interface ArchiveGroup {
+  archive: Place
+  archiveSize: number
+  archiveMTime: number
+  format?: string
+  /** Every folder the archive was found extracted to, complete ones first. */
+  extractions: Extraction[]
+}
+
 interface ListResponse {
-  items: Extraction[]
+  items: ArchiveGroup[]
   total: number
   counts: { complete: number; verified: number; partial: number; bad: number; completeArchiveBytes: number }
   listed: { archives: number; unreadable: number }
@@ -137,7 +146,7 @@ export function ExtractedArchives() {
           Check all unchecked
         </button>
       </div>
-      {verify.data && <p className="mb-3 text-sm muted">{verify.data.queued ? `Checking ${count(verify.data.queued)} extractions — progress is shown in the sidebar.` : 'Nothing to check.'}</p>}
+      {verify.data && <p className="mb-3 text-sm muted">{verify.data.queued ? `Checking ${count(verify.data.queued)} extracted copies — progress is shown in the sidebar.` : 'Nothing to check.'}</p>}
       {verify.error && <ErrorBox error={verify.error} />}
 
       {list.isLoading ? (
@@ -150,8 +159,8 @@ export function ExtractedArchives() {
         </Empty>
       ) : (
         <div className="space-y-3">
-          {d.items.map((x) => (
-            <ExtractionCard key={x.id} x={x} open={open === x.id} onToggle={() => setOpen(open === x.id ? -1 : x.id)} onVerify={() => verify.mutate({ ids: [x.id] })} />
+          {d.items.map((g) => (
+            <ArchiveCard key={g.archive.id} g={g} open={open} onToggle={(id) => setOpen(open === id ? -1 : id)} onVerify={(ids) => verify.mutate({ ids })} />
           ))}
           <div className="flex items-center justify-center gap-3">
             <button className="btn-secondary" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>
@@ -170,40 +179,98 @@ export function ExtractedArchives() {
   )
 }
 
-function ExtractionCard({ x, open, onToggle, onVerify }: { x: Extraction; open: boolean; onToggle: () => void; onVerify: () => void }) {
+/** One archive with every folder it was found extracted to. */
+function ArchiveCard({ g, open, onToggle, onVerify }: { g: ArchiveGroup; open: number | null; onToggle: (id: number) => void; onVerify: (ids: number[]) => void }) {
   const navigate = useNavigate()
   const plan = useMutation({
-    mutationFn: (remove: 'archive' | 'extracted') => api<{ id: number }>('/archives/extractions/plan', { method: 'POST', json: { ids: [x.id], remove, op: 'trash' } }),
+    mutationFn: ({ ids, remove }: { ids: number[]; remove: 'archive' | 'extracted' }) =>
+      api<{ id: number }>('/archives/extractions/plan', { method: 'POST', json: { ids, remove, op: 'trash' } }),
     onSuccess: (p) => leaveOverlay(navigate, `/actions/${p.id}`),
   })
+  const complete = g.extractions.filter((x) => x.state === 'complete')
   const removeArchive = () => {
-    if (!verified(x) && !confirm('The extracted files have not been checked against the archive yet (or some differ). Create the plan anyway?')) return
-    plan.mutate('archive')
+    if (!complete.some(verified) && !confirm('The extracted files have not been checked against the archive yet (or some differ). Create the plan anyway?')) return
+    plan.mutate({ ids: complete.map((x) => x.id), remove: 'archive' })
   }
-  const complete = x.state === 'complete'
+  const many = g.extractions.length > 1
   return (
     <div className="card p-3">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <div className="min-w-0 flex-1 truncate" title={place(g.archive)}>
+          🗜 <span className="muted">{g.archive.root}/</span>
+          {g.archive.relPath}
+          <span className="ml-2 text-xs muted">
+            {bytes(g.archiveSize)} · {g.format}
+          </span>
+        </div>
+        {many && <span className="pill-muted">extracted to {count(g.extractions.length)} folders</span>}
+        {many && (
+          <button
+            className="btn-secondary px-2.5 py-1 text-xs"
+            onClick={() => onVerify(g.extractions.map((x) => x.id))}
+            title="Read the extracted files in every folder and compare them with the CRC32s stored in the archive"
+          >
+            Check all
+          </button>
+        )}
+        {complete.length > 0 && (
+          <button className="btn-secondary px-2.5 py-1 text-xs" disabled={plan.isPending} onClick={removeArchive}>
+            Remove archive…
+          </button>
+        )}
+      </div>
+      <div className="mt-2 divide-y divide-line/60">
+        {g.extractions.map((x) => (
+          <ExtractionRow
+            key={x.id}
+            x={x}
+            many={many}
+            open={open === x.id}
+            busy={plan.isPending}
+            onToggle={() => onToggle(x.id)}
+            onVerify={() => onVerify([x.id])}
+            onRemoveCopy={() => plan.mutate({ ids: [x.id], remove: 'extracted' })}
+          />
+        ))}
+      </div>
+      {plan.error && <ErrorBox error={plan.error} />}
+    </div>
+  )
+}
+
+/** One folder the archive was found extracted to. */
+function ExtractionRow({
+  x,
+  many,
+  open,
+  busy,
+  onToggle,
+  onVerify,
+  onRemoveCopy,
+}: {
+  x: Extraction
+  many: boolean
+  open: boolean
+  busy: boolean
+  onToggle: () => void
+  onVerify: () => void
+  onRemoveCopy: () => void
+}) {
+  const complete = x.state === 'complete'
+  return (
+    <div className="py-2 first:pt-0 last:pb-0">
       <div className="flex flex-wrap items-start gap-3 text-sm">
-        <div className="min-w-0 flex-1 space-y-0.5">
-          <div className="truncate" title={place(x.archive)}>
-            🗜 <span className="muted">{x.archive.root}/</span>
-            {x.archive.relPath}
-            <span className="ml-2 text-xs muted">
-              {bytes(x.archiveSize)} · {x.format}
-            </span>
-          </div>
-          <div className="truncate" title={place(x.folder)}>
-            {'→ '}
-            {x.folder.id ? (
-              <Link to={`/browse/${x.folder.id}`} className="hover:text-accent">
-                📁 <span className="muted">{x.folder.root}/</span>
-                {x.folder.relPath || '/'}
-              </Link>
-            ) : (
-              <span>📁 {place(x.folder)}</span>
-            )}
-            {x.strip && <span className="ml-2 text-xs muted" title="The archive's top folder was not kept when it was extracted">without “{x.strip.replace(/\/$/, '')}”</span>}
-          </div>
+        <div className="min-w-0 flex-1 truncate" title={place(x.folder)}>
+          {'→ '}
+          {x.folder.id ? (
+            <Link to={`/browse/${x.folder.id}`} className="hover:text-accent">
+              📁 <span className="muted">{x.folder.root}/</span>
+              {x.folder.relPath || '/'}
+            </Link>
+          ) : (
+            <span>📁 {place(x.folder)}</span>
+          )}
+          {x.strip && <span className="ml-2 text-xs muted" title="The archive's top folder was not kept when it was extracted">without “{x.strip.replace(/\/$/, '')}”</span>}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {complete ? <span className="pill-amber">complete</span> : <span className="pill-muted">partial · {Math.round((100 * x.matchedBytes) / Math.max(1, x.bytes))}%</span>}
@@ -231,18 +298,12 @@ function ExtractionCard({ x, open, onToggle, onVerify }: { x: Extraction; open: 
           {open ? 'Hide files' : complete ? 'Files' : 'What is missing'}
         </button>
         <button className="btn-secondary px-2.5 py-1 text-xs" onClick={onVerify} title="Read the extracted files and compare them with the CRC32s stored in the archive">
-          Check against archive
+          {many ? 'Check this copy' : 'Check against archive'}
         </button>
-        {complete && (
-          <button className="btn-secondary px-2.5 py-1 text-xs" disabled={plan.isPending} onClick={removeArchive}>
-            Remove archive…
-          </button>
-        )}
-        <button className="btn-secondary px-2.5 py-1 text-xs" disabled={plan.isPending} onClick={() => plan.mutate('extracted')} title="Only the files that came from the archive; other files in the folder stay">
-          Remove extracted copy…
+        <button className="btn-secondary px-2.5 py-1 text-xs" disabled={busy} onClick={onRemoveCopy} title="Only the files that came from the archive; other files in the folder stay">
+          {many ? 'Remove this copy…' : 'Remove extracted copy…'}
         </button>
       </div>
-      {plan.error && <ErrorBox error={plan.error} />}
       {open && <ExtractionFiles id={x.id} complete={complete} />}
     </div>
   )

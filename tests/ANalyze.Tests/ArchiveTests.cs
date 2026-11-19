@@ -49,8 +49,15 @@ public class ArchiveTests
     private static async Task<JsonElement> Extractions(HttpClient http, string query = "") =>
         await http.GetFromJsonAsync<JsonElement>("/api/v1/archives/extractions?limit=100" + query);
 
-    private static JsonElement ByArchive(JsonElement list, string archiveRelPath) =>
+    private static JsonElement Group(JsonElement list, string archiveRelPath) =>
         list.GetProperty("items").EnumerateArray().Single(i => i.GetProperty("archive").GetProperty("relPath").GetString() == archiveRelPath);
+
+    /// <summary>The only extraction of the archive.</summary>
+    private static JsonElement ByArchive(JsonElement list, string archiveRelPath) =>
+        Group(list, archiveRelPath).GetProperty("extractions").EnumerateArray().Single();
+
+    private static IEnumerable<JsonElement> AllExtractions(JsonElement list) =>
+        list.GetProperty("items").EnumerateArray().SelectMany(g => g.GetProperty("extractions").EnumerateArray());
 
     [Fact]
     public void Archive_paths_are_normalized_and_junk_is_dropped()
@@ -124,7 +131,7 @@ public class ArchiveTests
         File.SetLastWriteTimeUtc(damaged, when);
         var ids = new[] { pack.GetProperty("id").GetInt64(), wrapped.GetProperty("id").GetInt64() };
         (await http.PostAsJsonAsync("/api/v1/archives/extractions/verify", new { ids })).EnsureSuccessStatusCode();
-        await WaitAsync(async () => (await Extractions(http, "&state=complete")).GetProperty("items").EnumerateArray().All(i => i.TryGetProperty("verifiedAt", out var v) && v.ValueKind == JsonValueKind.Number));
+        await WaitAsync(async () => AllExtractions(await Extractions(http, "&state=complete")).All(i => i.TryGetProperty("verifiedAt", out var v) && v.ValueKind == JsonValueKind.Number));
 
         list = await Extractions(http);
         pack = ByArchive(list, "Downloads/pack.zip");
@@ -149,6 +156,28 @@ public class ArchiveTests
         // A partial extraction's archive is kept.
         var refused = await http.PostAsJsonAsync("/api/v1/archives/extractions/plan", new { ids = new[] { partial.GetProperty("id").GetInt64() }, remove = "archive", op = "trash" });
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, refused.StatusCode);
+    }
+
+    [Fact]
+    public async Task An_archive_extracted_to_several_folders_is_listed_once()
+    {
+        await using var app = new TestApp();
+        var (a, b) = (Bytes(40_000, 21), Bytes(30_000, 22));
+        Zip(Path.Combine(app.Library, "Downloads", "twice.zip"), ("twice/a.bin", a), ("twice/b.bin", b));
+        Write(Path.Combine(app.Library, "One", "twice", "a.bin"), a);
+        Write(Path.Combine(app.Library, "One", "twice", "b.bin"), b);
+        Write(Path.Combine(app.Library, "Two", "twice", "a.bin"), a);
+        Write(Path.Combine(app.Library, "Two", "twice", "b.bin"), b);
+
+        using var http = app.CreateClient();
+        await app.ScanAsync(http);
+        var list = await Extractions(http);
+
+        Assert.Equal(1, list.GetProperty("total").GetInt64());
+        Assert.Equal(1, list.GetProperty("counts").GetProperty("complete").GetInt64());
+        var folders = Group(list, "Downloads/twice.zip").GetProperty("extractions").EnumerateArray()
+            .Select(x => x.GetProperty("folder").GetProperty("relPath").GetString()).Order().ToList();
+        Assert.Equal(["One/twice", "Two/twice"], folders);
     }
 
     [Fact]

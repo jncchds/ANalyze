@@ -269,8 +269,9 @@ integrations after each scan. Plugins write labels with `Annotations.Replace(con
 Front end: `ClientApp/src/integrations/registry.tsx` maps an id to a lazy page; the settings form is generic (`pages/Integrations.tsx`).
 
 Labels are clickable: a badge links to `/integrations/{source}?entry={entryId}` (never to the external app; those links stay inside the pages).
-Extracted archives (`ArchiveEndpoints`): `GET /archives/extractions?state=complete|unverified|verified|partial|bad&rootId=&q=&sort=` (page +
-counts), `GET /archives/extractions/{id}?problems=` (every archive file as matched/missing/smaller/differs/corrupt, via
+Extracted archives (`ArchiveEndpoints`): `GET /archives/extractions?state=complete|unverified|verified|partial|bad&rootId=&q=&sort=` (paged by archive:
+`items` = `{archive, archiveSize, format, extractions[]}` with the extractions that match the filter, complete first; `total` and
+`counts` count archives), `GET /archives/extractions/{id}?problems=` (every archive file as matched/missing/smaller/differs/corrupt, via
 `ExtractionMatcher.Compare`), `GET /archives/{entryId}/extractions`, `POST /archives/extractions/verify {ids | state, rootId}` (queues the
 check) and `POST /archives/extractions/plan {ids, remove: archive|extracted, op}` (archives only for complete extractions; "extracted" = only
 the matched files, never the rest of the folder). `SearchFilter.Extracted` (any/complete/verified/partial) needs `ArchiveExtractions` passed

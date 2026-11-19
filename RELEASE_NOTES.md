@@ -1,5 +1,9 @@
 # Release Notes
 
+## v0.1.14 — 2026-11-19
+
+- feat: Extracted archives groups by archive: an archive found extracted in several folders is listed once, with each folder under it (its own state, check and "Remove this copy…"), plus "Check all" and one "Remove archive…"; pages, totals and the counters at the top count archives, not archive/folder pairs
+
 ## v0.1.13 — 2026-11-16
 
 - fix: backup sync: an empty folder that is missing (or different) on the backup no longer lowers its parent folder's synchronized share; one that exists empty on the backup still counts as synchronized

@@ -203,7 +203,8 @@ shortest-path, deepest-path, or a copy inside preferred folders, and trashes, de
 
 Scans list the files inside zip, rar and 7z archives (from their headers, a small read) and look on every root for
 folders that hold them — same relative paths and sizes, also when the archive's top folder was not kept, and whatever
-else the folder contains. **Duplicates → Extracted archives** shows:
+else the folder contains. **Duplicates → Extracted archives** lists each archive once, with every folder it was found
+extracted to under it, and shows:
 
 - **complete** extractions (every file there) and **partial** ones, with the files that are missing or *cut short*
   (smaller than in the archive — an interrupted extraction);
