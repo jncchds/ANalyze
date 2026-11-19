@@ -112,6 +112,9 @@ namespace ANalyze.Infrastructure.Data.Migrations
                     b.Property<long?>("TrashPurgedAt")
                         .HasColumnType("INTEGER");
 
+                    b.Property<long?>("UpdatedAt")
+                        .HasColumnType("INTEGER");
+
                     b.Property<bool>("VerifyHashes")
                         .HasColumnType("INTEGER");
 

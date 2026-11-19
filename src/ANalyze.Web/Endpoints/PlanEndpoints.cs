@@ -16,6 +16,11 @@ public static class PlanEndpoints
     /// <summary>Every damaged file; any action (restore by default).</summary>
     public sealed record DamagedPlanBody(string? Name, ActionOp? Op, string? Destination, ConflictPolicy? Conflict, int? TemplateId, int? PlanId);
 
+    /// <summary>A dedupe plan (<see cref="DedupePlanRequest"/>), or its items added to the draft plan <c>PlanId</c>.</summary>
+    public sealed record DedupePlanBody(
+        string? Name, DedupeKeep Keep, ActionOp Op, IReadOnlyList<string>? PreferredFolders, IReadOnlyList<string>? Hashes, int? RootId, string? PathPrefix,
+        long MinSize = 0, int? PlanId = null);
+
     public sealed record ItemsBody(long[]? Ids, bool Included, string? Filter);
 
     /// <summary>Gives items (by id, or the ones a filter shows) another action.</summary>
@@ -42,7 +47,7 @@ public static class PlanEndpoints
                 .ToDictionaryAsync(x => x.PlanId, ct);
             return plans.Select(p => new
             {
-                p.Id, p.Name, p.Source, p.Status, p.Conflict, p.CreatedAt, p.AppliedAt, p.TrashPurgedAt, p.Message,
+                p.Id, p.Name, p.Source, p.Status, p.Conflict, p.CreatedAt, p.UpdatedAt, p.AppliedAt, p.TrashPurgedAt, p.Message,
                 items = stats.GetValueOrDefault(p.Id)?.Items ?? 0,
                 included = stats.GetValueOrDefault(p.Id)?.Included ?? 0,
                 bytes = stats.GetValueOrDefault(p.Id)?.Bytes ?? 0,
@@ -116,8 +121,11 @@ public static class PlanEndpoints
             return await Run(builder, b.PlanId, new ManualPlanRequest(b.Name, op, ids, dest, conflict, PlanSource.Insight), ct);
         });
 
-        api.MapPost("/plans/dedupe", async (DedupePlanRequest req, PlanBuilder builder, CancellationToken ct) =>
-            await Run(() => builder.CreateDedupeAsync(req, ct)));
+        api.MapPost("/plans/dedupe", async (DedupePlanBody b, PlanBuilder builder, CancellationToken ct) =>
+        {
+            var req = new DedupePlanRequest(b.Name, b.Keep, b.Op, b.PreferredFolders, b.Hashes, b.RootId, b.PathPrefix, b.MinSize);
+            return await Run(b.PlanId, () => builder.CreateDedupeAsync(req, ct), id => builder.AddDedupeAsync(id, req, ct));
+        });
 
         // Every file the backup comparison found damaged here, replaced with the backup's copy by default (draft plan for review).
         api.MapPost("/plans/restore-damaged", async (DamagedPlanBody? b, PlanBuilder builder, AnalyzeDbContext db, IEnumerable<ANalyze.Scanner.IBackupSource> backups, CancellationToken ct) =>
@@ -160,6 +168,8 @@ public static class PlanEndpoints
             }
 
             var n = await q.ExecuteUpdateAsync(u => u.SetProperty(i => i.Included, b.Included), ct);
+            var now = DateTimeOffset.UtcNow;
+            await db.ActionPlans.Where(p => p.Id == id).ExecuteUpdateAsync(u => u.SetProperty(p => p.UpdatedAt, now), ct);
             return Results.Ok(new { updated = n });
         });
 
@@ -276,17 +286,21 @@ public static class PlanEndpoints
     }
 
     /// <summary>Creates a plan, or adds to the draft plan <paramref name="planId"/>.</summary>
-    private static async Task<IResult> Run(PlanBuilder builder, int? planId, ManualPlanRequest req, CancellationToken ct)
+    private static Task<IResult> Run(PlanBuilder builder, int? planId, ManualPlanRequest req, CancellationToken ct) =>
+        Run(planId, () => builder.CreateAsync(req, ct), id => builder.AddAsync(id, req, ct));
+
+    /// <summary>Creates a plan, or adds to the draft plan <paramref name="planId"/> (files it has get the new action).</summary>
+    public static async Task<IResult> Run(int? planId, Func<Task<ActionPlan>> create, Func<int, Task<PlanAddResult>> add)
     {
         try
         {
             if (planId is { } pid)
             {
-                var r = await builder.AddAsync(pid, req, ct);
+                var r = await add(pid);
                 return Results.Ok(new { r.Id, r.Name, r.Items, r.Added, r.Replaced });
             }
 
-            var plan = await builder.CreateAsync(req, ct);
+            var plan = await create();
             return Results.Ok(new { plan.Id, plan.Name, items = plan.Items.Count, added = plan.Items.Count, replaced = 0 });
         }
         catch (ArgumentException e)
@@ -300,19 +314,6 @@ public static class PlanEndpoints
         catch (InvalidOperationException e)
         {
             return Results.Problem(e.Message, statusCode: 409);
-        }
-    }
-
-    private static async Task<IResult> Run(Func<Task<ActionPlan>> create)
-    {
-        try
-        {
-            var plan = await create();
-            return Results.Ok(new { plan.Id, plan.Name, items = plan.Items.Count });
-        }
-        catch (ArgumentException e)
-        {
-            return Results.Problem(e.Message, statusCode: 400);
         }
     }
 }

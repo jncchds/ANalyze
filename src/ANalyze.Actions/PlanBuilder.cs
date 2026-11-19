@@ -48,6 +48,7 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
             Status = PlanStatus.Draft,
             Conflict = req.Conflict,
             CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
         };
         plan.Items.AddRange(items);
         await MarkInUseAsync(db, plan.Items, ct);
@@ -65,13 +66,7 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
     {
         Validate(req);
         await using var db = await dbf.CreateDbContextAsync(ct);
-        var plan = await db.ActionPlans.Include(p => p.Items).FirstOrDefaultAsync(p => p.Id == planId, ct)
-            ?? throw new KeyNotFoundException($"Plan {planId} not found.");
-        if (plan.Status != PlanStatus.Draft)
-        {
-            throw new InvalidOperationException("Only draft plans can be changed.");
-        }
-
+        var plan = await LoadDraftAsync(db, planId, ct);
         var selected = req.EntryIds.ToHashSet();
         bool Kept(ActionItem i) => !(i.EntryId is { } e && selected.Contains(e));
         var taken = plan.Items.Where(i => i.Op == ActionOp.Move && i.TargetPath is not null && Kept(i)).Select(i => i.TargetPath!)
@@ -79,6 +74,32 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
             .ToHashSet(StringComparer.Ordinal);
 
         var items = await BuildItemsAsync(db, req, plan.Conflict, taken, ct);
+        return await MergeAsync(db, plan, items, selected, ct);
+    }
+
+    /// <summary>Adds duplicates to remove (or hard-link) to a draft plan, like <see cref="AddAsync"/>: a file the plan has gets the new action.</summary>
+    public async Task<PlanAddResult> AddDedupeAsync(int planId, DedupePlanRequest req, CancellationToken ct)
+    {
+        ValidateDedupe(req);
+        await using var db = await dbf.CreateDbContextAsync(ct);
+        var plan = await LoadDraftAsync(db, planId, ct);
+        var items = await BuildDedupeItemsAsync(db, req, ct);
+        return await MergeAsync(db, plan, items, [], ct);
+    }
+
+    private static async Task<ActionPlan> LoadDraftAsync(AnalyzeDbContext db, int planId, CancellationToken ct)
+    {
+        var plan = await db.ActionPlans.Include(p => p.Items).FirstOrDefaultAsync(p => p.Id == planId, ct)
+            ?? throw new KeyNotFoundException($"Plan {planId} not found.");
+        return plan.Status == PlanStatus.Draft ? plan : throw new InvalidOperationException("Only draft plans can be changed.");
+    }
+
+    /// <summary>
+    /// Puts new items into a draft: items of the same entries (or of <paramref name="selected"/>) and items inside a new folder are
+    /// replaced; a new item inside a folder the plan already covers is left out with a warning.
+    /// </summary>
+    private static async Task<PlanAddResult> MergeAsync(AnalyzeDbContext db, ActionPlan plan, List<ActionItem> items, HashSet<long> selected, CancellationToken ct)
+    {
         var ids = items.Where(i => i.EntryId is not null).Select(i => i.EntryId!.Value).Concat(selected).ToHashSet();
         var dirs = items.Where(i => i.IsDir).Select(i => (i.RootId, i.SourcePath)).ToList();
         var replaced = plan.Items
@@ -102,6 +123,7 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
 
         await MarkInUseAsync(db, items, ct);
         plan.Items.AddRange(items);
+        plan.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
         return new PlanAddResult(plan.Id, plan.Name, plan.Items.Count, items.Count, replaced.Count);
     }
@@ -329,12 +351,35 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
 
     public async Task<ActionPlan> CreateDedupeAsync(DedupePlanRequest req, CancellationToken ct)
     {
+        ValidateDedupe(req);
+        await using var db = await dbf.CreateDbContextAsync(ct);
+        var plan = new ActionPlan
+        {
+            Name = string.IsNullOrWhiteSpace(req.Name) ? $"Dedupe: keep {req.Keep.ToString().ToLowerInvariant()}, {req.Op.ToString().ToLowerInvariant()} others" : req.Name.Trim(),
+            Source = PlanSource.Dedupe,
+            Status = PlanStatus.Draft,
+            Conflict = ConflictPolicy.Skip,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        plan.Items.AddRange(await BuildDedupeItemsAsync(db, req, ct));
+        await MarkInUseAsync(db, plan.Items, ct);
+        db.ActionPlans.Add(plan);
+        await db.SaveChangesAsync(ct);
+        return plan;
+    }
+
+    private static void ValidateDedupe(DedupePlanRequest req)
+    {
         if (req.Op is not (ActionOp.Trash or ActionOp.Delete or ActionOp.Hardlink))
         {
             throw new ArgumentException("Dedupe can trash, delete or hard-link copies.");
         }
+    }
 
-        await using var db = await dbf.CreateDbContextAsync(ct);
+    /// <summary>One item per copy that is not kept, not yet in a plan.</summary>
+    private async Task<List<ActionItem>> BuildDedupeItemsAsync(AnalyzeDbContext db, DedupePlanRequest req, CancellationToken ct)
+    {
         var all = db.Entries.AsNoTracking();
         // Only hashes shared with another file: with "hash all files" on, every file has one.
         var q = all.Where(e => !e.IsDir && !e.IsSymlink && e.FullHash != null && e.Size >= req.MinSize && e.Size > 0
@@ -347,14 +392,7 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
         var rows = await q.Select(e => new { e.Id, e.RootId, e.RelPath, e.MTime, e.Size, e.Inode, e.Dev, e.FullHash })
             .OrderBy(e => e.FullHash).ToListAsync(ct);
 
-        var plan = new ActionPlan
-        {
-            Name = string.IsNullOrWhiteSpace(req.Name) ? $"Dedupe: keep {req.Keep.ToString().ToLowerInvariant()}, {req.Op.ToString().ToLowerInvariant()} others" : req.Name.Trim(),
-            Source = PlanSource.Dedupe,
-            Status = PlanStatus.Draft,
-            Conflict = ConflictPolicy.Skip,
-            CreatedAt = DateTimeOffset.UtcNow,
-        };
+        var items = new List<ActionItem>();
 
         var preferred = req.PreferredFolders ?? [];
         foreach (var group in rows.GroupBy(r => r.FullHash!))
@@ -406,18 +444,15 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
                 }
 
                 MarkReadOnly(item);
-                plan.Items.Add(item);
-                if (plan.Items.Count >= MaxItems)
+                items.Add(item);
+                if (items.Count >= MaxItems)
                 {
                     break;
                 }
             }
         }
 
-        await MarkInUseAsync(db, plan.Items, ct);
-        db.ActionPlans.Add(plan);
-        await db.SaveChangesAsync(ct);
-        return plan;
+        return items;
     }
 
     private void MarkReadOnly(ActionItem item)

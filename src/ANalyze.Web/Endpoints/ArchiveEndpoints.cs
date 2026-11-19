@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using ANalyze.Actions;
 using ANalyze.Domain;
@@ -17,20 +18,27 @@ public static class ArchiveEndpoints
     public sealed record ExtractionDto(
         long Id, ExtractionState State, Place Archive, long ArchiveSize, long ArchiveMTime, string? Format, Place Folder, string BaseRelPath, string Strip,
         int Files, int Matched, int Missing, int Smaller, int Differs, long Bytes, long MatchedBytes,
-        long? VerifiedAt, int VerifiedOk, int VerifiedBad, int Unverified);
+        long? VerifiedAt, int VerifiedOk, int VerifiedBad, int Unverified)
+    {
+        /// <summary>In a group: every extraction into this folder, one per identical copy of the archive (they compare the same files).</summary>
+        public IReadOnlyList<long>? Ids { get; init; }
+    }
 
-    /// <summary>One archive and every folder it was found extracted to (complete ones first).</summary>
-    public sealed record ArchiveGroupDto(Place Archive, long ArchiveSize, long ArchiveMTime, string? Format, IReadOnlyList<ExtractionDto> Extractions);
+    /// <summary>
+    /// One archive — with its identical copies (same content hash) — and every folder it was found extracted to, complete ones first.
+    /// </summary>
+    public sealed record ArchiveGroupDto(Place Archive, long ArchiveSize, long ArchiveMTime, string? Format, IReadOnlyList<Place> Copies, IReadOnlyList<ExtractionDto> Extractions);
 
     public sealed record FileDto(string Path, long Size, string State, string? Target, long? EntryId, long? DiskSize, bool Checkable);
 
     public sealed record VerifyBody(long[]? Ids, string? State, int? RootId);
 
-    public sealed record PlanBody(long[] Ids, string Remove, ActionOp Op);
+    public sealed record PlanBody(long[] Ids, string Remove, ActionOp Op, int? PlanId);
 
     private const string Select = """
         SELECT x.Id, x.State, x.ArchiveId, a.RootId, a.RelPath, a.Size, a.MTime, l.Format, x.RootId, x.FolderId, x.FolderRelPath, x.BaseRelPath, x.Strip,
-               x.Files, x.Matched, x.Missing, x.Smaller, x.Differs, x.Bytes, x.MatchedBytes, x.VerifiedAt, x.VerifiedOk, x.VerifiedBad, x.Unverified
+               x.Files, x.Matched, x.Missing, x.Smaller, x.Differs, x.Bytes, x.MatchedBytes, x.VerifiedAt, x.VerifiedOk, x.VerifiedBad, x.Unverified,
+               a.FullHash
         FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId JOIN ArchiveListings l ON l.EntryId = x.ArchiveId
         """;
 
@@ -40,7 +48,7 @@ public static class ArchiveEndpoints
         api.MapGet("/archives/extractions", (string? state, int? rootId, string? q, string? sort, int? offset, int? limit, DbSetup database, RootRegistry roots) =>
         {
             using var c = database.Open();
-            // Paged by archive: one archive can be found extracted in several folders, and those come together in one group.
+            // Paged by archive content: one archive (or identical copies of it) can be found extracted in several folders; those come in one group.
             var (where, args) = Where(c, state, rootId, q);
             var order = sort switch
             {
@@ -49,26 +57,25 @@ public static class ArchiveEndpoints
                 _ => "MAX(a.Size) DESC",
             };
             var page = Sql.Query(c, $"""
-                SELECT x.ArchiveId FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId WHERE 1 = 1 {where}
-                GROUP BY x.ArchiveId ORDER BY {order}, x.ArchiveId LIMIT {Math.Clamp(limit ?? 50, 1, 500)} OFFSET {Math.Max(0, offset ?? 0)}
-                """, r => r.GetInt64(0), args);
-            var extractions = (page.Count == 0 ? [] : Sql.Query(c, $"{Select} WHERE x.ArchiveId IN ({string.Join(",", page)}) {where} ORDER BY x.State, x.MatchedBytes DESC, x.Id",
-                r => Map(r, roots), args)).ToLookup(x => x.Archive.Id!.Value);
-            var items = page.Where(extractions.Contains).Select(id =>
-            {
-                var xs = extractions[id].ToList();
-                var first = xs[0];
-                return new ArchiveGroupDto(first.Archive, first.ArchiveSize, first.ArchiveMTime, first.Format, xs);
-            }).ToList();
-            var total = Sql.Scalar<long>(c, $"SELECT COUNT(DISTINCT x.ArchiveId) FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId WHERE 1 = 1 {where}", args);
-            // Counted per archive, so an archive extracted twice counts (and its size adds up) once.
+                SELECT {GroupKey} FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId WHERE 1 = 1 {where}
+                GROUP BY {GroupKey} ORDER BY {order}, MIN(x.ArchiveId) LIMIT {Math.Clamp(limit ?? 50, 1, 500)} OFFSET {Math.Max(0, offset ?? 0)}
+                """, r => r.GetString(0), args);
+            var keys = page.Select((k, i) => ($"@k{i}", (object?)k)).ToArray();
+            var rows = page.Count == 0 ? [] : Sql.Query(c,
+                $"{Select} WHERE {GroupKey} IN ({string.Join(",", keys.Select(k => k.Item1))}) {where} ORDER BY x.State, x.MatchedBytes DESC, x.Id",
+                r => (Key: r.NullableString(24) ?? r.GetInt64(2).ToString(CultureInfo.InvariantCulture), X: Map(r, roots)), [.. args, .. keys]);
+            var byKey = rows.ToLookup(r => r.Key, r => r.X);
+            var items = page.Where(byKey.Contains).Select(k => Group([.. byKey[k]])).ToList();
+            var total = Sql.Scalar<long>(c, $"SELECT COUNT(DISTINCT {GroupKey}) FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId WHERE 1 = 1 {where}", args);
+            // Counted per archive content, so an archive extracted twice counts once; the bytes are those of every copy.
             var (scope, scopeArgs) = Where(c, null, rootId, null);
             var counts = Sql.Query(c, $"""
                 SELECT COALESCE(SUM(g.Complete), 0), COALESCE(SUM(g.Verified), 0), COALESCE(SUM(g.Partial), 0), COALESCE(SUM(g.Bad), 0),
-                       COALESCE(SUM(CASE WHEN g.Complete = 1 THEN g.Size END), 0)
-                FROM (SELECT x.ArchiveId, MAX(a.Size) AS Size, MAX(CASE WHEN x.State = 0 THEN 1 ELSE 0 END) AS Complete, MAX(CASE WHEN x.State = 1 THEN 1 ELSE 0 END) AS Partial,
+                       COALESCE(SUM(CASE WHEN g.Complete = 1 THEN g.Size * g.Copies END), 0)
+                FROM (SELECT {GroupKey} AS K, MAX(a.Size) AS Size, COUNT(DISTINCT x.ArchiveId) AS Copies,
+                             MAX(CASE WHEN x.State = 0 THEN 1 ELSE 0 END) AS Complete, MAX(CASE WHEN x.State = 1 THEN 1 ELSE 0 END) AS Partial,
                              MAX(CASE WHEN x.State = 0 AND {Verified} THEN 1 ELSE 0 END) AS Verified, MAX(CASE WHEN x.VerifiedBad > 0 THEN 1 ELSE 0 END) AS Bad
-                      FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId WHERE 1 = 1 {scope} GROUP BY x.ArchiveId) g
+                      FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId WHERE 1 = 1 {scope} GROUP BY {GroupKey}) g
                 """, r => new { complete = r.GetInt64(0), verified = r.GetInt64(1), partial = r.GetInt64(2), bad = r.GetInt64(3), completeArchiveBytes = r.GetInt64(4) },
                 scopeArgs).First();
             var listed = Sql.Query(c, "SELECT COUNT(*), COALESCE(SUM(CASE WHEN Error IS NOT NULL THEN 1 ELSE 0 END), 0) FROM ArchiveListings", r => new { archives = r.GetInt64(0), unreadable = r.GetInt64(1) }).First();
@@ -169,17 +176,32 @@ public static class ArchiveEndpoints
                 return Results.Problem("Nothing to remove.", statusCode: 400);
             }
 
-            try
-            {
-                var name = archives ? "Remove extracted archives" : "Remove extracted copies of archives";
-                var plan = await builder.CreateAsync(new ManualPlanRequest(name, body.Op, entryIds.Distinct().ToList(), null), ct);
-                return Results.Ok(new { plan.Id, plan.Name, items = plan.Items.Count });
-            }
-            catch (ArgumentException e)
-            {
-                return Results.Problem(e.Message, statusCode: 400);
-            }
+            var name = archives ? "Remove extracted archives" : "Remove extracted copies of archives";
+            var req = new ManualPlanRequest(name, body.Op, entryIds.Distinct().ToList(), null);
+            return await PlanEndpoints.Run(body.PlanId, () => builder.CreateAsync(req, ct), id => builder.AddAsync(id, req, ct));
         });
+    }
+
+    /// <summary>Identical archives (same content hash) are one group; an archive not hashed yet is its own.</summary>
+    private const string GroupKey = "COALESCE(a.FullHash, CAST(x.ArchiveId AS TEXT))";
+
+    /// <summary>
+    /// The extractions of one archive content: one row per folder (the copies of the archive match the same files there), the
+    /// most complete and most recently checked one standing for the others.
+    /// </summary>
+    private static ArchiveGroupDto Group(List<ExtractionDto> xs)
+    {
+        var copies = xs.Select(x => x.Archive).DistinctBy(p => p.Id).OrderBy(p => p.RootId).ThenBy(p => p.RelPath, StringComparer.Ordinal).ToList();
+        var folders = xs.GroupBy(x => (x.Folder.RootId, x.BaseRelPath, x.Strip))
+            .Select(g =>
+            {
+                var best = g.OrderBy(x => x.State).ThenByDescending(x => x.VerifiedAt ?? -1).ThenBy(x => x.Id).First();
+                return best with { Ids = [.. g.Select(x => x.Id)] };
+            })
+            .OrderBy(x => x.State).ThenByDescending(x => x.MatchedBytes).ThenBy(x => x.Id)
+            .ToList();
+        var first = xs.First(x => x.Archive.Id == copies[0].Id);
+        return new ArchiveGroupDto(copies[0], first.ArchiveSize, first.ArchiveMTime, first.Format, copies, folders);
     }
 
     private const string Verified = "x.VerifiedAt IS NOT NULL AND x.VerifiedBad = 0 AND x.Unverified = 0";

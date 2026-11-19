@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useConfig, useHostPaths, useRoots } from '../api/hooks'
-import type { HostPath } from '../api/types'
+import type { HostPath, PlanTarget } from '../api/types'
 import { PathText } from '../components/PathText'
 import { ErrorBox, Field, Loading, PageTitle, SavedLater, Section, Toggle } from '../components/ui'
 import { desktop } from '../lib/desktop'
@@ -42,6 +42,7 @@ interface AppSettings {
   verifyAfterDays: number
   verifyMaxGb: number
   trashRetentionDays: number
+  planTarget: PlanTarget
   verifyHashBeforeDelete: boolean
   historyDepth: number
   pinnedFolders: number[]
@@ -246,6 +247,15 @@ export default function Settings() {
               </Field>
             </div>
             <Toggle checked={s.verifyHashBeforeDelete} onChange={(v) => set({ verifyHashBeforeDelete: v })} label="Re-hash both copies before removing a duplicate" />
+            <Field
+              label="Plan buttons add to"
+              hint="For every button and dialog that plans an action (clean up, dedupe, extracted archives…). Files a plan already has get the new action; another plan can still be picked in the dialogs."
+            >
+              <select className="input w-auto" value={s.planTarget} onChange={(e) => set({ planTarget: e.target.value as PlanTarget })}>
+                <option value="newPlan">A new draft plan</option>
+                <option value="lastDraft">The draft plan changed last (a new one when there is none)</option>
+              </select>
+            </Field>
             <Field label="Empty trash after (days, 0 = never)">
               <input className="input w-24" type="number" min={0} value={s.trashRetentionDays} onChange={(e) => set({ trashRetentionDays: Number(e.target.value) })} />
             </Field>

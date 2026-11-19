@@ -181,6 +181,43 @@ public class ArchiveTests
     }
 
     [Fact]
+    public async Task Identical_copies_of_an_archive_are_one_group_and_removing_it_removes_every_copy()
+    {
+        await using var app = new TestApp();
+        var (a, b) = (Bytes(40_000, 23), Bytes(30_000, 24));
+        Zip(Path.Combine(app.Library, "Downloads", "same.zip"), ("same/a.bin", a), ("same/b.bin", b));
+        Directory.CreateDirectory(Path.Combine(app.Library, "Mirror"));
+        File.Copy(Path.Combine(app.Library, "Downloads", "same.zip"), Path.Combine(app.Library, "Mirror", "same.zip"));
+        foreach (var dir in new[] { "One", "Two" })
+        {
+            Write(Path.Combine(app.Library, dir, "same", "a.bin"), a);
+            Write(Path.Combine(app.Library, dir, "same", "b.bin"), b);
+        }
+
+        using var http = app.CreateClient();
+        await app.ScanAsync(http);
+        var list = await Extractions(http);
+
+        Assert.Equal(1, list.GetProperty("total").GetInt64());
+        var group = list.GetProperty("items")[0];
+        Assert.Equal(["Downloads/same.zip", "Mirror/same.zip"], group.GetProperty("copies").EnumerateArray().Select(p => p.GetProperty("relPath").GetString()).ToList());
+        var rows = group.GetProperty("extractions").EnumerateArray().ToList();
+        Assert.Equal(2, rows.Count); // one row per folder, not per archive copy
+        Assert.All(rows, r => Assert.Equal(2, r.GetProperty("ids").GetArrayLength()));
+
+        var ids = rows.SelectMany(r => r.GetProperty("ids").EnumerateArray().Select(i => i.GetInt64())).ToArray();
+        var res = await http.PostAsJsonAsync("/api/v1/archives/extractions/plan", new { ids, remove = "archive", op = "trash" });
+        Assert.True(res.IsSuccessStatusCode, await res.Content.ReadAsStringAsync());
+        var plan = await res.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(2, plan.GetProperty("items").GetInt32());
+
+        // Then the extracted copy in One goes into the same plan.
+        res = await http.PostAsJsonAsync("/api/v1/archives/extractions/plan", new { ids = new[] { ids[0] }, remove = "extracted", op = "trash", planId = plan.GetProperty("id").GetInt32() });
+        Assert.True(res.IsSuccessStatusCode, await res.Content.ReadAsStringAsync());
+        Assert.Equal(4, (await res.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("items").GetInt32());
+    }
+
+    [Fact]
     public async Task Tar_archives_are_listed_only_when_enabled()
     {
         await using var app = new TestApp();

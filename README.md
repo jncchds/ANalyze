@@ -181,7 +181,9 @@ To go back to SQLite, remove the two `ANalyze__Database__…` variables (the old
 ## How actions stay safe
 
 1. Selecting files and choosing **Clean up…** creates a **draft plan** — nothing changes yet. The dialog can also add the
-   selection to an existing draft plan (the last one used is preselected); a file the plan already has gets the new action.
+   selection to an existing draft plan; a file the plan already has gets the new action. **Settings → Duplicates & safety →
+   Plan buttons add to** picks the default for every plan button and dialog (Clean up…, dedupe, extracted archives): a new
+   draft plan, or the draft plan changed last.
    From the file panel the panel stays open, so you can go through files one by one (‹ › or ← →) and plan each; the panel
    says which draft plan has the file.
 2. The review page lists every item with its target; untick anything to keep, change an item's action (or the action of
@@ -203,8 +205,8 @@ shortest-path, deepest-path, or a copy inside preferred folders, and trashes, de
 
 Scans list the files inside zip, rar and 7z archives (from their headers, a small read) and look on every root for
 folders that hold them — same relative paths and sizes, also when the archive's top folder was not kept, and whatever
-else the folder contains. **Duplicates → Extracted archives** lists each archive once, with every folder it was found
-extracted to under it, and shows:
+else the folder contains. **Duplicates → Extracted archives** lists each archive once — identical copies of it together —
+with every folder it was found extracted to under it, and shows:
 
 - **complete** extractions (every file there) and **partial** ones, with the files that are missing or *cut short*
   (smaller than in the archive — an interrupted extraction);

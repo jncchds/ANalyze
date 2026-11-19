@@ -44,7 +44,7 @@ SQLite (WAL) in /data/analyze.db   — or —   PostgreSQL (ANalyze__Database__P
     Never use `LIKE 'p/%'` for this — it cannot use the index.
 - **DirSizeHistory** — `(ScanId, EntryId)` sizes of directories up to `HistoryDepth` after each full scan → growth view and pinned deltas.
 - **Categories**, **Rules** (`Condition` and `Tags` stored as JSON), **ActionTemplates**.
-- **ActionPlans** / **ActionItems** — every change to disk. Items remember what they expect (size, mtime, hash) and where things went (`UndoPath`).
+- **ActionPlans** / **ActionItems** — every change to disk. `ActionPlans.UpdatedAt`: when items were last added, changed, included or left out. Items remember what they expect (size, mtime, hash) and where things went (`UndoPath`).
 - **AiResults** (cache by content hash or path+size+mtime; unapplied rows = review queue), **AiRuleSuggestions**.
 - **Annotations** — integration labels per entry (`Source`, `Kind`, `Label`, `State`, `Url`). Integrations replace their own rows on each sync.
 - **PlexItems** — Plex media parts with the matched `EntryId` and `CheckedPath` (the Plex path after the path mappings: where ANalyze looked).
@@ -241,13 +241,17 @@ kept copy), then:
   there (its folder is rescanned, nothing goes to the trash, so such items don't count for trash bins), undo moves it back and drops it
   from the index.
 
-Draft plans grow and change through `PlanBuilder.AddAsync` (`planId` on `POST /plans`, `/plans/from-filter`, `/plans/restore-damaged`):
+Draft plans grow and change through `PlanBuilder.AddAsync` / `AddDedupeAsync` (both via `MergeAsync`; `planId` on `POST /plans`,
+`/plans/from-filter`, `/plans/restore-damaged`, `/plans/dedupe` and `/archives/extractions/plan`):
 items are built like a new plan's (move targets with the plan's conflict policy, clashing with the plan's other targets), an entry the
 plan has already gets the new item instead, a new folder replaces the items inside it, a new item inside a folder of the plan is
 excluded with a warning. `POST /plans/{id}/items/change {ids | filter, q, op, destination}` re-plans items from their entries the same
 way. `GET /plans/{id}` adds `parents` (entry id → folder id) for Browse links; `GET /entries/{id}` adds `planned` (draft plans with
-the entry). UI: `PlanDialog` (plan picker, the last target remembered per tab in sessionStorage; `stay` keeps the file panel open;
-`ActionFields` + `useKeepLocal`, the keep template remembered in localStorage) and `PlanPage` (`ChangeAction`).
+the entry). Where plans go by default is the setting `PlanTarget` (`newPlan` | `lastDraft` = the draft with the latest
+`UpdatedAt ?? CreatedAt`), exposed as `planTarget` in `GET /config`; the client resolves it (`usePlanTarget`) and sends `planId`. UI:
+`PlanDialog` (plan picker `usePlanChoice`, also in the dedupe wizard; `stay` keeps the file panel open; `ActionFields` + `useKeepLocal`,
+the keep template remembered in localStorage), the Extracted archives buttons (no dialog: straight to the default target) and
+`PlanPage` (`ChangeAction`).
 
 The index is updated directly (`EntryMaintenance.DeleteEntry`, `UpdateIdentity`) and folders that received files are rescanned as subtrees.
 Undo moves items back (trash, move, restore), prunes folders left empty, and drops the moved copies from the index.
@@ -269,9 +273,9 @@ integrations after each scan. Plugins write labels with `Annotations.Replace(con
 Front end: `ClientApp/src/integrations/registry.tsx` maps an id to a lazy page; the settings form is generic (`pages/Integrations.tsx`).
 
 Labels are clickable: a badge links to `/integrations/{source}?entry={entryId}` (never to the external app; those links stay inside the pages).
-Extracted archives (`ArchiveEndpoints`): `GET /archives/extractions?state=complete|unverified|verified|partial|bad&rootId=&q=&sort=` (paged by archive:
-`items` = `{archive, archiveSize, format, extractions[]}` with the extractions that match the filter, complete first; `total` and
-`counts` count archives), `GET /archives/extractions/{id}?problems=` (every archive file as matched/missing/smaller/differs/corrupt, via
+Extracted archives (`ArchiveEndpoints`): `GET /archives/extractions?state=complete|unverified|verified|partial|bad&rootId=&q=&sort=` (paged by archive
+content — identical copies, same `FullHash`, are one group: `items` = `{archive, archiveSize, format, copies[], extractions[]}`, one
+extraction per folder with `ids` = the extractions of every copy into it, filtered, complete first; `total` and `counts` count groups), `GET /archives/extractions/{id}?problems=` (every archive file as matched/missing/smaller/differs/corrupt, via
 `ExtractionMatcher.Compare`), `GET /archives/{entryId}/extractions`, `POST /archives/extractions/verify {ids | state, rootId}` (queues the
 check) and `POST /archives/extractions/plan {ids, remove: archive|extracted, op}` (archives only for complete extractions; "extracted" = only
 the matched files, never the rest of the folder). `SearchFilter.Extracted` (any/complete/verified/partial) needs `ArchiveExtractions` passed

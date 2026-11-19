@@ -98,6 +98,8 @@ export interface Root {
   diskFree?: number
 }
 
+export type PlanTarget = 'newPlan' | 'lastDraft'
+
 export interface Config {
   version?: string
   /** Where the index is stored (ANalyze__Database__Provider). */
@@ -110,6 +112,8 @@ export interface Config {
   ffmpeg: boolean
   ai: boolean
   pathTokens: string[]
+  /** Where plan buttons and dialogs put what they plan by default (Settings → Duplicates & safety). */
+  planTarget: PlanTarget
 }
 
 export interface ReleaseItem {
@@ -194,6 +198,8 @@ export interface PlanRow {
   status: PlanStatus
   conflict: ConflictPolicy
   createdAt: string
+  /** When items were last added, changed, included or left out. */
+  updatedAt?: string
   appliedAt?: string
   trashPurgedAt?: string
   message?: string

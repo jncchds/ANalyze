@@ -158,6 +158,10 @@ namespace ANalyze.Infrastructure.Data.PostgresMigrations
                         .HasColumnType("bigint")
                         .HasColumnName("trashpurgedat");
 
+                    b.Property<long?>("UpdatedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("updatedat");
+
                     b.Property<bool>("VerifyHashes")
                         .HasColumnType("boolean")
                         .HasColumnName("verifyhashes");

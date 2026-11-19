@@ -77,6 +77,32 @@ public class ScanAndActionTests
     }
 
     [Fact]
+    public async Task Dedupe_adds_to_a_draft_plan_and_replaces_the_action_of_files_it_has()
+    {
+        await using var app = new TestApp();
+        using var http = app.CreateClient();
+        await app.ScanAsync(http);
+        var copy = (await http.GetFromJsonAsync<JsonElement>("/api/v1/search?q=Backup/Photos/IMG_0001")).GetProperty("items")[0].GetProperty("id").GetInt64();
+        var heat = (await http.GetFromJsonAsync<JsonElement>("/api/v1/search?q=Heat.mkv")).GetProperty("items")[0].GetProperty("id").GetInt64();
+        var res = await http.PostAsJsonAsync("/api/v1/plans", new { entryIds = new[] { copy, heat }, op = "move", destination = "Old" }, TestApp.Json);
+        var id = (await res.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+
+        res = await http.PostAsJsonAsync("/api/v1/plans/dedupe", new { keep = "preferredFolder", op = "trash", preferredFolders = new[] { "Photos" }, planId = id }, TestApp.Json);
+        Assert.True(res.IsSuccessStatusCode, await res.Content.ReadAsStringAsync());
+        var added = await res.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(id, added.GetProperty("id").GetInt32());
+        Assert.Equal(1, added.GetProperty("replaced").GetInt32());
+
+        // The copy that was to be moved is trashed now; Heat.mkv keeps its move; nothing appears twice.
+        var plan = await http.GetFromJsonAsync<JsonElement>($"/api/v1/plans/{id}");
+        var items = plan.GetProperty("page").GetProperty("items").EnumerateArray().ToList();
+        Assert.Equal(3, items.Count);
+        Assert.Equal("trash", items.Single(i => i.GetProperty("entryId").GetInt64() == copy).GetProperty("op").GetString());
+        Assert.Equal("move", items.Single(i => i.GetProperty("entryId").GetInt64() == heat).GetProperty("op").GetString());
+        Assert.NotNull(plan.GetProperty("plan").GetProperty("updatedAt").GetString());
+    }
+
+    [Fact]
     public async Task Move_with_template_updates_the_index()
     {
         await using var app = new TestApp();

@@ -8,20 +8,19 @@ import { bytes } from '../lib/format'
 import { leaveOverlay } from '../hooks/useUrlState'
 import { ErrorBox, Field, Modal } from './ui'
 
-const TARGET_KEY = 'analyze.plan.target'
 const KEEP_KEY = 'analyze.restore.keep'
 export const DEFAULT_KEEP = '{relDir}/~{name}'
 
 const read = (k: string) => {
   try {
-    return sessionStorage.getItem(k) ?? localStorage.getItem(k)
+    return localStorage.getItem(k)
   } catch {
     return null
   }
 }
-const write = (k: string, v: string | null, session = false) => {
+const write = (k: string, v: string | null) => {
   try {
-    const s = session ? sessionStorage : localStorage
+    const s = localStorage
     if (v === null) s.removeItem(k)
     else s.setItem(k, v)
   } catch {
@@ -118,6 +117,51 @@ export function ActionFields({ ops, op, setOp, destination, setDestination, keep
   )
 }
 
+/**
+ * The draft plans and the one plans go to unless another is picked: with Settings → "Plan buttons add to" set to the last
+ * changed draft, the draft whose items changed last; otherwise none (a new plan).
+ */
+export function usePlanTarget(enabled = true) {
+  const config = useConfig()
+  const plans = useQuery({ queryKey: ['plans'], queryFn: () => api<PlanRow[]>('/plans'), enabled })
+  const drafts = plans.data?.filter((p) => p.status === 'draft') ?? []
+  const changed = (p: PlanRow) => Date.parse(p.updatedAt ?? p.createdAt)
+  const fallback = config.data?.planTarget === 'lastDraft' ? drafts.reduce<PlanRow | undefined>((a, p) => (!a || changed(p) > changed(a) ? p : a), undefined) : undefined
+  return { drafts, fallback, loading: plans.isLoading || config.isLoading }
+}
+
+/** After planning: lists, counters and the entry panel show the new items. */
+export function usePlanAdded() {
+  const qc = useQueryClient()
+  return (p: { id: number }) => {
+    qc.invalidateQueries({ queryKey: ['summary'] })
+    qc.invalidateQueries({ queryKey: ['plans'] })
+    qc.invalidateQueries({ queryKey: ['plan', String(p.id)] })
+    qc.invalidateQueries({ queryKey: ['entry'] })
+  }
+}
+
+/** "New draft plan" or "Add to …" (the default from {@link usePlanTarget} preselected). Returns the chosen draft, if any. */
+export function usePlanChoice(enabled = true) {
+  const { drafts, fallback } = usePlanTarget(enabled)
+  const [chosen, setChosen] = useState<number | 'new' | null>(null)
+  const target = chosen ?? fallback?.id ?? 'new'
+  const existing = target === 'new' ? undefined : drafts.find((p) => p.id === target)
+  const field = (
+    <Field label="Plan" hint={existing ? 'Files the plan already has get this action instead.' : undefined}>
+      <select className="input" value={existing?.id ?? 'new'} onChange={(e) => setChosen(e.target.value === 'new' ? 'new' : Number(e.target.value))}>
+        <option value="new">New draft plan</option>
+        {drafts.map((p) => (
+          <option key={p.id} value={p.id}>
+            Add to “{p.name}” ({p.items.toLocaleString()} items)
+          </option>
+        ))}
+      </select>
+    </Field>
+  )
+  return { existing, field }
+}
+
 /** Request fields for an action chosen with {@link ActionFields}. */
 export function actionBody(op: ActionOp, destination: string, keep: string | null) {
   return { op, destination: op === 'move' ? destination : op === 'restore' ? (keep ?? undefined) : undefined }
@@ -125,7 +169,7 @@ export function actionBody(op: ActionOp, destination: string, keep: string | nul
 
 /**
  * Plans an action for a selection (entry ids), a filter or every damaged file: in a new draft plan, or added to an existing draft
- * (the last one used is preselected, so files can be added one by one). Nothing changes on disk here. Without `stay` the plan opens
+ * (preselected per Settings: a new plan, or the draft changed last — so files can be added one by one). Nothing changes on disk here. Without `stay` the plan opens
  * for review; with it the dialog just closes and `onDone` is told (e.g. the file panel, to go on with the next file).
  */
 export function PlanDialog({ open, onClose, entryIds, filter, damaged, count, size, defaultOp = 'trash', title, stay, onDone }: {
@@ -144,13 +188,9 @@ export function PlanDialog({ open, onClose, entryIds, filter, damaged, count, si
 }) {
   const templates = useTemplates()
   const navigate = useNavigate()
-  const qc = useQueryClient()
+  const added = usePlanAdded()
   const ops = usePlanOps(defaultOp)
-  const plans = useQuery({ queryKey: ['plans'], queryFn: () => api<PlanRow[]>('/plans'), enabled: open })
-  const drafts = plans.data?.filter((p) => p.status === 'draft') ?? []
-  const [chosen, setChosen] = useState<number | 'new' | null>(null)
-  const remembered = Number(read(TARGET_KEY))
-  const target = chosen ?? (drafts.some((p) => p.id === remembered) ? remembered : 'new')
+  const { existing, field } = usePlanChoice(open)
   const [templateId, setTemplateId] = useState<number | ''>('')
   const [op, setOp] = useState<ActionOp>(defaultOp)
   const [destination, setDestination] = useState('Archive/{relDir}/{name}')
@@ -160,7 +200,6 @@ export function PlanDialog({ open, onClose, entryIds, filter, damaged, count, si
 
   const tpl = templates.data?.find((t) => t.id === templateId)
   const effectiveOp = tpl?.op ?? op
-  const existing = target === 'new' ? undefined : drafts.find((p) => p.id === target)
 
   const create = useMutation({
     mutationFn: () => {
@@ -177,12 +216,7 @@ export function PlanDialog({ open, onClose, entryIds, filter, damaged, count, si
         : api<PlanAdded>('/plans/from-filter', { method: 'POST', json: { ...body, filter } })
     },
     onSuccess: (p) => {
-      // The next selection goes to the same plan by default (this tab only).
-      write(TARGET_KEY, String(p.id), true)
-      qc.invalidateQueries({ queryKey: ['summary'] })
-      qc.invalidateQueries({ queryKey: ['plans'] })
-      qc.invalidateQueries({ queryKey: ['plan', String(p.id)] })
-      qc.invalidateQueries({ queryKey: ['entry'] })
+      added(p)
       if (stay) {
         onDone?.(p)
         onClose()
@@ -197,16 +231,7 @@ export function PlanDialog({ open, onClose, entryIds, filter, damaged, count, si
           {count !== undefined ? `${count.toLocaleString()} item(s)` : damaged ? 'Every damaged file' : 'Selected items'}
           {size !== undefined ? ` · ${bytes(size)}` : ''}. The plan is a draft for review — nothing is changed until you apply it.
         </p>
-        <Field label="Plan" hint={existing ? 'Files the plan already has get this action instead.' : undefined}>
-          <select className="input" value={target} onChange={(e) => setChosen(e.target.value === 'new' ? 'new' : Number(e.target.value))}>
-            <option value="new">New draft plan</option>
-            {drafts.map((p) => (
-              <option key={p.id} value={p.id}>
-                Add to “{p.name}” ({p.items.toLocaleString()} items)
-              </option>
-            ))}
-          </select>
-        </Field>
+        {field}
         <Field label="Template">
           <select className="input" value={templateId} onChange={(e) => setTemplateId(e.target.value ? Number(e.target.value) : '')}>
             <option value="">Custom…</option>

@@ -102,6 +102,13 @@ public enum PlanStatus
     Cancelled,
 }
 
+/// <summary>Where the plan buttons put what they plan by default: a new draft, or the draft changed last.</summary>
+public enum PlanTarget
+{
+    NewPlan,
+    LastDraft,
+}
+
 public enum ItemStatus
 {
     Pending,

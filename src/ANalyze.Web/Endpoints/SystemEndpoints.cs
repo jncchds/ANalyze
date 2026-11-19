@@ -42,6 +42,7 @@ public static class SystemEndpoints
             ffmpeg = PreviewService.FfmpegPath is not null,
             ai = settings.Current.Ai.Enabled,
             pathTokens = PathTemplate.Tokens,
+            planTarget = settings.Current.PlanTarget,
         });
 
         api.MapGet("/release-notes", () => ReleaseNotes.All);

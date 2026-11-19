@@ -5,6 +5,7 @@ import { api, fileUrl } from '../api/client'
 import type { DedupeKeep } from '../api/types'
 import { EntryDrawer } from '../components/EntryDrawer'
 import { ExtractedArchives } from '../components/ExtractedArchives'
+import { usePlanAdded, usePlanChoice } from '../components/PlanDialog'
 import { Empty, ErrorBox, Field, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../components/ui'
 import { useScope } from '../hooks/useScope'
 import { leaveOverlay, useEntryPreview, useUrlEnum, useUrlNumber, useUrlOverlay, useUrlParam } from '../hooks/useUrlState'
@@ -180,9 +181,11 @@ export default function Duplicates() {
   )
 }
 
-/** Chooses which copy to keep and what to do with the others; creates a draft plan for review. */
+/** Chooses which copy to keep and what to do with the others; creates a draft plan for review, or adds to a draft. */
 function DedupeWizard({ hashes, onClose }: { hashes?: string[]; onClose: () => void }) {
   const navigate = useNavigate()
+  const added = usePlanAdded()
+  const { existing, field } = usePlanChoice()
   const { rootId } = useScope()
   const [keep, setKeep] = useState<DedupeKeep>('oldest')
   const [op, setOp] = useState<'trash' | 'delete' | 'hardlink'>('trash')
@@ -199,13 +202,18 @@ function DedupeWizard({ hashes, onClose }: { hashes?: string[]; onClose: () => v
           rootId,
           minSize,
           preferredFolders: preferred.split('\n').map((s) => s.trim()).filter(Boolean),
+          planId: existing?.id,
         },
       }),
-    onSuccess: (p) => leaveOverlay(navigate, `/actions/${p.id}`),
+    onSuccess: (p) => {
+      added(p)
+      leaveOverlay(navigate, `/actions/${p.id}`)
+    },
   })
   return (
     <Modal open onClose={onClose} title={hashes ? 'Dedupe this group' : 'Dedupe all duplicates'}>
       <div className="space-y-4">
+        {field}
         <Field label="Keep">
           <select className="input" value={keep} onChange={(e) => setKeep(e.target.value as DedupeKeep)}>
             <option value="oldest">The oldest copy (usually the original)</option>
@@ -239,7 +247,7 @@ function DedupeWizard({ hashes, onClose }: { hashes?: string[]; onClose: () => v
             Cancel
           </button>
           <button className="btn-primary" onClick={() => create.mutate()} disabled={create.isPending}>
-            Create plan for review
+            {existing ? `Add to “${existing.name}”` : 'Create plan for review'}
           </button>
         </div>
       </div>

@@ -167,6 +167,8 @@ public sealed class ActionPlan
     public ConflictPolicy Conflict { get; set; } = ConflictPolicy.Rename;
     public bool VerifyHashes { get; set; } = true;
     public DateTimeOffset CreatedAt { get; set; }
+    /// <summary>When items were last added, changed, included or left out (null = not since it was created).</summary>
+    public DateTimeOffset? UpdatedAt { get; set; }
     public DateTimeOffset? AppliedAt { get; set; }
     public DateTimeOffset? TrashPurgedAt { get; set; }
     public string? Message { get; set; }

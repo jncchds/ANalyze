@@ -67,6 +67,9 @@ public sealed record AppSettings
 
     public int TrashRetentionDays { get; init; } = 30;
 
+    /// <summary>Where plan buttons and dialogs put what they plan unless another plan is picked: a new draft, or the draft changed last.</summary>
+    public PlanTarget PlanTarget { get; init; } = PlanTarget.NewPlan;
+
     /// <summary>Re-hash both copies before deleting or linking a duplicate.</summary>
     public bool VerifyHashBeforeDelete { get; init; } = true;
 

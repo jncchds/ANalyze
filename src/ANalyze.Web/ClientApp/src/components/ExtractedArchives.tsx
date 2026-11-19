@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { Empty, ErrorBox, Loading, Stat } from './ui'
+import { usePlanAdded, usePlanTarget } from './PlanDialog'
 import { useScope } from '../hooks/useScope'
 import { leaveOverlay, useUrlNumber, useUrlParam } from '../hooks/useUrlState'
 import { bytes, count, date } from '../lib/format'
@@ -35,6 +36,8 @@ interface Extraction {
   verifiedOk: number
   verifiedBad: number
   unverified: number
+  /** Every extraction into this folder: one per identical copy of the archive. */
+  ids: number[]
 }
 
 interface ArchiveGroup {
@@ -42,6 +45,8 @@ interface ArchiveGroup {
   archiveSize: number
   archiveMTime: number
   format?: string
+  /** The archive and its identical copies (same content). */
+  copies: Place[]
   /** Every folder the archive was found extracted to, complete ones first. */
   extractions: Extraction[]
 }
@@ -182,40 +187,55 @@ export function ExtractedArchives() {
 /** One archive with every folder it was found extracted to. */
 function ArchiveCard({ g, open, onToggle, onVerify }: { g: ArchiveGroup; open: number | null; onToggle: (id: number) => void; onVerify: (ids: number[]) => void }) {
   const navigate = useNavigate()
+  const added = usePlanAdded()
+  // Settings → "Plan buttons add to": a new plan, or the draft changed last (files it has get the new action).
+  const { fallback } = usePlanTarget()
+  const into = fallback ? `Adds to the draft plan “${fallback.name}”` : 'Creates a new draft plan'
   const plan = useMutation({
     mutationFn: ({ ids, remove }: { ids: number[]; remove: 'archive' | 'extracted' }) =>
-      api<{ id: number }>('/archives/extractions/plan', { method: 'POST', json: { ids, remove, op: 'trash' } }),
-    onSuccess: (p) => leaveOverlay(navigate, `/actions/${p.id}`),
+      api<{ id: number }>('/archives/extractions/plan', { method: 'POST', json: { ids, remove, op: 'trash', planId: fallback?.id } }),
+    onSuccess: (p) => {
+      added(p)
+      leaveOverlay(navigate, `/actions/${p.id}`)
+    },
   })
   const complete = g.extractions.filter((x) => x.state === 'complete')
   const removeArchive = () => {
     if (!complete.some(verified) && !confirm('The extracted files have not been checked against the archive yet (or some differ). Create the plan anyway?')) return
-    plan.mutate({ ids: complete.map((x) => x.id), remove: 'archive' })
+    plan.mutate({ ids: complete.flatMap((x) => x.ids), remove: 'archive' })
   }
   const many = g.extractions.length > 1
+  const copies = g.copies.length
   return (
     <div className="card p-3">
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        <div className="min-w-0 flex-1 truncate" title={place(g.archive)}>
-          🗜 <span className="muted">{g.archive.root}/</span>
-          {g.archive.relPath}
-          <span className="ml-2 text-xs muted">
-            {bytes(g.archiveSize)} · {g.format}
-          </span>
+        <div className="min-w-0 flex-1 space-y-0.5">
+          {g.copies.map((c) => (
+            <div key={c.id} className="truncate" title={place(c)}>
+              🗜 <span className="muted">{c.root}/</span>
+              {c.relPath}
+              {c.id === g.archive.id && (
+                <span className="ml-2 text-xs muted">
+                  {bytes(g.archiveSize)} · {g.format}
+                  {copies > 1 && ` · ${count(copies)} identical copies`}
+                </span>
+              )}
+            </div>
+          ))}
         </div>
         {many && <span className="pill-muted">extracted to {count(g.extractions.length)} folders</span>}
         {many && (
           <button
             className="btn-secondary px-2.5 py-1 text-xs"
-            onClick={() => onVerify(g.extractions.map((x) => x.id))}
+            onClick={() => onVerify(g.extractions.flatMap((x) => x.ids))}
             title="Read the extracted files in every folder and compare them with the CRC32s stored in the archive"
           >
             Check all
           </button>
         )}
         {complete.length > 0 && (
-          <button className="btn-secondary px-2.5 py-1 text-xs" disabled={plan.isPending} onClick={removeArchive}>
-            Remove archive…
+          <button className="btn-secondary px-2.5 py-1 text-xs" disabled={plan.isPending} onClick={removeArchive} title={`${copies > 1 ? 'Every copy of the archive. ' : ''}${into}.`}>
+            {copies > 1 ? `Remove all ${count(copies)} archives…` : 'Remove archive…'}
           </button>
         )}
       </div>
@@ -228,7 +248,8 @@ function ArchiveCard({ g, open, onToggle, onVerify }: { g: ArchiveGroup; open: n
             open={open === x.id}
             busy={plan.isPending}
             onToggle={() => onToggle(x.id)}
-            onVerify={() => onVerify([x.id])}
+            onVerify={() => onVerify(x.ids)}
+            into={into}
             onRemoveCopy={() => plan.mutate({ ids: [x.id], remove: 'extracted' })}
           />
         ))}
@@ -244,6 +265,7 @@ function ExtractionRow({
   many,
   open,
   busy,
+  into,
   onToggle,
   onVerify,
   onRemoveCopy,
@@ -252,6 +274,7 @@ function ExtractionRow({
   many: boolean
   open: boolean
   busy: boolean
+  into: string
   onToggle: () => void
   onVerify: () => void
   onRemoveCopy: () => void
@@ -300,7 +323,7 @@ function ExtractionRow({
         <button className="btn-secondary px-2.5 py-1 text-xs" onClick={onVerify} title="Read the extracted files and compare them with the CRC32s stored in the archive">
           {many ? 'Check this copy' : 'Check against archive'}
         </button>
-        <button className="btn-secondary px-2.5 py-1 text-xs" disabled={busy} onClick={onRemoveCopy} title="Only the files that came from the archive; other files in the folder stay">
+        <button className="btn-secondary px-2.5 py-1 text-xs" disabled={busy} onClick={onRemoveCopy} title={`Only the files that came from the archive; other files in the folder stay. ${into}.`}>
           {many ? 'Remove this copy…' : 'Remove extracted copy…'}
         </button>
       </div>
