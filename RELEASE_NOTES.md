@@ -6,6 +6,7 @@
 - feat: identical copies of an archive (same content) are one group in Extracted archives, each folder listed once; "Remove all N archives…" plans every copy
 - feat: Settings → Duplicates & safety → "Plan buttons add to": a new draft plan (default) or the draft plan changed last, for every plan button and dialog — Clean up…, the dedupe wizard (also "Dedupe all duplicates") and the Extracted archives buttons; a file the plan already has gets the new action. Replaces the per-tab memory of the last plan used
 - feat: the dedupe wizard can add to an existing draft plan
+- feat: a plan that removes a duplicate and also trashes or deletes the copy it keeps (or a folder holding it) warns about both items in the review, and applying skips whichever runs second, so one copy always stays
 
 ## v0.1.13 — 2026-11-16
 

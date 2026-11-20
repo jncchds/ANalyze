@@ -108,6 +108,8 @@ public sealed class PlanExecutor(
         }, force: state != JobStates.Running);
 
         Report(JobStates.Running);
+        // Kept copies the duplicates removed so far relied on: a later item of the plan must not trash or delete them.
+        var relied = new HashSet<(int Root, string Path)>();
         foreach (var item in items)
         {
             if (ct.IsCancellationRequested)
@@ -131,9 +133,18 @@ public sealed class PlanExecutor(
                 }
                 else
                 {
+                    if (PlanBuilder.Removes(item) && item.KeepPath is null && (relied.Contains((item.RootId, item.SourcePath)) || (item.IsDir && relied.Any(k => PlanBuilder.Covers(item, k.Root, k.Path)))))
+                    {
+                        throw new SkipException("Kept copy of a duplicate this plan removed");
+                    }
+
                     await ApplyAsync(plan, item, conn, rescan, replaced, ct);
                     item.Status = ItemStatus.Done;
                     bytes += item.ExpectedSize;
+                    if (PlanBuilder.Removes(item) && item.KeepPath is not null)
+                    {
+                        relied.Add((item.KeepRootId ?? item.RootId, item.KeepPath));
+                    }
                 }
 
                 item.Error = null;

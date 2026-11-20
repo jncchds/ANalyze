@@ -123,9 +123,73 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
 
         await MarkInUseAsync(db, items, ct);
         plan.Items.AddRange(items);
+        MarkKeptConflicts(plan);
         plan.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
         return new PlanAddResult(plan.Id, plan.Name, plan.Items.Count, items.Count, replaced.Count);
+    }
+
+    /// <summary>The item takes its file (or folder) away: trash or delete. A move or a hard link keeps the data.</summary>
+    public static bool Removes(ActionItem i) => i.Op is ActionOp.Trash or ActionOp.Delete;
+
+    /// <summary>The item's file is that path, or its folder contains it.</summary>
+    public static bool Covers(ActionItem i, int rootId, string path) =>
+        i.RootId == rootId && (i.SourcePath == path || (i.IsDir && Inside(path, i.SourcePath)));
+
+    private const string KeptRemoved = "The kept copy of a duplicate this plan removes: only the first of the two that runs is applied";
+    private const string KeepGone = "Its kept copy is removed by another item of this plan: only the first of the two that runs is applied";
+
+    /// <summary>
+    /// Flags items that remove a file another item keeps as the copy of a removed duplicate (and that duplicate's item). At apply the
+    /// second one to run is skipped, so one copy always stays; the warning shows it in the review.
+    /// </summary>
+    private static void MarkKeptConflicts(ActionPlan plan)
+    {
+        foreach (var i in plan.Items.Where(i => i.Warning is KeptRemoved or KeepGone))
+        {
+            i.Warning = null;
+        }
+
+        var dupes = plan.Items.Where(i => i.Included && Removes(i) && i.KeepPath is not null).ToList();
+        var plain = plan.Items.Where(i => i.Included && Removes(i) && i.KeepPath is null).ToList();
+        if (dupes.Count == 0 || plain.Count == 0)
+        {
+            return;
+        }
+
+        // By path: the file itself or one of the folders above it.
+        var byPath = plain.GroupBy(p => (p.RootId, p.SourcePath)).ToDictionary(g => g.Key, g => g.ToList());
+        foreach (var d in dupes)
+        {
+            var root = d.KeepRootId ?? d.RootId;
+            foreach (var path in SelfAndParents(d.KeepPath!))
+            {
+                if (byPath.TryGetValue((root, path), out var hits))
+                {
+                    foreach (var p in hits.Where(p => Covers(p, root, d.KeepPath!)))
+                    {
+                        p.Warning ??= KeptRemoved;
+                        d.Warning ??= KeepGone;
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>"a/b/c", "a/b", "a", "" (the root).</summary>
+    private static IEnumerable<string> SelfAndParents(string path)
+    {
+        while (true)
+        {
+            yield return path;
+            if (path.Length == 0)
+            {
+                yield break;
+            }
+
+            var cut = path.LastIndexOf('/');
+            path = cut < 0 ? "" : path[..cut];
+        }
     }
 
     private static bool Inside(string path, string dir) => dir.Length == 0 || path.StartsWith(dir + "/", StringComparison.Ordinal);

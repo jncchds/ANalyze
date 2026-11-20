@@ -190,7 +190,8 @@ To go back to SQLite, remove the two `ANalyze__Database__…` variables (the old
    every item shown), and **Show** opens the file in Browse. Conflicts (destination exists) are resolved by the chosen
    policy (rename/skip/overwrite); items on read-only roots are excluded.
 3. **Apply** re-checks each item right before it runs: still there, same size and mtime. Duplicate removals also re-hash
-   both copies, so a file that changed since the scan is skipped.
+   both copies, so a file that changed since the scan is skipped. When one plan both removes a duplicate and trashes the
+   copy it keeps, the review warns about both and applying skips whichever comes second, so one copy always stays.
 4. **Trash** moves items to `<root>/.analyze-trash/<plan>/…` (an instant rename on the same disk). It is emptied after
    the retention period (Settings) or from **Actions → Trash**. **Undo** restores trashed and moved items, and files replaced with the backup's copy.
 

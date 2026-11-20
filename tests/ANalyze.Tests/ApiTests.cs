@@ -103,6 +103,29 @@ public class ScanAndActionTests
     }
 
     [Fact]
+    public async Task A_file_kept_by_a_dedupe_item_is_not_also_trashed_by_the_same_plan()
+    {
+        await using var app = new TestApp();
+        using var http = app.CreateClient();
+        await app.ScanAsync(http);
+        var res = await http.PostAsJsonAsync("/api/v1/plans/dedupe", new { keep = "preferredFolder", op = "trash", preferredFolders = new[] { "Photos" } }, TestApp.Json);
+        var id = (await res.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+        var kept = (await http.GetFromJsonAsync<JsonElement>("/api/v1/search?q=IMG_0001")).GetProperty("items").EnumerateArray()
+            .Single(i => i.GetProperty("relPath").GetString() == "Photos/2021/IMG_0001.jpg").GetProperty("id").GetInt64();
+        // The kept copy is trashed too, added after the dedupe: the review warns and applying keeps it.
+        res = await http.PostAsJsonAsync("/api/v1/plans", new { entryIds = new[] { kept }, op = "trash", planId = id }, TestApp.Json);
+        res.EnsureSuccessStatusCode();
+        var plan = await http.GetFromJsonAsync<JsonElement>($"/api/v1/plans/{id}");
+        Assert.Equal(3, plan.GetProperty("summary").GetProperty("warnings").GetInt32()); // the trash of the kept copy and both duplicates relying on it
+
+        (await http.PostAsync($"/api/v1/plans/{id}/apply", null)).EnsureSuccessStatusCode();
+        plan = await app.WaitPlanAsync(http, id, "done", "failed");
+        Assert.Equal(2, plan.GetProperty("summary").GetProperty("done").GetInt32());
+        Assert.Equal(1, plan.GetProperty("summary").GetProperty("skipped").GetInt32());
+        Assert.True(File.Exists(Path.Combine(app.Library, "Photos/2021/IMG_0001.jpg")));
+    }
+
+    [Fact]
     public async Task Move_with_template_updates_the_index()
     {
         await using var app = new TestApp();

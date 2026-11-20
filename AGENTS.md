@@ -245,7 +245,10 @@ Draft plans grow and change through `PlanBuilder.AddAsync` / `AddDedupeAsync` (b
 `/plans/from-filter`, `/plans/restore-damaged`, `/plans/dedupe` and `/archives/extractions/plan`):
 items are built like a new plan's (move targets with the plan's conflict policy, clashing with the plan's other targets), an entry the
 plan has already gets the new item instead, a new folder replaces the items inside it, a new item inside a folder of the plan is
-excluded with a warning. `POST /plans/{id}/items/change {ids | filter, q, op, destination}` re-plans items from their entries the same
+excluded with a warning. Merging also warns on a trash/delete item that takes away (or contains) the kept copy of a duplicate the plan
+removes, and on that duplicate's item (`MarkKeptConflicts`); at apply, once a duplicate is trashed or deleted, later trash/delete items on
+its kept copy are skipped ("Kept copy of a duplicate this plan removed"), and a duplicate whose kept copy is gone is skipped anyway — so
+whichever runs second is skipped and one copy stays. `POST /plans/{id}/items/change {ids | filter, q, op, destination}` re-plans items from their entries the same
 way. `GET /plans/{id}` adds `parents` (entry id → folder id) for Browse links; `GET /entries/{id}` adds `planned` (draft plans with
 the entry). Where plans go by default is the setting `PlanTarget` (`newPlan` | `lastDraft` = the draft with the latest
 `UpdatedAt ?? CreatedAt`), exposed as `planTarget` in `GET /config`; the client resolves it (`usePlanTarget`) and sends `planId`. UI:
