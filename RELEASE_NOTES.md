@@ -1,6 +1,6 @@
 # Release Notes
 
-## v0.1.14 — 2026-11-19
+## v0.1.14 — 2026-11-20
 
 - feat: Extracted archives groups by archive: an archive found extracted in several folders is listed once, with each folder under it (its own state, check and "Remove this copy…"), plus "Check all" and one "Remove archive…"; pages, totals and the counters at the top count archives, not archive/folder pairs
 - feat: identical copies of an archive (same content) are one group in Extracted archives, each folder listed once; "Remove all N archives…" plans every copy
