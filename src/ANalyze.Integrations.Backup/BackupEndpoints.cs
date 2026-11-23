@@ -114,8 +114,8 @@ internal static class BackupEndpoints
             var args = new (string, object?)[] { ("@state", state), ("@r", rootId), ("@from", p + "/"), ("@to", p + "0"), ("@prefix", prefix), ("@q", "%" + q?.Trim() + "%") };
             var totals = Db.Query(c, $"SELECT COUNT(*), COALESCE(SUM(b.Size), 0) FROM BackupFiles b {sql}", r => (r.GetInt64(0), r.GetInt64(1)), args).First();
             var items = Db.Query(c, $"""
-                SELECT b.Id, b.State, b.EntryId, b.LocalRootId, b.LocalRelPath, b.Size, b.ParentSize, b.Verified
-                FROM BackupFiles b {sql} ORDER BY {order} LIMIT {Math.Clamp(limit ?? 200, 1, 1000)} OFFSET {Math.Max(0, offset ?? 0)}
+                SELECT b.Id, b.State, b.EntryId, b.LocalRootId, b.LocalRelPath, b.Size, b.ParentSize, b.Verified, e.FullHash, b.ParentHash
+                FROM BackupFiles b LEFT JOIN Entries e ON e.Id = b.EntryId {sql} ORDER BY {order} LIMIT {Math.Clamp(limit ?? 200, 1, 1000)} OFFSET {Math.Max(0, offset ?? 0)}
                 """, r => new
             {
                 id = r.GetInt64(0),
@@ -127,6 +127,7 @@ internal static class BackupEndpoints
                 size = r.GetInt64(5),
                 parentSize = r.IsDBNull(6) ? (long?)null : r.GetInt64(6),
                 verified = r.GetBoolean(7),
+                hashCheck = BackupSync.HashCheck(r.IsDBNull(8) ? null : r.GetString(8), r.IsDBNull(9) ? null : r.GetString(9)),
             }, args);
             return new { total = totals.Item1, totalSize = totals.Item2, items };
         });

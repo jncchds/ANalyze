@@ -27,9 +27,14 @@ public static class ArchiveEndpoints
     /// <summary>
     /// One archive — with its identical copies (same content hash) — and every folder it was found extracted to, complete ones first.
     /// </summary>
-    public sealed record ArchiveGroupDto(Place Archive, long ArchiveSize, long ArchiveMTime, string? Format, IReadOnlyList<Place> Copies, IReadOnlyList<ExtractionDto> Extractions);
+    /// <param name="Hash">The archive's content hash, shared by every copy; null when it has not been calculated (then copies are not known).</param>
+    public sealed record ArchiveGroupDto(Place Archive, long ArchiveSize, long ArchiveMTime, string? Format, string? Hash, IReadOnlyList<Place> Copies, IReadOnlyList<ExtractionDto> Extractions);
 
-    public sealed record FileDto(string Path, long Size, string State, string? Target, long? EntryId, long? DiskSize, bool Checkable);
+    /// <param name="Crc">
+    /// For an extracted file: <c>match</c> (its CRC32 was checked and equals the archive's), <c>differs</c>, <c>unchecked</c> (not checked, or
+    /// the check could not read it or found it changed) or <c>none</c> (the archive stores no CRC32 for it); null when it was not found.
+    /// </param>
+    public sealed record FileDto(string Path, long Size, string State, string? Target, long? EntryId, long? DiskSize, bool Checkable, string? Crc);
 
     public sealed record VerifyBody(long[]? Ids, string? State, int? RootId);
 
@@ -63,9 +68,9 @@ public static class ArchiveEndpoints
             var keys = page.Select((k, i) => ($"@k{i}", (object?)k)).ToArray();
             var rows = page.Count == 0 ? [] : Sql.Query(c,
                 $"{Select} WHERE {GroupKey} IN ({string.Join(",", keys.Select(k => k.Item1))}) {where} ORDER BY x.State, x.MatchedBytes DESC, x.Id",
-                r => (Key: r.NullableString(24) ?? r.GetInt64(2).ToString(CultureInfo.InvariantCulture), X: Map(r, roots)), [.. args, .. keys]);
-            var byKey = rows.ToLookup(r => r.Key, r => r.X);
-            var items = page.Where(byKey.Contains).Select(k => Group([.. byKey[k]])).ToList();
+                r => (Hash: r.NullableString(24), Id: r.GetInt64(2), X: Map(r, roots)), [.. args, .. keys]);
+            var byKey = rows.ToLookup(r => r.Hash ?? r.Id.ToString(CultureInfo.InvariantCulture));
+            var items = page.Where(byKey.Contains).Select(k => Group(byKey[k].First().Hash, [.. byKey[k].Select(r => r.X)])).ToList();
             var total = Sql.Scalar<long>(c, $"SELECT COUNT(DISTINCT {GroupKey}) FROM ArchiveExtractions x JOIN Entries a ON a.Id = x.ArchiveId WHERE 1 = 1 {where}", args);
             // Counted per archive content, so an archive extracted twice counts once; the bytes are those of every copy.
             var (scope, scopeArgs) = Where(c, null, rootId, null);
@@ -105,8 +110,14 @@ public static class ArchiveEndpoints
 
             var badJson = Sql.Scalar<string>(c, "SELECT BadPaths FROM ArchiveExtractions WHERE Id = @id", ("@id", id));
             var bad = badJson is null ? [] : JsonSerializer.Deserialize<HashSet<string>>(badJson) ?? [];
-            var files = ExtractionMatcher.Compare(c, ExtractionMatcher.LoadMembers(c, x.Archive.Id!.Value), x.Folder.RootId, x.BaseRelPath, x.Strip)
-                .Select(m => new FileDto(m.Path, m.Size, bad.Contains(m.Path) ? "corrupt" : m.State.ToString().ToLowerInvariant(), m.Target, m.EntryId, m.DiskSize, m.Crc is not null))
+            var members = ExtractionMatcher.Compare(c, ExtractionMatcher.LoadMembers(c, x.Archive.Id!.Value), x.Folder.RootId, x.BaseRelPath, x.Strip);
+            // The check stores counts and the paths that differ, not each file that matched: a matched file is called a CRC32 match only when
+            // the counts leave no doubt (no file skipped by the check except those without a CRC32, every differing path kept).
+            var noCrc = members.Count(m => m.State == MemberState.Matched && m.Crc is null);
+            var confirmed = x.VerifiedAt is not null && x.Unverified <= noCrc && x.VerifiedBad == bad.Count;
+            var files = members
+                .Select(m => new FileDto(m.Path, m.Size, bad.Contains(m.Path) ? "corrupt" : m.State.ToString().ToLowerInvariant(), m.Target, m.EntryId, m.DiskSize, m.Crc is not null,
+                    m.State != MemberState.Matched ? null : m.Crc is null ? "none" : bad.Contains(m.Path) ? "differs" : confirmed ? "match" : "unchecked"))
                 .Where(f => problems != true || f.State != "matched")
                 .OrderBy(f => f.State == "matched").ThenBy(f => f.Path, StringComparer.Ordinal)
                 .ToList();
@@ -189,7 +200,7 @@ public static class ArchiveEndpoints
     /// The extractions of one archive content: one row per folder (the copies of the archive match the same files there), the
     /// most complete and most recently checked one standing for the others.
     /// </summary>
-    private static ArchiveGroupDto Group(List<ExtractionDto> xs)
+    private static ArchiveGroupDto Group(string? hash, List<ExtractionDto> xs)
     {
         var copies = xs.Select(x => x.Archive).DistinctBy(p => p.Id).OrderBy(p => p.RootId).ThenBy(p => p.RelPath, StringComparer.Ordinal).ToList();
         var folders = xs.GroupBy(x => (x.Folder.RootId, x.BaseRelPath, x.Strip))
@@ -201,7 +212,7 @@ public static class ArchiveEndpoints
             .OrderBy(x => x.State).ThenByDescending(x => x.MatchedBytes).ThenBy(x => x.Id)
             .ToList();
         var first = xs.First(x => x.Archive.Id == copies[0].Id);
-        return new ArchiveGroupDto(copies[0], first.ArchiveSize, first.ArchiveMTime, first.Format, copies, folders);
+        return new ArchiveGroupDto(copies[0], first.ArchiveSize, first.ArchiveMTime, first.Format, hash, copies, folders);
     }
 
     private const string Verified = "x.VerifiedAt IS NOT NULL AND x.VerifiedBad = 0 AND x.Unverified = 0";
