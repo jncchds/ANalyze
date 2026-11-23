@@ -34,7 +34,12 @@ public static class ArchiveEndpoints
     /// For an extracted file: <c>match</c> (its CRC32 was checked and equals the archive's), <c>differs</c>, <c>unchecked</c> (not checked, or
     /// the check could not read it or found it changed) or <c>none</c> (the archive stores no CRC32 for it); null when it was not found.
     /// </param>
-    public sealed record FileDto(string Path, long Size, string State, string? Target, long? EntryId, long? DiskSize, bool Checkable, string? Crc);
+    /// <param name="State">matched, missing, smaller, differs, corrupt, or <c>extra</c>: a file on disk, in one of the archive's folders, that the archive does not have.</param>
+    /// <param name="DiskMTime">The modification time of the file on disk, when one was found.</param>
+    public sealed record FileDto(string Path, long Size, string State, string? Target, long? EntryId, long? DiskSize, bool Checkable, string? Crc, long? DiskMTime = null);
+
+    /// <summary>Folders searched for files the archive does not have, and files listed at most.</summary>
+    private const int MaxExtraFolders = 2000, MaxExtras = 5000;
 
     public sealed record VerifyBody(long[]? Ids, string? State, int? RootId);
 
@@ -98,8 +103,9 @@ public static class ArchiveEndpoints
             return new { listing, items };
         });
 
-        // Every file of the archive and what was found for it; ?problems=true leaves out the matched files that are fine.
-        api.MapGet("/archives/extractions/{id:long}", (long id, bool? problems, int? limit, DbSetup database, RootRegistry roots) =>
+        // Every file of the archive and what was found for it; ?problems=true leaves out the matched files that are fine, ?extras=true adds
+        // the files on disk in the archive's folders that the archive does not have (the comparison page).
+        api.MapGet("/archives/extractions/{id:long}", (long id, bool? problems, bool? extras, int? limit, DbSetup database, RootRegistry roots) =>
         {
             using var c = database.Open();
             var x = Sql.Query(c, $"{Select} WHERE x.Id = @id", r => Map(r, roots), ("@id", id)).FirstOrDefault();
@@ -117,11 +123,20 @@ public static class ArchiveEndpoints
             var confirmed = x.VerifiedAt is not null && x.Unverified <= noCrc && x.VerifiedBad == bad.Count;
             var files = members
                 .Select(m => new FileDto(m.Path, m.Size, bad.Contains(m.Path) ? "corrupt" : m.State.ToString().ToLowerInvariant(), m.Target, m.EntryId, m.DiskSize, m.Crc is not null,
-                    m.State != MemberState.Matched ? null : m.Crc is null ? "none" : bad.Contains(m.Path) ? "differs" : confirmed ? "match" : "unchecked"))
+                    m.State != MemberState.Matched ? null : m.Crc is null ? "none" : bad.Contains(m.Path) ? "differs" : confirmed ? "match" : "unchecked",
+                    m.EntryId is null ? null : m.DiskMTime))
                 .Where(f => problems != true || f.State != "matched")
-                .OrderBy(f => f.State == "matched").ThenBy(f => f.Path, StringComparer.Ordinal)
                 .ToList();
-            return Results.Ok(new { extraction = x, files = files.Take(Math.Clamp(limit ?? 2000, 1, 20000)), total = files.Count });
+            var extrasCapped = false;
+            if (extras == true)
+            {
+                var found = Extras(c, x.Folder.RootId, members);
+                extrasCapped = found.Count > MaxExtras;
+                files.AddRange(found.Take(MaxExtras));
+            }
+
+            files = [.. files.OrderBy(f => f.State == "matched").ThenBy(f => f.Path, StringComparer.Ordinal)];
+            return Results.Ok(new { extraction = x, files = files.Take(Math.Clamp(limit ?? 2000, 1, 100_000)), total = files.Count, extrasCapped });
         });
 
         // Reads the extracted files and compares them with the archive's CRC32s (a job on the scan queue). Ids, or every extraction in a state.
@@ -192,6 +207,53 @@ public static class ArchiveEndpoints
             return await PlanEndpoints.Run(body.PlanId, () => builder.CreateAsync(req, ct), id => builder.AddAsync(id, req, ct));
         });
     }
+
+    /// <summary>
+    /// Files on disk, in a folder the archive has files in, that the archive does not have — added or renamed after the extraction, or
+    /// unrelated files in the folder it was extracted into. Their path is the one they would have in the archive.
+    /// </summary>
+    private static List<FileDto> Extras(DbConnection c, int rootId, List<MemberMatch> members)
+    {
+        // Disk folder -> archive folder, and every disk path that belongs to an archive file.
+        var folders = new Dictionary<string, string>(StringComparer.Ordinal);
+        var known = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var m in members)
+        {
+            if (m.Target is null)
+            {
+                continue;
+            }
+
+            known.Add(m.Target);
+            folders.TryAdd(Parent(m.Target), Parent(m.Path));
+        }
+
+        var list = new List<FileDto>();
+        foreach (var (disk, archive) in folders.OrderBy(f => f.Key, StringComparer.Ordinal).Take(MaxExtraFolders))
+        {
+            var dirId = Sql.Scalar<long?>(c, "SELECT Id FROM Entries WHERE RootId = @r AND RelPath = @p AND IsDir = TRUE", ("@r", rootId), ("@p", disk));
+            if (dirId is null)
+            {
+                continue;
+            }
+
+            var children = Sql.Query(c, $"SELECT Id, RelPath, Name, Size, MTime FROM Entries WHERE ParentId = @p AND IsDir = FALSE AND IsSymlink = FALSE LIMIT {MaxExtras + 1}",
+                r => (Id: r.GetInt64(0), RelPath: r.GetString(1), Name: r.GetString(2), Size: r.GetInt64(3), MTime: r.GetInt64(4)), ("@p", dirId));
+            foreach (var e in children.Where(e => !known.Contains(e.RelPath)))
+            {
+                list.Add(new FileDto(archive.Length == 0 ? e.Name : archive + "/" + e.Name, e.Size, "extra", e.RelPath, e.Id, e.Size, false, null, e.MTime));
+            }
+
+            if (list.Count > MaxExtras)
+            {
+                break;
+            }
+        }
+
+        return list;
+    }
+
+    private static string Parent(string path) => path.LastIndexOf('/') is var i and >= 0 ? path[..i] : "";
 
     /// <summary>Identical archives (same content hash) are one group; an archive not hashed yet is its own.</summary>
     private const string GroupKey = "COALESCE(a.FullHash, CAST(x.ArchiveId AS TEXT))";

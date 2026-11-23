@@ -212,6 +212,10 @@ with every folder it was found extracted to under it, and shows:
 
 - **complete** extractions (every file there) and **partial** ones, with the files that are missing or *cut short*
   (smaller than in the archive — an interrupted extraction);
+- **Compare with archive** opens a page that sets the archive beside the extracted folder: the archive's folders as a
+  tree, each with how much of it is extracted and how many files are missing, cut short, of another size, with another
+  CRC32 or *only on disk* (in the archive's folders but not in the archive — added or renamed after extracting), and the
+  files of the chosen folder with their size in the archive and size and date on disk (click one to open it);
 - **Check against archive**: reads the extracted files and compares each with the CRC32 the archive stores for it, so
   you know the copy is intact without reading the archive; files that differ are listed;
 - plans to remove the archive (complete extractions only) or the extracted copy (only the files that came from the archive).

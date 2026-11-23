@@ -122,6 +122,15 @@ public class ArchiveTests
         var states = detail.GetProperty("files").EnumerateArray().ToDictionary(f => f.GetProperty("path").GetString()!, f => f.GetProperty("state").GetString());
         Assert.Equal(new Dictionary<string, string?> { ["y.bin"] = "smaller", ["z.bin"] = "missing" }, states);
 
+        // The comparison page also lists the files on disk, in the archive's folders, that the archive does not have.
+        var compare = await http.GetFromJsonAsync<JsonElement>($"/api/v1/archives/extractions/{pack.GetProperty("id").GetInt64()}?extras=true&limit=100000");
+        var extra = compare.GetProperty("files").EnumerateArray().Single(f => f.GetProperty("state").GetString() == "extra");
+        Assert.Equal("pack/my-notes.txt", extra.GetProperty("path").GetString());
+        Assert.Equal("Extracted/pack/my-notes.txt", extra.GetProperty("target").GetString());
+        Assert.True(extra.GetProperty("entryId").GetInt64() > 0);
+        Assert.Equal(4, compare.GetProperty("total").GetInt32());
+        Assert.All(compare.GetProperty("files").EnumerateArray().Where(f => f.GetProperty("state").GetString() == "matched"), f => Assert.True(f.GetProperty("diskMTime").GetInt64() > 0));
+
         // Damage one extracted file without changing its size or date, then check against the archive's CRC32s.
         var damaged = Path.Combine(lib, "Extracted", "pack", "sub", "b.bin");
         var when = File.GetLastWriteTimeUtc(damaged);

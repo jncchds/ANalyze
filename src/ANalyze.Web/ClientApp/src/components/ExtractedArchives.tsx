@@ -8,14 +8,14 @@ import { useScope } from '../hooks/useScope'
 import { leaveOverlay, useUrlNumber, useUrlParam } from '../hooks/useUrlState'
 import { bytes, count, date } from '../lib/format'
 
-interface Place {
+export interface Place {
   id?: number
   rootId: number
   root?: string
   relPath: string
 }
 
-interface Extraction {
+export interface Extraction {
   id: number
   state: 'complete' | 'partial'
   archive: Place
@@ -60,32 +60,37 @@ interface ListResponse {
   listed: { archives: number; unreadable: number }
 }
 
-interface FileRow {
+export interface FileRow {
+  /** The path in the archive (for `extra`: the path it would have there). */
   path: string
+  /** Size in the archive (for `extra`: on disk). */
   size: number
-  state: 'matched' | 'missing' | 'smaller' | 'differs' | 'corrupt'
+  /** `extra`: on disk in one of the archive's folders, but not in the archive (listed only with `?extras=true`). */
+  state: 'matched' | 'missing' | 'smaller' | 'differs' | 'corrupt' | 'extra'
   target?: string
   entryId?: number
   diskSize?: number
+  diskMTime?: number
   checkable: boolean
   /** Extracted files: the archive's CRC32 checked and equal, checked and different, not checked (or not checkable), or not stored in the archive. */
   crc?: 'match' | 'differs' | 'unchecked' | 'none'
 }
 
 const PAGE = 50
-const okPill = 'inline-flex items-center rounded px-2 py-0.5 text-xs text-success bg-success/10'
-const badPill = 'inline-flex items-center rounded px-2 py-0.5 text-xs text-danger bg-danger/10'
+export const okPill = 'inline-flex items-center rounded px-2 py-0.5 text-xs text-success bg-success/10'
+export const badPill = 'inline-flex items-center rounded px-2 py-0.5 text-xs text-danger bg-danger/10'
 
-const STATE_LABEL: Record<FileRow['state'], string> = {
+export const STATE_LABEL: Record<FileRow['state'], string> = {
   matched: 'extracted',
   missing: 'missing',
   smaller: 'smaller (cut short)',
   differs: 'different size',
   corrupt: 'same size, CRC32 differs from the archive',
+  extra: 'only on disk',
 }
 
 /** An extracted file's label: whether only its size matched, or its CRC32 was compared with the archive's too. */
-function fileLabel(f: FileRow) {
+export function fileLabel(f: FileRow) {
   if (f.state !== 'matched') return STATE_LABEL[f.state]
   switch (f.crc) {
     case 'match':
@@ -103,11 +108,11 @@ function hashNote(hash: string | undefined, copies: number) {
   return copies > 1 ? ` · ${count(copies)} identical copies (same content hash ${hash.slice(0, 12)}…)` : ''
 }
 
-function place(p: Place) {
+export function place(p: Place) {
   return `${p.root ?? '?'}/${p.relPath}`
 }
 
-function verified(x: Extraction) {
+export function verified(x: Extraction) {
   return x.verifiedAt != null && x.verifiedBad === 0 && x.unverified === 0
 }
 
@@ -208,8 +213,8 @@ export function ExtractedArchives() {
   )
 }
 
-/** One archive with every folder it was found extracted to. */
-function ArchiveCard({ g, open, onToggle, onVerify }: { g: ArchiveGroup; open: number | null; onToggle: (id: number) => void; onVerify: (ids: number[]) => void }) {
+/** Plans that trash archives (complete extractions only) or the extracted copies of their files, then opens the plan. */
+export function useExtractionPlan() {
   const navigate = useNavigate()
   const added = usePlanAdded()
   // Settings → "Plan buttons add to": a new plan, or the draft changed last (files it has get the new action).
@@ -223,6 +228,12 @@ function ArchiveCard({ g, open, onToggle, onVerify }: { g: ArchiveGroup; open: n
       leaveOverlay(navigate, `/actions/${p.id}`)
     },
   })
+  return { plan, into }
+}
+
+/** One archive with every folder it was found extracted to. */
+function ArchiveCard({ g, open, onToggle, onVerify }: { g: ArchiveGroup; open: number | null; onToggle: (id: number) => void; onVerify: (ids: number[]) => void }) {
+  const { plan, into } = useExtractionPlan()
   const complete = g.extractions.filter((x) => x.state === 'complete')
   const removeArchive = () => {
     if (!complete.some(verified) && !confirm('The extracted files have not been checked against the archive yet (or some differ). Create the plan anyway?')) return
@@ -341,9 +352,18 @@ function ExtractionRow({
         </div>
       </div>
       <div className="mt-2 flex flex-wrap gap-2">
-        <button className="btn-secondary px-2.5 py-1 text-xs" onClick={onToggle}>
-          {open ? 'Hide files' : complete ? 'Files' : 'What is missing'}
-        </button>
+        {complete ? (
+          <button className="btn-secondary px-2.5 py-1 text-xs" onClick={onToggle}>
+            {open ? 'Hide files' : 'Files'}
+          </button>
+        ) : null}
+        <Link
+          to={`/duplicates/archives/${x.id}`}
+          className={`${complete ? 'btn-secondary' : 'btn-primary'} px-2.5 py-1 text-xs`}
+          title="The archive and the extracted folder side by side, folder by folder: what is extracted, missing, cut short, different or only on disk"
+        >
+          {complete ? 'Compare…' : 'Compare with archive'}
+        </Link>
         <button className="btn-secondary px-2.5 py-1 text-xs" onClick={onVerify} title="Read the extracted files and compare them with the CRC32s stored in the archive">
           {many ? 'Check this copy' : 'Check against archive'}
         </button>

@@ -6,6 +6,7 @@
 - feat: the file panel opens on Hex, now its first tab, so an image or video is loaded only when Preview is clicked; for an empty file Hex says "Empty file." and Preview is disabled
 - fix: filter boxes (Duplicates, Extracted archives, a plan's paths, Rules, Plex, the item integrations, Backup files) wait until typing pauses before filtering, and keep the last results on screen while the new ones load, so typing no longer freezes the page or loses the focus
 - feat: "identical" always says what it rests on: the file panel shows the content hash (or that it was not calculated, so copies are not known) and "N identical copies · same content hash"; Backup says "same size and same content hash", "another content hash" or which side has not calculated it (then only the size was compared); Extracted archives says "same content hash …" for copies of an archive (or that it was not calculated), and each extracted file says "same size, same CRC32", "CRC32 not checked" or "no CRC32 in the archive"
+- feat: "Compare with archive" on a partial extraction (also "Compare…" on complete ones) opens its own page: the archive's folders as a tree with how much of each is extracted and what went wrong there, and the files of the chosen folder side by side — size in the archive, size and date on disk, status — filtered by missing, cut short, other size, CRC32 differs, extracted or "only on disk" (files in the archive's folders that the archive does not have); a disk file opens in the file panel, and the page has the check, remove and open buttons
 
 ## v0.1.14 — 2026-11-20
 
