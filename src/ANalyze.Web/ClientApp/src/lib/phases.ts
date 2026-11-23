@@ -20,6 +20,7 @@ const scan: Record<string, string> = {
 const other: Record<string, string> = {
   apply: 'Carrying out the plan: each item is checked again (still there, same size and date) before it is changed.',
   undo: 'Putting the plan\'s items back where they were.',
+  empty: 'Deleting the files in the plan\'s trash for good, one by one. Stopping keeps what is left.',
   classify: 'Asking the AI model for categories of files the rules do not cover.',
   suggest: 'Asking the AI model to propose new rules.',
   connecting: 'Contacting the app.',

@@ -299,11 +299,14 @@ function ScanWidget() {
                 </span>
               )}
             </div>
-            <Progress value={j.done} max={j.total} className="mt-1" />
+            {/* A job with a byte total but no item total (emptying the trash) shows its progress in bytes. */}
+            <Progress value={!j.total && j.totalBytes ? j.bytes : j.done} max={j.total || j.totalBytes} className="mt-1" />
             <div className="mt-0.5 truncate muted" title={j.current}>
               {j.kind === 'scan' && j.phase === 'walking'
                 ? `${(j.counters?.files ?? 0).toLocaleString()} files · ${bytes(j.counters?.bytes ?? 0)}`
-                : j.total
+                : !j.total && j.totalBytes
+                  ? `${bytes(j.bytes)} / ${bytes(j.totalBytes)}`
+                  : j.total
                   ? `${j.done.toLocaleString()} / ${j.total.toLocaleString()}`
                   : j.current}
             </div>

@@ -259,6 +259,13 @@ the keep template remembered in localStorage), the Extracted archives buttons (n
 The index is updated directly (`EntryMaintenance.DeleteEntry`, `UpdateIdentity`) and folders that received files are rescanned as subtrees.
 Undo moves items back (trash, move, restore), prunes folders left empty, and drops the moved copies from the index.
 
+Emptying a plan's trash (`DELETE /trash/{planId}`, `DELETE /trash`, and `TrashJanitor` once the retention period is over) only queues it:
+`TrashService` keeps its own queue, and `TrashWorker` empties one plan at a time, file by file (post-order walk, links removed and never
+followed), reporting the `trash` job (`RefId` = plan id, `Bytes`/`TotalBytes` = freed / the bin's planned size, `Done` = files deleted).
+`POST /trash/cancel` stops it; what was deleted stays deleted and `TrashPurgedAt` is only set once every root's folder is gone. It takes no
+`JobLock` (the scanner skips `.analyze-trash`), but apply and undo of a plan whose trash is pending return 409. Plan details carry
+`summary.trashItems/trashBytes/trashPending`; the plan page and **Actions → Trash** show the progress (`TrashProgress`).
+
 ## Safety rules
 
 - File content is read only through `RootRegistry.ResolveForRead` (realpath must stay inside the root) and only by entry id — never from a path in a request.

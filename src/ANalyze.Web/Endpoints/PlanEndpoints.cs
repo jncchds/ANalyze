@@ -57,7 +57,7 @@ public static class PlanEndpoints
             });
         });
 
-        api.MapGet("/plans/{id:int}", async (int id, string? filter, string? q, int? offset, int? limit, AnalyzeDbContext db, CancellationToken ct) =>
+        api.MapGet("/plans/{id:int}", async (int id, string? filter, string? q, int? offset, int? limit, AnalyzeDbContext db, TrashService trash, CancellationToken ct) =>
         {
             var plan = await db.ActionPlans.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, ct);
             if (plan is null)
@@ -69,6 +69,7 @@ public static class PlanEndpoints
             var total = await items.CountAsync(ct);
             var page = await items.OrderBy(i => i.SourcePath).Skip(Math.Max(0, offset ?? 0)).Take(Math.Clamp(limit ?? 200, 1, 2000)).ToListAsync(ct);
             var all = db.ActionItems.AsNoTracking().Where(i => i.PlanId == id);
+            var inTrash = all.Where(i => i.Status == ItemStatus.Done && (i.Op == ActionOp.Trash || (i.Op == ActionOp.Restore && i.KeepPath == null)));
             var summary = new
             {
                 items = await all.CountAsync(ct),
@@ -80,6 +81,10 @@ public static class PlanEndpoints
                 failed = await all.CountAsync(i => i.Status == ItemStatus.Failed, ct),
                 undone = await all.CountAsync(i => i.Status == ItemStatus.Undone, ct),
                 undoable = await all.CountAsync(i => i.Status == ItemStatus.Done && (i.Op == ActionOp.Trash || i.Op == ActionOp.Move || i.Op == ActionOp.Restore), ct),
+                // What this plan's trash holds (0 once emptied); trashPending: queued or being emptied now.
+                trashItems = plan.TrashPurgedAt is null ? await inTrash.CountAsync(ct) : 0,
+                trashBytes = plan.TrashPurgedAt is null ? await inTrash.SumAsync(i => (long?)i.ExpectedSize, ct) ?? 0 : 0,
+                trashPending = trash.IsPending(id),
             };
             // The folder each item's entry is in, for links to the browser (entries removed by the plan are gone).
             var entryIds = page.Where(i => i.EntryId is not null).Select(i => i.EntryId!.Value).ToList();
@@ -173,7 +178,7 @@ public static class PlanEndpoints
             return Results.Ok(new { updated = n });
         });
 
-        api.MapPost("/plans/{id:int}/apply", async (int id, AnalyzeDbContext db, PlanQueue queue, CancellationToken ct) =>
+        api.MapPost("/plans/{id:int}/apply", async (int id, AnalyzeDbContext db, PlanQueue queue, TrashService trash, CancellationToken ct) =>
         {
             var plan = await db.ActionPlans.FirstOrDefaultAsync(p => p.Id == id, ct);
             if (plan is null)
@@ -186,11 +191,16 @@ public static class PlanEndpoints
                 return Results.Problem("This plan was already applied", statusCode: 409);
             }
 
+            if (trash.IsPending(id))
+            {
+                return Results.Problem("This plan's trash is being emptied", statusCode: 409);
+            }
+
             queue.Enqueue(new PlanJob(id, Undo: false));
             return Results.Accepted();
         });
 
-        api.MapPost("/plans/{id:int}/undo", async (int id, AnalyzeDbContext db, PlanQueue queue, CancellationToken ct) =>
+        api.MapPost("/plans/{id:int}/undo", async (int id, AnalyzeDbContext db, PlanQueue queue, TrashService trash, CancellationToken ct) =>
         {
             var plan = await db.ActionPlans.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, ct);
             if (plan is null)
@@ -201,6 +211,11 @@ public static class PlanEndpoints
             if (plan.Status is not (PlanStatus.Done or PlanStatus.Cancelled or PlanStatus.Failed))
             {
                 return Results.Problem("Only applied plans can be undone", statusCode: 409);
+            }
+
+            if (trash.IsPending(id))
+            {
+                return Results.Problem("This plan's trash is being emptied", statusCode: 409);
             }
 
             // Items whose trash copy is gone are reported as skipped by the executor.
@@ -236,22 +251,32 @@ public static class PlanEndpoints
 
         api.MapGet("/trash", async (TrashService trash, CancellationToken ct) => await trash.ListAsync(ct));
 
-        api.MapDelete("/trash/{planId:int}", async (int planId, TrashService trash, CancellationToken ct) =>
-            await trash.PurgeAsync(planId, ct) ? Results.NoContent() : Results.Problem("Could not empty the trash", statusCode: 409));
-
-        api.MapDelete("/trash", async (TrashService trash, CancellationToken ct) =>
+        // Emptying runs in the background (TrashWorker) and reports as the "trash" job.
+        api.MapDelete("/trash/{planId:int}", async (int planId, AnalyzeDbContext db, TrashService trash, CancellationToken ct) =>
         {
-            var n = 0;
-            foreach (var b in await trash.ListAsync(ct))
+            var plan = await db.ActionPlans.AsNoTracking().FirstOrDefaultAsync(p => p.Id == planId, ct);
+            if (plan is null)
             {
-                if (await trash.PurgeAsync(b.PlanId, ct))
-                {
-                    n++;
-                }
+                return Results.NotFound();
             }
 
-            return Results.Ok(new { emptied = n });
+            if (plan.Status == PlanStatus.Running)
+            {
+                return Results.Problem("The plan is running", statusCode: 409);
+            }
+
+            trash.Enqueue(planId);
+            return Results.Accepted();
         });
+
+        api.MapDelete("/trash", async (AnalyzeDbContext db, TrashService trash, CancellationToken ct) =>
+        {
+            var running = await db.ActionPlans.Where(p => p.Status == PlanStatus.Running).Select(p => p.Id).ToListAsync(ct);
+            var n = (await trash.ListAsync(ct)).Count(b => !running.Contains(b.PlanId) && trash.Enqueue(b.PlanId));
+            return Results.Accepted(value: new { queued = n });
+        });
+
+        api.MapPost("/trash/cancel", (TrashService trash) => trash.Cancel() ? Results.NoContent() : Results.NotFound());
     }
 
     private static IQueryable<ActionItem> Filter(IQueryable<ActionItem> q, string? filter, string? search)

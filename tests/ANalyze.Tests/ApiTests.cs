@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using ANalyze.Infrastructure.Jobs;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace ANalyze.Tests;
 
@@ -74,6 +76,41 @@ public class ScanAndActionTests
         Assert.True(File.Exists(Path.Combine(app.Library, "Backup/Photos/IMG_0001.jpg")));
         Assert.False(Directory.Exists(Path.Combine(app.Library, ".analyze-trash")));
         Assert.Equal(1, (await http.GetFromJsonAsync<JsonElement>("/api/v1/duplicates")).GetProperty("total").GetInt64());
+    }
+
+    [Fact]
+    public async Task Emptying_a_plans_trash_runs_in_the_background_and_reports_progress()
+    {
+        await using var app = new TestApp();
+        using var http = app.CreateClient();
+        await app.ScanAsync(http);
+
+        var res = await http.PostAsJsonAsync("/api/v1/plans/dedupe", new { keep = "preferredFolder", op = "trash", preferredFolders = new[] { "Photos" } }, TestApp.Json);
+        res.EnsureSuccessStatusCode();
+        var id = (await res.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+        (await http.PostAsync($"/api/v1/plans/{id}/apply", null)).EnsureSuccessStatusCode();
+        var plan = await app.WaitPlanAsync(http, id, "done", "failed");
+        Assert.Equal(2, plan.GetProperty("summary").GetProperty("trashItems").GetInt32());
+
+        Assert.Equal(HttpStatusCode.Accepted, (await http.DeleteAsync($"/api/v1/trash/{id}")).StatusCode);
+        var board = app.Services.GetRequiredService<JobBoard>();
+        JobProgress? job = null;
+        for (var i = 0; i < 100 && job?.State is not JobStates.Completed; i++)
+        {
+            await Task.Delay(100);
+            job = board.Get(JobKinds.Trash);
+        }
+
+        Assert.NotNull(job);
+        Assert.Equal(JobStates.Completed, job.State);
+        Assert.Equal(id, job.RefId);
+        Assert.Equal(2, job.Done);
+        Assert.Equal(job.TotalBytes, job.Bytes);
+        Assert.False(Directory.Exists(Path.Combine(app.Library, ".analyze-trash")));
+        plan = await http.GetFromJsonAsync<JsonElement>($"/api/v1/plans/{id}");
+        Assert.Equal(0, plan.GetProperty("summary").GetProperty("trashItems").GetInt32());
+        Assert.False(plan.GetProperty("summary").GetProperty("trashPending").GetBoolean());
+        Assert.Equal(0, (await http.GetFromJsonAsync<JsonElement>("/api/v1/trash")).GetArrayLength());
     }
 
     [Fact]

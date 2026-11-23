@@ -4,6 +4,7 @@ import clsx from 'clsx'
 import { api } from '../api/client'
 import type { PlanRow } from '../api/types'
 import { ConfirmButton, Empty, ErrorBox, Loading, PageTitle, Tabs } from '../components/ui'
+import { TrashProgress } from '../components/TrashProgress'
 import { bytes, count, dateTime } from '../lib/format'
 import { useUrlEnum } from '../hooks/useUrlState'
 
@@ -14,6 +15,8 @@ interface TrashBin {
   items: number
   bytes: number
   expiresAt?: string
+  /** Queued for emptying or being emptied now. */
+  pending: boolean
 }
 
 export const STATUS_STYLE: Record<string, string> = {
@@ -78,18 +81,20 @@ function Plans() {
 function Trash() {
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['trash'], queryFn: () => api<TrashBin[]>('/trash') })
-  const purge = useMutation({ mutationFn: (id?: number) => api(id ? `/trash/${id}` : '/trash', { method: 'DELETE' }), onSuccess: () => qc.invalidateQueries() })
+  // Emptying runs in the background; the "trash" job reports its progress and refreshes the list when it ends.
+  const purge = useMutation({ mutationFn: (id?: number) => api(id ? `/trash/${id}` : '/trash', { method: 'DELETE' }), onSuccess: () => qc.invalidateQueries({ queryKey: ['trash'] }) })
   if (q.isLoading) return <Loading />
   const bins = q.data ?? []
   if (!bins.length) return <Empty>The trash is empty.</Empty>
+  const waiting = bins.filter((b) => !b.pending)
   return (
     <>
       <div className="mb-3 flex items-center gap-3">
         <p className="flex-1 text-sm muted">
           Trashed files stay in <code>.analyze-trash</code> inside their root until the retention period ends. Undo a plan to restore its files.
         </p>
-        <ConfirmButton onConfirm={() => purge.mutate(undefined)} confirmLabel="Delete everything in the trash?">
-          Empty trash ({bytes(bins.reduce((s, b) => s + b.bytes, 0))})
+        <ConfirmButton onConfirm={() => purge.mutate(undefined)} confirmLabel="Delete everything in the trash?" disabled={!waiting.length}>
+          Empty trash ({bytes(waiting.reduce((s, b) => s + b.bytes, 0))})
         </ConfirmButton>
       </div>
       {purge.error && <ErrorBox error={purge.error} />}
@@ -107,9 +112,12 @@ function Trash() {
               <div className="font-semibold tabular">{bytes(b.bytes)}</div>
               <div className="text-xs muted">{count(b.items)} items</div>
             </div>
-            <ConfirmButton className="btn-secondary px-2 py-1 text-xs" confirmLabel="Delete for good?" onConfirm={() => purge.mutate(b.planId)}>
-              Empty
-            </ConfirmButton>
+            {!b.pending && (
+              <ConfirmButton className="btn-secondary px-2 py-1 text-xs" confirmLabel="Delete for good?" onConfirm={() => purge.mutate(b.planId)}>
+                Empty
+              </ConfirmButton>
+            )}
+            <TrashProgress planId={b.planId} pending={b.pending} compact />
           </div>
         ))}
       </div>

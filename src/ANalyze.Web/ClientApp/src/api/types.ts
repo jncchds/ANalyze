@@ -262,6 +262,11 @@ export interface PlanDetail {
     failed: number
     undone: number
     undoable: number
+    /** What the plan's trash holds (0 once emptied). */
+    trashItems: number
+    trashBytes: number
+    /** The trash is queued for emptying or being emptied now (the "trash" job). */
+    trashPending: boolean
   }
   page: Page<PlanItem>
   /** Entry id → the folder it is in, for links to the browser (entries the plan removed are missing). */

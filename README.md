@@ -193,7 +193,8 @@ To go back to SQLite, remove the two `ANalyze__Database__…` variables (the old
    both copies, so a file that changed since the scan is skipped. When one plan both removes a duplicate and trashes the
    copy it keeps, the review warns about both and applying skips whichever comes second, so one copy always stays.
 4. **Trash** moves items to `<root>/.analyze-trash/<plan>/…` (an instant rename on the same disk). It is emptied after
-   the retention period (Settings) or from **Actions → Trash**. **Undo** restores trashed and moved items, and files replaced with the backup's copy.
+   the retention period (Settings), from **Actions → Trash** or with **Empty trash** on the plan's page; emptying runs in the
+   background with its progress (file being deleted, space freed) shown on both pages, and can be stopped. **Undo** restores trashed and moved items, and files replaced with the backup's copy.
 
 ## Duplicates
 

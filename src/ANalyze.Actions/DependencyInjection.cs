@@ -11,6 +11,7 @@ public static class DependencyInjection
         services.AddSingleton<PlanQueue>();
         services.AddSingleton<TrashService>();
         services.AddHostedService<PlanWorker>();
+        services.AddHostedService<TrashWorker>();
         services.AddHostedService<TrashJanitor>();
         return services;
     }

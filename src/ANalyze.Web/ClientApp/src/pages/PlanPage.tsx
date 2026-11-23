@@ -7,6 +7,7 @@ import { useRoots } from '../api/hooks'
 import type { ActionOp, PlanAdded, PlanDetail, PlanItem } from '../api/types'
 import { ActionFields, actionBody, usePlanOps, useKeepLocal } from '../components/PlanDialog'
 import { ConfirmButton, Empty, ErrorBox, Loading, PageTitle, Progress, Stat } from '../components/ui'
+import { TrashProgress } from '../components/TrashProgress'
 import { isActive, useJob } from '../hooks/useJobs'
 import { bytes, count, dateTime } from '../lib/format'
 import { useUrlNumber, useUrlParam } from '../hooks/useUrlState'
@@ -61,6 +62,7 @@ export default function PlanPage() {
   const navigate = useNavigate()
   const roots = useRoots()
   const job = useJob('apply')
+  const trashJob = useJob('trash')
   // Filter, path filter and page are in the URL, so Back steps through them.
   const [filter, setFilter] = useUrlParam('filter', 'all')
   const [search, setSearch] = useUrlParam('q')
@@ -81,6 +83,7 @@ export default function PlanPage() {
   const apply = useMutation({ mutationFn: () => api(`/plans/${id}/apply`, { method: 'POST' }), onSuccess: refresh })
   const undo = useMutation({ mutationFn: () => api(`/plans/${id}/undo`, { method: 'POST' }), onSuccess: refresh })
   const cancel = useMutation({ mutationFn: () => api('/plans/cancel', { method: 'POST' }) })
+  const emptyTrash = useMutation({ mutationFn: () => api(`/trash/${id}`, { method: 'DELETE' }), onSuccess: refresh })
   const remove = useMutation({
     mutationFn: () => api(`/plans/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
@@ -95,6 +98,8 @@ export default function PlanPage() {
   const draft = plan.status === 'draft'
   const rootName = (rid: number) => roots.data?.find((r) => r.id === rid)?.name ?? '?'
   const hasDelete = page.items.some((i) => i.op === 'delete')
+  // The trash is queued or being emptied: apply, undo and delete wait for it.
+  const emptying = summary.trashPending || (isActive(trashJob) && trashJob?.refId === plan.id)
 
   return (
     <>
@@ -114,7 +119,7 @@ export default function PlanPage() {
             {(draft || plan.status === 'cancelled' || plan.status === 'failed') && (
               <ConfirmButton
                 className="btn-primary"
-                disabled={summary.included === 0 || running}
+                disabled={summary.included === 0 || running || emptying}
                 confirmLabel={`Apply ${count(summary.included)} items now?`}
                 onConfirm={() => apply.mutate()}
               >
@@ -126,12 +131,17 @@ export default function PlanPage() {
                 Stop
               </button>
             )}
-            {!draft && !running && summary.undoable > 0 && (
+            {!draft && !running && !emptying && summary.trashItems > 0 && (
+              <ConfirmButton className="btn-secondary" confirmLabel="Delete the trashed files for good?" onConfirm={() => emptyTrash.mutate()}>
+                Empty trash ({bytes(summary.trashBytes)})
+              </ConfirmButton>
+            )}
+            {!draft && !running && !emptying && summary.undoable > 0 && (
               <ConfirmButton className="btn-secondary" confirmLabel="Restore everything?" onConfirm={() => undo.mutate()}>
                 Undo ({count(summary.undoable)})
               </ConfirmButton>
             )}
-            {!running && (
+            {!running && !emptying && (
               <ConfirmButton className="btn-ghost" confirmLabel="Delete plan?" onConfirm={() => remove.mutate()}>
                 Delete plan
               </ConfirmButton>
@@ -141,7 +151,7 @@ export default function PlanPage() {
       >
         {plan.name}
       </PageTitle>
-      {(apply.error || undo.error || remove.error) && <ErrorBox error={apply.error ?? undo.error ?? remove.error} />}
+      {(apply.error || undo.error || remove.error || emptyTrash.error) && <ErrorBox error={apply.error ?? undo.error ?? remove.error ?? emptyTrash.error} />}
       {draft && hasDelete && (
         <div className="mb-3 rounded-md bg-danger/10 p-3 text-sm text-danger">This plan deletes files permanently. Consider recreating it with “Move to trash”.</div>
       )}
@@ -156,6 +166,7 @@ export default function PlanPage() {
           <Progress value={job.done} max={job.total} />
         </div>
       )}
+      <TrashProgress planId={plan.id} pending={summary.trashPending} />
       {plan.message && !running && <p className="mb-3 text-sm muted">{plan.message}</p>}
 
       <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">

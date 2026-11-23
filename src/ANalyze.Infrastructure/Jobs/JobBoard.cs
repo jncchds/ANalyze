@@ -8,6 +8,9 @@ public static class JobKinds
     public const string Apply = "apply";
     public const string Ai = "ai";
 
+    /// <summary>Emptying a plan's trash (RefId = plan id).</summary>
+    public const string Trash = "trash";
+
     /// <summary>What follows a scan's walk in the background: types, categories, archives, hashes, duplicates, verification.</summary>
     public const string Processing = "processing";
 }
