@@ -45,7 +45,9 @@ interface ArchiveGroup {
   archiveSize: number
   archiveMTime: number
   format?: string
-  /** The archive and its identical copies (same content). */
+  /** The archive's content hash, the same for every copy; absent when not calculated yet (then copies of it are not known). */
+  hash?: string
+  /** The archive and its identical copies (same content hash). */
   copies: Place[]
   /** Every folder the archive was found extracted to, complete ones first. */
   extractions: Extraction[]
@@ -66,6 +68,8 @@ interface FileRow {
   entryId?: number
   diskSize?: number
   checkable: boolean
+  /** Extracted files: the archive's CRC32 checked and equal, checked and different, not checked (or not checkable), or not stored in the archive. */
+  crc?: 'match' | 'differs' | 'unchecked' | 'none'
 }
 
 const PAGE = 50
@@ -77,7 +81,26 @@ const STATE_LABEL: Record<FileRow['state'], string> = {
   missing: 'missing',
   smaller: 'smaller (cut short)',
   differs: 'different size',
-  corrupt: 'content differs from the archive',
+  corrupt: 'same size, CRC32 differs from the archive',
+}
+
+/** An extracted file's label: whether only its size matched, or its CRC32 was compared with the archive's too. */
+function fileLabel(f: FileRow) {
+  if (f.state !== 'matched') return STATE_LABEL[f.state]
+  switch (f.crc) {
+    case 'match':
+      return 'same size, same CRC32'
+    case 'none':
+      return 'same size · no CRC32 in the archive'
+    default:
+      return 'same size · CRC32 not checked'
+  }
+}
+
+/** Says what "identical" rests on: the shared content hash, or that it has not been calculated. */
+function hashNote(hash: string | undefined, copies: number) {
+  if (!hash) return ' · content hash not calculated, so identical copies are not known'
+  return copies > 1 ? ` · ${count(copies)} identical copies (same content hash ${hash.slice(0, 12)}…)` : ''
 }
 
 function place(p: Place) {
@@ -218,7 +241,7 @@ function ArchiveCard({ g, open, onToggle, onVerify }: { g: ArchiveGroup; open: n
               {c.id === g.archive.id && (
                 <span className="ml-2 text-xs muted">
                   {bytes(g.archiveSize)} · {g.format}
-                  {copies > 1 && ` · ${count(copies)} identical copies`}
+                  {hashNote(g.hash, copies)}
                 </span>
               )}
             </div>
@@ -305,14 +328,14 @@ function ExtractionRow({
           {x.smaller > 0 && <span className={badPill}>{count(x.smaller)} cut short</span>}
           {x.differs > 0 && <span className={badPill}>{count(x.differs)} other size</span>}
           {x.verifiedAt == null ? (
-            <span className="pill-muted">not checked</span>
+            <span className="pill-muted" title="Only names and sizes were compared so far">CRC32 not checked</span>
           ) : x.verifiedBad > 0 ? (
             <span className={badPill} title={`Checked ${date(x.verifiedAt)}`}>
-              {count(x.verifiedBad)} differ from the archive
+              {count(x.verifiedBad)} with another CRC32 than the archive
             </span>
           ) : (
             <span className={x.unverified ? 'pill-muted' : okPill} title={`Checked ${date(x.verifiedAt)}`}>
-              ✓ {count(x.verifiedOk)} match{x.unverified ? ` · ${count(x.unverified)} not checkable` : ''}
+              ✓ {count(x.verifiedOk)} same CRC32{x.unverified ? ` · ${count(x.unverified)} not checkable` : ''}
             </span>
           )}
         </div>
@@ -328,12 +351,12 @@ function ExtractionRow({
           {many ? 'Remove this copy…' : 'Remove extracted copy…'}
         </button>
       </div>
-      {open && <ExtractionFiles id={x.id} complete={complete} />}
+      {open && <ExtractionFiles id={x.id} complete={complete} checked={x.verifiedAt != null && x.verifiedBad === 0 && x.unverified === 0} />}
     </div>
   )
 }
 
-function ExtractionFiles({ id, complete }: { id: number; complete: boolean }) {
+function ExtractionFiles({ id, complete, checked }: { id: number; complete: boolean; checked: boolean }) {
   const [all, setAll] = useState(complete)
   const files = useQuery({
     queryKey: ['extraction', id, all],
@@ -349,7 +372,10 @@ function ExtractionFiles({ id, complete }: { id: number; complete: boolean }) {
         Only files with a problem
       </label>
       {!d?.files.length ? (
-        <p className="text-sm muted">No problems: every file is extracted with the same size.</p>
+        <p className="text-sm muted">
+          No problems: every file is extracted with the same size
+          {checked ? ' and the same CRC32 as in the archive.' : '. The CRC32s have not all been compared with the archive yet: use “Check against archive” to be sure the content is the same.'}
+        </p>
       ) : (
         <ul className="max-h-96 space-y-0.5 overflow-auto text-sm">
           {d.files.map((f) => (
@@ -360,7 +386,7 @@ function ExtractionFiles({ id, complete }: { id: number; complete: boolean }) {
               <span className="shrink-0 text-xs muted tabular">
                 {f.diskSize != null && f.diskSize !== f.size ? `${bytes(f.diskSize)} of ${bytes(f.size)}` : bytes(f.size)}
               </span>
-              <span className={f.state === 'matched' ? 'pill-muted' : f.state === 'missing' ? 'pill-amber' : badPill}>{STATE_LABEL[f.state]}</span>
+              <span className={f.state === 'matched' ? (f.crc === 'match' ? okPill : 'pill-muted') : f.state === 'missing' ? 'pill-amber' : badPill}>{fileLabel(f)}</span>
             </li>
           ))}
           {d.total > d.files.length && <li className="text-xs muted">… and {count(d.total - d.files.length)} more</li>}

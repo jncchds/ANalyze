@@ -284,9 +284,9 @@ Front end: `ClientApp/src/integrations/registry.tsx` maps an id to a lazy page; 
 
 Labels are clickable: a badge links to `/integrations/{source}?entry={entryId}` (never to the external app; those links stay inside the pages).
 Extracted archives (`ArchiveEndpoints`): `GET /archives/extractions?state=complete|unverified|verified|partial|bad&rootId=&q=&sort=` (paged by archive
-content — identical copies, same `FullHash`, are one group: `items` = `{archive, archiveSize, format, copies[], extractions[]}`, one
+content — identical copies, same `FullHash`, are one group: `items` = `{archive, archiveSize, format, hash, copies[], extractions[]}` (`hash` null: not calculated, copies unknown), one
 extraction per folder with `ids` = the extractions of every copy into it, filtered, complete first; `total` and `counts` count groups), `GET /archives/extractions/{id}?problems=` (every archive file as matched/missing/smaller/differs/corrupt, via
-`ExtractionMatcher.Compare`), `GET /archives/{entryId}/extractions`, `POST /archives/extractions/verify {ids | state, rootId}` (queues the
+`ExtractionMatcher.Compare`; `crc` = match/differs/unchecked/none for matched files: match only when the stored counts of the last check leave no doubt), `GET /archives/{entryId}/extractions`, `POST /archives/extractions/verify {ids | state, rootId}` (queues the
 check) and `POST /archives/extractions/plan {ids, remove: archive|extracted, op}` (archives only for complete extractions; "extracted" = only
 the matched files, never the rest of the folder). `SearchFilter.Extracted` (any/complete/verified/partial) needs `ArchiveExtractions` passed
 to `Apply`; insights `extracted-verified`, `extracted`, `extracted-partial`. UI: Duplicates → Extracted archives (`components/ExtractedArchives.tsx`).

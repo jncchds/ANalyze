@@ -11,6 +11,7 @@ import { ConfirmButton, Empty, ErrorBox, FilterInput, Loading, PageTitle, Sectio
 import { useLocate } from '../../hooks/useLocate'
 import { useEntryPreview, useUrlEnum, useUrlNumber, useUrlOverlay, useUrlParam, useUrlParams } from '../../hooks/useUrlState'
 import { ago, bytes, count, pct } from '../../lib/format'
+import { hashCheckText, type HashCheck } from '../../lib/hashCheck'
 import { ComparePanel } from './ComparePanel'
 
 type FileState = 'synced' | 'corrupt' | 'missing' | 'unsynced'
@@ -110,6 +111,7 @@ interface FileRow {
   size: number
   parentSize?: number
   verified: boolean
+  hashCheck: HashCheck
 }
 
 type Tab = 'folders' | FileState
@@ -349,7 +351,7 @@ function Folders({ targets, threshold }: { targets: Target[]; threshold: number 
       {self && (
         <p className="mb-3 flex flex-wrap items-center gap-x-2 text-xs muted">
           <span>
-            {count(self.synced)} of {count(self.children)} direct items are on the backup — a folder is synchronized at {threshold}% or when it is identical.
+            {count(self.synced)} of {count(self.children)} direct items are on the backup — a folder is synchronized at {threshold}% or when it is identical (same entries, every file the same size and, where both sides calculated it, the same content hash).
             {q.data?.parentPath && (
               <>
                 {' '}
@@ -419,13 +421,13 @@ function useFilePreview() {
 function detail(f: FileRow) {
   switch (f.state) {
     case 'corrupt':
-      return f.parentSize !== undefined && f.parentSize !== f.size ? `backup has ${bytes(f.parentSize)}, here ${bytes(f.size)}` : 'same size, other content hash on the backup'
+      return f.parentSize !== undefined && f.parentSize !== f.size ? `backup has ${bytes(f.parentSize)}, here ${bytes(f.size)}` : 'same size, another content hash on the backup'
     case 'missing':
       return `not on the backup${f.parentPath ? ` (${f.parentPath})` : ''}`
     case 'unsynced':
       return 'not on the backup; its folder is not synchronized'
     default:
-      return f.verified ? 'same content hash on the backup' : 'on the backup'
+      return f.parentSize !== undefined && f.parentSize !== f.size ? `on the backup with another size (${bytes(f.parentSize)})` : `on the backup: ${hashCheckText(f.hashCheck)}`
   }
 }
 

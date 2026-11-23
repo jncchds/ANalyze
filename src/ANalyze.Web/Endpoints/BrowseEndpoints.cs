@@ -66,7 +66,11 @@ public static class BrowseEndpoints
                 copies,
                 linkTarget = e.LinkTarget,
                 ai = ai is null ? null : new { ai.Id, ai.Category, ai.Tags, ai.Confidence, ai.Reason, ai.Applied, ai.Model },
-                backup = backup is null ? null : new { backup.State, backup.IsDir, backup.ParentSize, backup.Verified, backup.Children, backup.SyncedChildren },
+                backup = backup is null ? null : new
+                {
+                    backup.State, backup.IsDir, backup.ParentSize, backup.Verified, backup.Children, backup.SyncedChildren,
+                    HashCheck = backup.IsDir ? null : ANalyze.Integrations.Backup.BackupSync.HashCheck(e.FullHash, backup.ParentHash),
+                },
                 annotations = (await AnnotationsFor(db, [id], ct)).GetValueOrDefault(id) ?? [],
                 planned,
             });

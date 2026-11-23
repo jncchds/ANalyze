@@ -6,6 +6,7 @@ import { api, fileUrl } from '../api/client'
 import { useCategories, useCategoryMap, useSummary, useToHostPath } from '../api/hooks'
 import type { Annotation, Entry, PlannedAction } from '../api/types'
 import { bytes, date, kindLabel } from '../lib/format'
+import { hashCheckText, type HashCheck } from '../lib/hashCheck'
 import { PlanDialog } from './PlanDialog'
 import { AnnotationBadges, CategoryPill, ErrorBox, Loading, Tabs } from './ui'
 import { BackupCompareView } from './BackupCompareView'
@@ -22,7 +23,7 @@ interface EntryDetail {
   ai?: { id: number; category: string; tags: string[]; confidence: number; reason?: string; applied: boolean; model: string }
   annotations: Annotation[]
   /** How this entry compares with the backup server (the parent ANalyze integration). */
-  backup?: { state: string; isDir: boolean; parentSize?: number; verified: boolean; children: number; syncedChildren: number }
+  backup?: { state: string; isDir: boolean; parentSize?: number; verified: boolean; children: number; syncedChildren: number; hashCheck?: HashCheck }
   /** Draft plans that already have this entry. */
   planned: PlannedAction[]
 }
@@ -36,9 +37,10 @@ function backupText(b: NonNullable<EntryDetail['backup']>, size: number) {
       : `Not synchronized — ${b.syncedChildren} of ${b.children} direct items on the backup`
   switch (b.state) {
     case 'synced':
-      return b.verified ? 'On the backup — same content hash' : 'On the backup'
+      // Outside a synchronized folder a different copy still counts as on the backup: say so.
+      return b.parentSize !== undefined && b.parentSize !== size ? `On the backup, but with another size (${bytes(b.parentSize)})` : `On the backup — ${hashCheckText(b.hashCheck)}`
     case 'corrupt':
-      return b.parentSize !== undefined && b.parentSize !== size ? `Corrupted — the backup has ${bytes(b.parentSize)}` : 'Corrupted — the backup has other content (same size)'
+      return b.parentSize !== undefined && b.parentSize !== size ? `Corrupted — the backup has ${bytes(b.parentSize)}` : 'Corrupted — the backup has another content hash (same size)'
     case 'missing':
       return 'Missing from the backup (its folder is synchronized)'
     default:
@@ -180,7 +182,7 @@ export function EntryDrawer({ preview, list }: { preview: EntryPreview; list?: n
                   {e.nLink > 1 && <span className="pill-muted">{e.nLink} hard links</span>}
                   {d.copies > 0 && (
                     <Link to={`/duplicates?q=${encodeURIComponent(e.name)}`} className="pill-amber">
-                      {d.copies} identical {d.copies === 1 ? 'copy' : 'copies'}
+                      {d.copies} identical {d.copies === 1 ? 'copy' : 'copies'} · same content hash
                     </Link>
                   )}
                 </div>
@@ -226,7 +228,17 @@ export function EntryDrawer({ preview, list }: { preview: EntryPreview; list?: n
                     </button>
                   </div>
                 ))}
-                {!e.isDir && e.hashedAt && !e.corruptAt && <div className="text-xs muted">Content hash checked {date(e.hashedAt)}</div>}
+                {!e.isDir &&
+                  !e.corruptAt &&
+                  (e.hash ? (
+                    <div className="text-xs muted">
+                      Content hash <span className="font-mono">{e.hash.slice(0, 16)}…</span>
+                      {e.hashedAt ? ` checked ${date(e.hashedAt)}` : ''}
+                      {d.copies === 0 ? ' · no other file has it' : ''}
+                    </div>
+                  ) : (
+                    <div className="text-xs muted">Content hash not calculated (only files whose size matches another file are hashed), so identical copies are not known.</div>
+                  ))}
                 {d.ai && !d.ai.applied && (
                   <p className="text-xs muted">
                     ✨ AI suggests <b>{d.ai.category}</b> ({Math.round(d.ai.confidence * 100)}%): {d.ai.reason}

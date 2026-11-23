@@ -5,6 +5,7 @@
 - feat: emptying a plan's trash runs in the background and shows its progress like applying a plan: the file being deleted, space freed of the bin's size and files deleted, with Stop — on the plan's page (new "Empty trash" button), in Actions → Trash (each bin, "Waiting…" while queued) and in the sidebar's Activity; apply, undo and delete wait while a plan's trash is being emptied
 - feat: the file panel opens on Hex, now its first tab, so an image or video is loaded only when Preview is clicked; for an empty file Hex says "Empty file." and Preview is disabled
 - fix: filter boxes (Duplicates, Extracted archives, a plan's paths, Rules, Plex, the item integrations, Backup files) wait until typing pauses before filtering, and keep the last results on screen while the new ones load, so typing no longer freezes the page or loses the focus
+- feat: "identical" always says what it rests on: the file panel shows the content hash (or that it was not calculated, so copies are not known) and "N identical copies · same content hash"; Backup says "same size and same content hash", "another content hash" or which side has not calculated it (then only the size was compared); Extracted archives says "same content hash …" for copies of an archive (or that it was not calculated), and each extracted file says "same size, same CRC32", "CRC32 not checked" or "no CRC32 in the archive"
 
 ## v0.1.14 — 2026-11-20
 

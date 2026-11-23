@@ -79,6 +79,18 @@ public sealed class BackupSync(DbConnection conn, RootRegistry roots, IReadOnlyL
     public static bool Differs(long size, string? hash, long parentSize, string? parentHash) =>
         size != parentSize || (hash is not null && parentHash is not null && hash != parentHash);
 
+    /// <summary>
+    /// How the content hashes of a file and its copy on the parent compare, for the UI's wording: <c>same</c>, <c>differs</c>, or which side
+    /// has not calculated it yet (<c>notHere</c>, <c>notOnBackup</c>, <c>neither</c>) — then only the sizes were compared.
+    /// </summary>
+    public static string HashCheck(string? hash, string? parentHash) => (hash, parentHash) switch
+    {
+        (null, null) => "neither",
+        (null, _) => "notHere",
+        (_, null) => "notOnBackup",
+        _ => hash == parentHash ? "same" : "differs",
+    };
+
     public static string FileState(bool onParent, bool differs, bool folderSynced) =>
         onParent ? (folderSynced && differs ? BackupStates.Corrupt : BackupStates.Synced) : (folderSynced ? BackupStates.Missing : BackupStates.Unsynced);
 
