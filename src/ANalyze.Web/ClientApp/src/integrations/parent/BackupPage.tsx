@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { api } from '../../api/client'
 import { BarList } from '../../components/charts'
 import { EntryDrawer } from '../../components/EntryDrawer'
 import { PathText } from '../../components/PathText'
 import { PlanDialog } from '../../components/PlanDialog'
-import { ConfirmButton, Empty, ErrorBox, Loading, PageTitle, Section, ShareBar, Stat, Tabs } from '../../components/ui'
+import { ConfirmButton, Empty, ErrorBox, FilterInput, Loading, PageTitle, Section, ShareBar, Stat, Tabs } from '../../components/ui'
 import { useLocate } from '../../hooks/useLocate'
 import { useEntryPreview, useUrlEnum, useUrlNumber, useUrlOverlay, useUrlParam, useUrlParams } from '../../hooks/useUrlState'
 import { ago, bytes, count, pct } from '../../lib/format'
@@ -444,6 +444,7 @@ function FileList({ state, rootId, path, direct, q, onOpen }: { state?: FileStat
   const r = useQuery({
     queryKey: ['parent', 'files', state, rootId, path, direct, q, pages],
     queryFn: () => api<{ total: number; totalSize: number; items: FileRow[] }>('/integrations/parent/files', { query: { state, rootId, path, direct, q, limit: 200 * pages } }),
+    placeholderData: keepPreviousData,
   })
   if (r.isLoading) return <Loading />
   if (r.error) return <ErrorBox error={r.error} />
@@ -500,12 +501,13 @@ function Files({ state }: { state: FileState }) {
   const totals = useQuery({
     queryKey: ['parent', 'files', state, q, 'totals'],
     queryFn: () => api<{ total: number; totalSize: number }>('/integrations/parent/files', { query: { state, q, limit: 1 } }),
+    placeholderData: keepPreviousData,
   })
   return (
     <>
       <p className="mb-3 text-sm muted">{FILE_STATES.find((x) => x.id === state)?.hint}</p>
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <input className="input max-w-xs" placeholder="Path…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <FilterInput className="input max-w-xs" placeholder="Path…" value={q} onChange={setQ} />
         {totals.data && (
           <span className="text-sm muted">
             {count(totals.data.total)} files · {bytes(totals.data.totalSize)}

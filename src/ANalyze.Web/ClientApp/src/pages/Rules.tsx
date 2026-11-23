@@ -4,7 +4,7 @@ import clsx from 'clsx'
 import { api } from '../api/client'
 import { useCategories, useCategoryMap, useConfig, useRules, useTemplates } from '../api/hooks'
 import type { ActionOp, ActionTemplate, Category, ConflictPolicy, Rule, RuleClause, RuleCondition, RuleField, RuleOp } from '../api/types'
-import { ConfirmButton, Empty, ErrorBox, Field, Loading, Modal, PageTitle, Tabs, Toggle } from '../components/ui'
+import { ConfirmButton, Empty, ErrorBox, Field, FilterInput, Loading, Modal, PageTitle, Tabs, Toggle } from '../components/ui'
 import { bytes, count } from '../lib/format'
 import { useUrlEnum, useUrlOverlay, useUrlParam } from '../hooks/useUrlState'
 
@@ -104,7 +104,7 @@ function RulesTab() {
   return (
     <>
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <input className="input max-w-xs" placeholder="Filter rules…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+        <FilterInput className="input max-w-xs" placeholder="Filter rules…" value={filter} onChange={setFilter} />
         <span className="flex-1" />
         <button className="btn-secondary" onClick={() => restore.mutate()} title="Re-adds built-in rules you deleted">
           Restore built-ins{restore.data ? ` (+${restore.data.added})` : ''}

@@ -1,12 +1,12 @@
 import { useEffect, type ReactNode } from 'react'
 import { Link } from 'react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { api } from '../../api/client'
 import { BarList } from '../../components/charts'
 import { EntryDrawer } from '../../components/EntryDrawer'
 import { PlanDialog } from '../../components/PlanDialog'
-import { Empty, ErrorBox, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../../components/ui'
+import { Empty, ErrorBox, FilterInput, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../../components/ui'
 import { useLocate } from '../../hooks/useLocate'
 import { useEntryPreview, useUrlEnum, useUrlOverlay, useUrlParam, useUrlParams } from '../../hooks/useUrlState'
 import { PathText } from '../../components/PathText'
@@ -206,6 +206,7 @@ function Titles({ config }: { config: ItemsConfig }) {
   const top = useQuery({
     queryKey: [config.id, 'groups', kind, filter, state, sort, q],
     queryFn: () => api<{ total: number; totalSize: number; items: GroupRow[] }>(`${base}/groups`, { query: { kind, filter, state, sort, q, limit: 300 } }),
+    placeholderData: keepPreviousData,
   })
   const unit = config.kinds?.find((k) => k.id === kind)?.unit ?? 'files'
   return (
@@ -247,7 +248,7 @@ function Titles({ config }: { config: ItemsConfig }) {
           <option value="added">Recently added</option>
           <option value="title">Title</option>
         </select>
-        <input className="input max-w-xs" placeholder="Title…" value={q} onChange={(e) => setQ(e.target.value, { replace: true })} />
+        <FilterInput className="input max-w-xs" placeholder="Title…" value={q} onChange={(v) => setQ(v, { replace: true })} />
         {top.data && (
           <span className="ml-auto text-sm muted">
             {count(top.data.total)} {config.noun} · {bytes(top.data.totalSize)}

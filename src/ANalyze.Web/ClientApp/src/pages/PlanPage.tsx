@@ -6,7 +6,7 @@ import { api } from '../api/client'
 import { useRoots } from '../api/hooks'
 import type { ActionOp, PlanAdded, PlanDetail, PlanItem } from '../api/types'
 import { ActionFields, actionBody, usePlanOps, useKeepLocal } from '../components/PlanDialog'
-import { ConfirmButton, Empty, ErrorBox, Loading, PageTitle, Progress, Stat } from '../components/ui'
+import { ConfirmButton, Empty, ErrorBox, FilterInput, Loading, PageTitle, Progress, Stat } from '../components/ui'
 import { TrashProgress } from '../components/TrashProgress'
 import { isActive, useJob } from '../hooks/useJobs'
 import { bytes, count, dateTime } from '../lib/format'
@@ -73,6 +73,8 @@ export default function PlanPage() {
   const q = useQuery({
     queryKey: ['plan', id, filter, search, offset],
     queryFn: () => api<PlanDetail>(`/plans/${id}`, { query: { filter, q: search, offset, limit: PAGE } }),
+    // While a new filter or page loads, keep showing this plan's last page (not a spinner that would take the filter box away).
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === id ? prev : undefined),
     refetchInterval: running ? 1500 : false,
   })
   const refresh = () => qc.invalidateQueries({ queryKey: ['plan', id] })
@@ -186,11 +188,11 @@ export default function PlanPage() {
             {f.label}
           </button>
         ))}
-        <input
+        <FilterInput
           className="input ml-auto max-w-xs py-1"
           placeholder="Filter paths…"
           value={search}
-          onChange={(e) => setSearch(e.target.value, { replace: true, also: { offset: null } })}
+          onChange={(v) => setSearch(v, { replace: true, also: { offset: null } })}
         />
         {draft && (
           <>

@@ -4,6 +4,7 @@
 
 - feat: emptying a plan's trash runs in the background and shows its progress like applying a plan: the file being deleted, space freed of the bin's size and files deleted, with Stop — on the plan's page (new "Empty trash" button), in Actions → Trash (each bin, "Waiting…" while queued) and in the sidebar's Activity; apply, undo and delete wait while a plan's trash is being emptied
 - feat: the file panel opens on Hex, now its first tab, so an image or video is loaded only when Preview is clicked; for an empty file Hex says "Empty file." and Preview is disabled
+- fix: filter boxes (Duplicates, Extracted archives, a plan's paths, Rules, Plex, the item integrations, Backup files) wait until typing pauses before filtering, and keep the last results on screen while the new ones load, so typing no longer freezes the page or loses the focus
 
 ## v0.1.14 — 2026-11-20
 

@@ -1,12 +1,12 @@
 import { useEffect } from 'react'
 import { Link } from 'react-router'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { api } from '../../api/client'
 import { BarList } from '../../components/charts'
 import { EntryDrawer } from '../../components/EntryDrawer'
 import { PlanDialog } from '../../components/PlanDialog'
-import { Empty, ErrorBox, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../../components/ui'
+import { Empty, ErrorBox, FilterInput, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../../components/ui'
 import { ago, bytes, count, date, pct } from '../../lib/format'
 import { PathText } from '../../components/PathText'
 import { useLocate } from '../../hooks/useLocate'
@@ -89,6 +89,7 @@ export default function PlexPage() {
   const top = useQuery({
     queryKey: ['plex-top', type, filter, section, sort, q],
     queryFn: () => api<{ total: number; totalSize: number; items: TitleRow[] }>('/integrations/plex/top', { query: { type, filter, section, sort, q, limit: 300 } }),
+    placeholderData: keepPreviousData,
     enabled: tab === 'titles',
   })
   // Opened from a label in the browser: show that movie, show or artist (the label's `?entry=` becomes `?type=…&title=…`).
@@ -196,7 +197,7 @@ export default function PlexPage() {
               <option value="added">Recently added</option>
               <option value="title">Title</option>
             </select>
-            <input className="input max-w-xs" placeholder="Title…" value={q} onChange={(e) => setQ(e.target.value, { replace: true })} />
+            <FilterInput className="input max-w-xs" placeholder="Title…" value={q} onChange={(v) => setQ(v, { replace: true })} />
             {top.data && (
               <span className="ml-auto text-sm muted">
                 {count(top.data.total)} titles · {bytes(top.data.totalSize)}

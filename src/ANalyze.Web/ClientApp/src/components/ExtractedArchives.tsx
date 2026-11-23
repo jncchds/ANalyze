@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
-import { Empty, ErrorBox, Loading, Stat } from './ui'
+import { Empty, ErrorBox, FilterInput, Loading, Stat } from './ui'
 import { usePlanAdded, usePlanTarget } from './PlanDialog'
 import { useScope } from '../hooks/useScope'
 import { leaveOverlay, useUrlNumber, useUrlParam } from '../hooks/useUrlState'
@@ -102,6 +102,7 @@ export function ExtractedArchives() {
   const list = useQuery({
     queryKey: ['extractions', rootId, state, q, sort, offset],
     queryFn: () => api<ListResponse>('/archives/extractions', { query: { rootId, state: state || undefined, q: q || undefined, sort, offset, limit: PAGE } }),
+    placeholderData: keepPreviousData,
   })
   const verify = useMutation({
     mutationFn: (body: { ids?: number[]; state?: string; rootId?: number }) => api<{ queued: number }>('/archives/extractions/verify', { method: 'POST', json: body }),
@@ -118,11 +119,11 @@ export function ExtractedArchives() {
         <Stat label="Copies that differ" value={count(d?.counts.bad)} hint={d?.listed.unreadable ? `${count(d.listed.unreadable)} archives could not be read` : 'content differs from the archive'} />
       </div>
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <input
+        <FilterInput
           className="input max-w-xs"
           placeholder="Archive or folder contains…"
           value={q}
-          onChange={(e) => setQ(e.target.value, { replace: true, also: { aoffset: null } })}
+          onChange={(v) => setQ(v, { replace: true, also: { aoffset: null } })}
         />
         <select
           className="input w-auto"

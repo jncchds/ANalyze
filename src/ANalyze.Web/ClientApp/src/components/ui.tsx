@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type InputHTMLAttributes, type ReactNode } from 'react'
 import { Loader2 } from 'lucide-react'
 import { Link } from 'react-router'
 import clsx from 'clsx'
@@ -64,6 +64,25 @@ export function Stat({ label, value, hint, tone }: { label: string; value: React
       {hint && <div className="mt-0.5 text-xs muted">{hint}</div>}
     </div>
   )
+}
+
+/**
+ * A text filter that keeps what is typed locally and reports it (trimmed) only after `delay` ms without typing, so a request is
+ * made per pause, not per key press. Follows `value` when it changes from outside (Back/Forward, a reset).
+ */
+export function FilterInput({ value, onChange, delay = 300, ...rest }: { value: string; onChange: (v: string) => void; delay?: number } & Omit<InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'>) {
+  const [text, setText] = useState(value)
+  const report = useRef(onChange)
+  useEffect(() => {
+    report.current = onChange
+  })
+  useEffect(() => {
+    if (text.trim() === value) return
+    const t = setTimeout(() => report.current(text.trim()), delay)
+    return () => clearTimeout(t)
+  }, [text, value, delay])
+  useEffect(() => setText((cur) => (cur.trim() === value ? cur : value)), [value])
+  return <input className="input" {...rest} value={text} onChange={(e) => setText(e.target.value)} />
 }
 
 export function Toggle({ checked, onChange, label, hint, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: ReactNode; hint?: ReactNode; disabled?: boolean }) {

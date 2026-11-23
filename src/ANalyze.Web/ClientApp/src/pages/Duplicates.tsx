@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query'
 import { api, fileUrl } from '../api/client'
 import type { DedupeKeep } from '../api/types'
 import { EntryDrawer } from '../components/EntryDrawer'
 import { ExtractedArchives } from '../components/ExtractedArchives'
 import { usePlanAdded, usePlanChoice } from '../components/PlanDialog'
-import { Empty, ErrorBox, Field, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../components/ui'
+import { Empty, ErrorBox, Field, FilterInput, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../components/ui'
 import { useScope } from '../hooks/useScope'
 import { leaveOverlay, useEntryPreview, useUrlEnum, useUrlNumber, useUrlOverlay, useUrlParam } from '../hooks/useUrlState'
 import { bytes, count, date } from '../lib/format'
@@ -53,6 +53,7 @@ export default function Duplicates() {
   const groups = useQuery({
     queryKey: ['duplicates', rootId, sort, offset, q],
     queryFn: () => api<{ groups: Group[]; total: number; wasted: number }>('/duplicates', { query: { rootId, sort, offset, limit: PAGE, q } }),
+    placeholderData: keepPreviousData,
   })
   const folders = useQuery({ queryKey: ['duplicate-folders'], queryFn: () => api<FolderPair[]>('/duplicates/folders'), enabled: tab === 'folders' })
   const d = groups.data
@@ -86,11 +87,11 @@ export default function Duplicates() {
       {tab === 'groups' && (
         <>
           <div className="mb-3 flex flex-wrap items-center gap-2">
-            <input
+            <FilterInput
               className="input max-w-xs"
               placeholder="File name contains…"
               value={q}
-              onChange={(e) => setQ(e.target.value, { replace: true, also: { offset: null } })}
+              onChange={(v) => setQ(v, { replace: true, also: { offset: null } })}
             />
             <select className="input w-auto" value={sort} onChange={(e) => setSort(e.target.value, { also: { offset: null } })}>
               <option value="wasted">Most wasted space</option>
