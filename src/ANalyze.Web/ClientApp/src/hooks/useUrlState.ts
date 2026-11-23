@@ -125,7 +125,8 @@ export function useEntryPreview(key = 'file') {
   const [params, set] = useUrlParams()
   const n = overlay.value === null ? NaN : Number(overlay.value)
   const id = Number.isInteger(n) ? n : null
-  const tab = params.get(tabKey) ?? 'preview'
+  // Hex is the default tab, so opening a file never loads an image or video until Preview is clicked.
+  const tab = params.get(tabKey) ?? 'hex'
   return useMemo(
     () => ({
       key,
@@ -135,7 +136,7 @@ export function useEntryPreview(key = 'file') {
       /** Previous/next file: in place, so Back still closes the panel. */
       step: (entryId: number) => overlay.change(entryId),
       close: overlay.close,
-      setTab: (t: string) => set({ [tabKey]: t === 'preview' ? null : t }, { replace: true }),
+      setTab: (t: string) => set({ [tabKey]: t === 'hex' ? null : t }, { replace: true }),
     }),
     [key, id, tab, overlay, set, tabKey],
   )

@@ -127,7 +127,16 @@ export function Modal({ open, onClose, title, children, wide }: { open: boolean;
   )
 }
 
-export function Tabs<T extends string>({ tabs, value, onChange }: { tabs: { id: T; label: ReactNode }[]; value: T; onChange: (v: T) => void }) {
+/** A tab with `disabled` is shown greyed out (its `title` says why) and cannot be picked. */
+export function Tabs<T extends string>({
+  tabs,
+  value,
+  onChange,
+}: {
+  tabs: { id: T; label: ReactNode; disabled?: boolean; title?: string }[]
+  value: T
+  onChange: (v: T) => void
+}) {
   return (
     <div className="mb-4 flex flex-wrap gap-1 border-b border-line" role="tablist">
       {tabs.map((t) => (
@@ -135,10 +144,13 @@ export function Tabs<T extends string>({ tabs, value, onChange }: { tabs: { id: 
           key={t.id}
           role="tab"
           aria-selected={value === t.id}
+          disabled={t.disabled}
+          title={t.title}
           onClick={() => onChange(t.id)}
           className={clsx(
             '-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors',
             value === t.id ? 'border-accent text-accent' : 'border-transparent text-muted hover:text-fg',
+            t.disabled && 'cursor-not-allowed opacity-50 hover:text-muted',
           )}
         >
           {t.label}

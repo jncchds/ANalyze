@@ -76,11 +76,12 @@ test('an overlay loaded from a link closes in place', () => {
 
 test('stepping through files keeps Back closing the file panel, with its tab', async () => {
   act(() => api.file.open(1))
-  act(() => api.file.setTab('hex'))
-  act(() => api.file.step(2))
-  expect(search()).toBe('?file=2&fileTab=hex')
-  expect(api.file.id).toBe(2)
   expect(api.file.tab).toBe('hex')
+  act(() => api.file.setTab('preview'))
+  act(() => api.file.step(2))
+  expect(search()).toBe('?file=2&fileTab=preview')
+  expect(api.file.id).toBe(2)
+  expect(api.file.tab).toBe('preview')
   act(() => api.file.close())
   await waitFor(() => expect(search()).toBe(''))
   expect(api.file.id).toBeNull()

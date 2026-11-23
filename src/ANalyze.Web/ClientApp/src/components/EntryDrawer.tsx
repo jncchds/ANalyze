@@ -109,7 +109,8 @@ export function EntryDrawer({ preview, list }: { preview: EntryPreview; list?: n
   // A damaged file the backup has a copy of can be replaced with it (a restore plan).
   const restorable = !!e && !!d?.backup && !d.backup.isDir && d.backup.parentSize !== undefined && (d.backup.state === 'corrupt' || !!e.corruptAt)
   const tabs = e && !e.isDir ? [...previewTabs(e), ...(onBackup ? [{ id: 'backup', label: 'Compare with backup' }] : [])] : []
-  const shown = tabs.some((t) => t.id === tab) ? tab : 'preview'
+  // Hex by default, and whenever the remembered tab is missing or disabled (Preview of an empty file).
+  const shown = tabs.some((t) => t.id === tab && !t.disabled) ? tab : 'hex'
 
   return (
     <>
@@ -274,7 +275,7 @@ export function EntryDrawer({ preview, list }: { preview: EntryPreview; list?: n
 
               {!e.isDir && (
                 <div>
-                  <Tabs tabs={tabs.map((t) => ({ id: t.id, label: t.label }))} value={shown} onChange={setTab} />
+                  <Tabs tabs={tabs.map((t) => ({ id: t.id, label: t.label, disabled: t.disabled, title: t.title }))} value={shown} onChange={setTab} />
                   {shown === 'preview' && <MainPreview key={e.id} entry={e} />}
                   {shown === 'text' && <TextView key={e.id} entry={e} />}
                   {shown === 'hex' && <HexView key={e.id} entry={e} />}

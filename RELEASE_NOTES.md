@@ -3,6 +3,7 @@
 ## v0.1.15 — 2026-11-23
 
 - feat: emptying a plan's trash runs in the background and shows its progress like applying a plan: the file being deleted, space freed of the bin's size and files deleted, with Stop — on the plan's page (new "Empty trash" button), in Actions → Trash (each bin, "Waiting…" while queued) and in the sidebar's Activity; apply, undo and delete wait while a plan's trash is being emptied
+- feat: the file panel opens on Hex, now its first tab, so an image or video is loaded only when Preview is clicked; for an empty file Hex says "Empty file." and Preview is disabled
 
 ## v0.1.14 — 2026-11-20
 

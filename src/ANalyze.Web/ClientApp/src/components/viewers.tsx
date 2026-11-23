@@ -112,6 +112,7 @@ export function HexView({ entry }: { entry: Entry }) {
   const q = useQuery({
     queryKey: ['hex', entry.id, offset],
     queryFn: () => api<{ offset: number; size: number; base64: string }>(`/files/${entry.id}/hex`, { query: { offset, length: PAGE } }),
+    enabled: entry.size > 0,
   })
   const bytesArr = useMemo(() => (q.data ? Uint8Array.from(atob(q.data.base64), (c) => c.charCodeAt(0)) : new Uint8Array()), [q.data])
   const size = q.data?.size ?? entry.size
@@ -126,6 +127,7 @@ export function HexView({ entry }: { entry: Entry }) {
       </div>,
     )
   }
+  if (entry.size === 0) return <Empty>Empty file.</Empty>
   return (
     <div>
       <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
@@ -240,10 +242,17 @@ export function MainPreview({ entry }: { entry: Entry }) {
   }
 }
 
+/**
+ * Hex comes first and is the default: opening a file reads only its first bytes, images and videos load when Preview is clicked.
+ * An empty file shows "Empty file." under Hex, and Preview is disabled (there is nothing to load).
+ */
 export function previewTabs(entry: Entry) {
-  const tabs: { id: string; label: string }[] = [{ id: 'preview', label: 'Preview' }]
+  const empty = entry.size === 0
+  const tabs: { id: string; label: string; disabled?: boolean; title?: string }[] = [
+    { id: 'hex', label: 'Hex' },
+    { id: 'preview', label: 'Preview', disabled: empty, title: empty ? 'Empty file: nothing to preview' : undefined },
+  ]
   if (!['text', 'code'].includes(entry.kind) && entry.size > 0 && entry.size < 50 * 1024 * 1024) tabs.push({ id: 'text', label: 'Text' })
-  if (entry.size > 0) tabs.push({ id: 'hex', label: 'Hex' })
   if (['image', 'video', 'audio'].includes(entry.kind)) tabs.push({ id: 'meta', label: 'Metadata' })
   return tabs
 }
