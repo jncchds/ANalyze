@@ -37,6 +37,15 @@ interface FolderPair {
 }
 
 const PAGE = 50
+const folderOf = (m: Member) => `${m.rootId}:${m.relPath.includes('/') ? m.relPath.slice(0, m.relPath.lastIndexOf('/')) : ''}`
+
+/** The first copy and the first copy in another folder, whose folders the comparison page opens on; null when all are in one folder. */
+function comparePair(g: Group): [number, number] | null {
+  const [first, ...rest] = g.members
+  const other = first && rest.find((m) => folderOf(m) !== folderOf(first))
+  return other ? [first.id, other.id] : null
+}
+
 const IMAGE_EXT = /\.(jpe?g|png|gif|webp|bmp|heic|avif|tiff?)$/i
 
 export default function Duplicates() {
@@ -114,6 +123,15 @@ export default function Duplicates() {
                     <span className="muted">· {bytes(g.size)} each</span>
                     <span className="pill-amber">{bytes(g.wasted)} wasted</span>
                     <span className="flex-1" />
+                    {comparePair(g) && (
+                      <Link
+                        to={`/duplicates/compare?${new URLSearchParams({ a: String(comparePair(g)![0]), b: String(comparePair(g)![1]), hash: g.hash })}`}
+                        className="btn-secondary px-2.5 py-1 text-xs"
+                        title="The folders these copies are in, compared file by file: whether the rest of the folder is a copy too, and what differs"
+                      >
+                        Compare folders
+                      </Link>
+                    )}
                     <button className="btn-secondary px-2.5 py-1 text-xs" onClick={() => dedupe.open(g.hash)}>
                       Dedupe this…
                     </button>
@@ -169,6 +187,9 @@ export default function Duplicates() {
                     <div className="font-semibold text-amber tabular">{bytes(p.sharedBytes)}</div>
                     <div className="text-xs muted">{count(p.sharedFiles)} shared files</div>
                   </div>
+                  <Link to={`/duplicates/compare?a=${p.a.id}&b=${p.b.id}`} className="btn-secondary px-2.5 py-1 text-xs" title="Compare the two folders file by file">
+                    Compare
+                  </Link>
                 </li>
               ))}
             </ul>

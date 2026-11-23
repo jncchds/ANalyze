@@ -15,6 +15,7 @@ const Browse = lazy(() => import('./pages/Browse'))
 const Search = lazy(() => import('./pages/Search'))
 const Duplicates = lazy(() => import('./pages/Duplicates'))
 const ExtractionPage = lazy(() => import('./pages/ExtractionPage'))
+const FolderComparePage = lazy(() => import('./pages/FolderComparePage'))
 const Insights = lazy(() => import('./pages/Insights'))
 const Rules = lazy(() => import('./pages/Rules'))
 const Ai = lazy(() => import('./pages/Ai'))
@@ -72,6 +73,7 @@ export default function App() {
               <Route path="search" element={<Search />} />
               <Route path="duplicates" element={<Duplicates />} />
               <Route path="duplicates/archives/:id" element={<ExtractionPage />} />
+              <Route path="duplicates/compare" element={<FolderComparePage />} />
               <Route path="insights" element={<Insights />} />
               <Route path="rules" element={<Rules />} />
               <Route path="ai" element={<Ai />} />

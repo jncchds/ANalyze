@@ -27,6 +27,27 @@ public class ScanAndActionTests
         Assert.Equal(1, dups.GetProperty("total").GetInt64());
         Assert.Equal(600_000, dups.GetProperty("wasted").GetInt64());
 
+        // The folders of two copies, compared file by file: the photo is the same, the rest of Photos/2021 is only in A.
+        var group = dups.GetProperty("groups")[0];
+        long Copy(string relPath) => group.GetProperty("members").EnumerateArray().Single(m => m.GetProperty("relPath").GetString() == relPath).GetProperty("id").GetInt64();
+        var cmp = await http.GetFromJsonAsync<JsonElement>(
+            $"/api/v1/duplicates/compare?a={Copy("Photos/2021/IMG_0001.jpg")}&b={Copy("Backup/Photos/IMG_0001.jpg")}&hash={group.GetProperty("hash").GetString()}");
+        Assert.Equal("Photos/2021", cmp.GetProperty("a").GetProperty("relPath").GetString());
+        Assert.Equal("Backup/Photos", cmp.GetProperty("b").GetProperty("relPath").GetString());
+        var cmpFiles = cmp.GetProperty("files").EnumerateArray().ToDictionary(f => f.GetProperty("path").GetString()!);
+        Assert.Equal("matched", cmpFiles["IMG_0001.jpg"].GetProperty("state").GetString());
+        Assert.Equal("match", cmpFiles["IMG_0001.jpg"].GetProperty("crc").GetString());
+        Assert.Equal("missing", cmpFiles["IMG_0002.jpg"].GetProperty("state").GetString());
+        // The other copy of the photo, renamed: only in A, with the same content at another path in B.
+        Assert.Equal("IMG_0001.jpg", cmpFiles["IMG_0001 (1).jpg"].GetProperty("elsewhere").GetString());
+        Assert.Equal(3, cmp.GetProperty("copies").GetArrayLength());
+        // One level up: Photos against Backup, where the inner pair keeps its relative paths.
+        var up = await http.GetFromJsonAsync<JsonElement>(
+            $"/api/v1/duplicates/compare?a={cmp.GetProperty("a").GetProperty("parentId").GetInt64()}&b={cmp.GetProperty("b").GetProperty("parentId").GetInt64()}");
+        var upFiles = up.GetProperty("files").EnumerateArray().ToDictionary(f => f.GetProperty("path").GetString()!, f => f.GetProperty("state").GetString());
+        Assert.Equal("missing", upFiles["2021/IMG_0001.jpg"]);
+        Assert.Equal("extra", upFiles["Photos/IMG_0001.jpg"]);
+
         var insights = await http.GetFromJsonAsync<JsonElement>("/api/v1/insights");
         var keys = insights.EnumerateArray().Select(i => i.GetProperty("key").GetString()).ToList();
         Assert.Contains("node_modules", keys);

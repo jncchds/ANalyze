@@ -292,6 +292,13 @@ for the comparison page `pages/ExtractionPage.tsx` at `/duplicates/archives/{id}
 check) and `POST /archives/extractions/plan {ids, remove: archive|extracted, op}` (archives only for complete extractions; "extracted" = only
 the matched files, never the rest of the folder). `SearchFilter.Extracted` (any/complete/verified/partial) needs `ArchiveExtractions` passed
 to `Apply`; insights `extracted-verified`, `extracted`, `extracted-partial`. UI: Duplicates → Extracted archives (`components/ExtractedArchives.tsx`).
+Folder comparison (`DuplicateEndpoints`): `GET /duplicates/compare?a=&b=&hash=` (entry ids, a file standing for its folder): every non-symlink file below
+each folder (subtree range, at most 50,000 each, `capped`), paired by relative path — `matched` (same size; `crc` match when both content hashes
+agree, unchecked when one is missing), `corrupt` (same size, other hash), `differs`, `missing` (only in a), `extra` (only in b) — with both entry
+ids and mtimes and `elsewhere` (a path on the other side with the same hash, for one-sided files); when one folder holds the other the outer
+one leaves out the inner subtree; `a`/`b` carry `parentId` (one level up), `copies` the group's files with `hash`. UI `pages/FolderComparePage.tsx`
+at `/duplicates/compare` (from a duplicate group's "Compare folders" and a similar-folder pair), built on `components/FolderCompare.tsx`, the
+tree + file list shared with `ExtractionPage` (each page passes its words: filters, labels, column headings, footer).
 
 Browse also calls `GET /entries/{id}/disk` (the folder listed on disk now via `ResolveForRead`: names not in the index with lstat data and whether
 they are ignored, plus the count of indexed children gone from disk; `?sub=a/b` lists a folder further down that is not in the index,

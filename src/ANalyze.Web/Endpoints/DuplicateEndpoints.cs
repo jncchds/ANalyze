@@ -68,5 +68,126 @@ public static class DuplicateEndpoints
                 : new { id, RootId = 0, root = (string?)null, RelPath = "?", Files = 0L, Size = 0L };
             return rows.Select(r => new { a = Dir(r.A), b = Dir(r.B), sharedFiles = r.Files, sharedBytes = r.Bytes });
         });
+
+        // Two folders compared file by file, by path below each (the comparison view of extracted archives): usually the parent folders of
+        // two copies of a duplicate. a and b are entry ids, a file standing for its folder; with hash, `copies` lists that group's files.
+        api.MapGet("/duplicates/compare", (long a, long b, string? hash, DbSetup database, RootRegistry roots) =>
+        {
+            using var c = database.Open();
+            var (fa, fb) = (FolderOf(c, a, roots), FolderOf(c, b, roots));
+            if (fa is null || fb is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (fa.Id == fb.Id)
+            {
+                return Results.Problem("Both copies are in the same folder.", statusCode: 400);
+            }
+
+            // When one folder holds the other, the outer one is compared without the inner one's files.
+            var (la, capA) = FilesBelow(c, fa, Inner(fa, fb));
+            var (lb, capB) = FilesBelow(c, fb, Inner(fb, fa));
+            var files = CompareFolders(la, lb);
+            var copies = string.IsNullOrEmpty(hash) ? null : Sql.Query(c, "SELECT Id, RootId, RelPath, ParentId FROM Entries WHERE FullHash = @h AND IsDir = FALSE AND IsSymlink = FALSE ORDER BY RootId, RelPath LIMIT 200",
+                r => new { id = r.GetInt64(0), rootId = r.GetInt32(1), root = roots.Get(r.GetInt32(1))?.Name, relPath = r.GetString(2), parentId = r.NullableLong(3) }, ("@h", hash));
+            return Results.Ok(new { a = fa, b = fb, files, capped = capA || capB, copies });
+        });
     }
+
+    /// <summary>A folder of a comparison: <see cref="ParentId"/> for going one level up, <see cref="Files"/> and <see cref="Size"/> of its whole subtree.</summary>
+    public sealed record CompareSide(long Id, int RootId, string? Root, string RelPath, long? ParentId, long Files, long Size);
+
+    /// <summary>
+    /// One path below the two folders. State: <c>matched</c> (same size: <c>crc</c> = match when both have the same content hash,
+    /// unchecked when one has none), <c>corrupt</c> (same size, other content hash), <c>differs</c> (other size), <c>missing</c> (only in a),
+    /// <c>extra</c> (only in b; <c>size</c> is b's). <c>entryId</c>/<c>diskSize</c>/<c>diskMTime</c>/<c>target</c> are b's file, <c>sourceId</c>/<c>sourceMTime</c>
+    /// a's; <c>elsewhere</c> is a path in the other folder with the same content, for a file found only on one side.
+    /// </summary>
+    public sealed record CompareFile(string Path, long Size, string State, string? Target, long? EntryId, long? DiskSize, bool Checkable, string? Crc, long? DiskMTime,
+        long? SourceId, long? SourceMTime, string? Elsewhere);
+
+    /// <summary>Files read per folder at most.</summary>
+    private const int MaxCompareFiles = 50_000;
+
+    private sealed record FileAt(long Id, string Path, string RelPath, long Size, long MTime, string? Hash);
+
+    private static CompareSide? FolderOf(System.Data.Common.DbConnection c, long id, RootRegistry roots)
+    {
+        var e = Sql.Query(c, "SELECT IsDir, ParentId FROM Entries WHERE Id = @id", r => (IsDir: r.GetBoolean(0), ParentId: r.NullableLong(1)), ("@id", id)).FirstOrDefault();
+        if (e == default)
+        {
+            return null;
+        }
+
+        var dirId = e.IsDir ? id : e.ParentId;
+        return dirId is null ? null : Sql.Query(c, "SELECT Id, RootId, RelPath, ParentId, FileCount, TotalSize FROM Entries WHERE Id = @id AND IsDir = TRUE",
+            r => new CompareSide(r.GetInt64(0), r.GetInt32(1), roots.Get(r.GetInt32(1))?.Name, r.GetString(2), r.NullableLong(3), r.GetInt64(4), r.GetInt64(5)), ("@id", dirId)).FirstOrDefault();
+    }
+
+    /// <summary>The relative path of <paramref name="inner"/> below <paramref name="outer"/>, when it is inside it.</summary>
+    private static string? Inner(CompareSide outer, CompareSide inner) =>
+        inner.RootId == outer.RootId && (outer.RelPath.Length == 0 ? inner.RelPath.Length > 0 : inner.RelPath.StartsWith(outer.RelPath + "/", StringComparison.Ordinal))
+            ? inner.RelPath[(outer.RelPath.Length == 0 ? 0 : outer.RelPath.Length + 1)..]
+            : null;
+
+    /// <summary>Every file below a folder (not symlinks), with its path relative to it, leaving out the subtree <paramref name="skip"/>.</summary>
+    private static (List<FileAt> Files, bool Capped) FilesBelow(System.Data.Common.DbConnection c, CompareSide f, string? skip)
+    {
+        var (range, args) = Sql.ScopeOf(f.RootId, f.RelPath, "e");
+        var cut = f.RelPath.Length == 0 ? 0 : f.RelPath.Length + 1;
+        var list = Sql.Query(c, $"SELECT Id, RelPath, Size, MTime, FullHash FROM Entries e WHERE e.IsDir = FALSE AND e.IsSymlink = FALSE{range} LIMIT {MaxCompareFiles + 1}",
+            r => new FileAt(r.GetInt64(0), r.GetString(1)[cut..], r.GetString(1), r.GetInt64(2), r.GetInt64(3), r.NullableString(4)), args);
+        if (skip is not null)
+        {
+            list.RemoveAll(x => x.Path.StartsWith(skip + "/", StringComparison.Ordinal));
+        }
+
+        var capped = list.Count > MaxCompareFiles;
+        return (capped ? list.GetRange(0, MaxCompareFiles) : list, capped);
+    }
+
+    /// <summary>Pairs the files of two folders by relative path.</summary>
+    private static List<CompareFile> CompareFolders(List<FileAt> a, List<FileAt> b)
+    {
+        var byPath = b.ToDictionary(x => x.Path, StringComparer.Ordinal);
+        var hashA = HashIndex(a);
+        var hashB = HashIndex(b);
+        var list = new List<CompareFile>(a.Count + b.Count);
+        foreach (var x in a)
+        {
+            if (!byPath.Remove(x.Path, out var y))
+            {
+                list.Add(new CompareFile(x.Path, x.Size, "missing", null, null, null, x.Hash is not null, null, null, x.Id, x.MTime, Elsewhere(hashB, x.Hash)));
+                continue;
+            }
+
+            var hashed = x.Hash is not null && y.Hash is not null;
+            var (state, crc) = x.Size != y.Size ? ("differs", (string?)null)
+                : hashed && x.Hash != y.Hash ? ("corrupt", null)
+                : ("matched", hashed ? "match" : "unchecked");
+            list.Add(new CompareFile(x.Path, x.Size, state, y.RelPath, y.Id, y.Size, x.Hash is not null, crc, y.MTime, x.Id, x.MTime, null));
+        }
+
+        foreach (var y in byPath.Values)
+        {
+            list.Add(new CompareFile(y.Path, y.Size, "extra", y.RelPath, y.Id, y.Size, false, null, y.MTime, null, null, Elsewhere(hashA, y.Hash)));
+        }
+
+        list.Sort((p, q) => string.CompareOrdinal(p.Path, q.Path));
+        return list;
+    }
+
+    private static Dictionary<string, string> HashIndex(List<FileAt> files)
+    {
+        var d = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var f in files.Where(f => f.Hash is not null && f.Size > 0).OrderBy(f => f.Path, StringComparer.Ordinal))
+        {
+            d.TryAdd(f.Hash!, f.Path);
+        }
+
+        return d;
+    }
+
+    private static string? Elsewhere(Dictionary<string, string> other, string? hash) => hash is not null && other.TryGetValue(hash, out var p) ? p : null;
 }
