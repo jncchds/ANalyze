@@ -34,6 +34,13 @@ public sealed record DedupePlanRequest(
 /// </summary>
 public sealed record FolderPick(long EntryId, long? KeepId, string? MoveTo);
 
+/// <summary>
+/// One file of an extracted archive to extract again (<c>POST /archives/extractions/repair</c>): archive <see cref="ArchiveId"/>'s member
+/// <see cref="MemberPath"/> goes to <see cref="DiskPath"/> on <see cref="RootId"/>, over the damaged file <see cref="EntryId"/> or, without one,
+/// where the missing file belongs.
+/// </summary>
+public sealed record ArchivePick(long ArchiveId, string MemberPath, long Size, long? Crc, int RootId, string DiskPath, long? EntryId);
+
 /// <summary>What adding a selection to a plan did: items now in the plan, items added, items they replaced.</summary>
 public sealed record PlanAddResult(int Id, string Name, int Items, int Added, int Replaced);
 
@@ -208,6 +215,120 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
         return new PlanAddResult(created.Id, created.Name, created.Items.Count, created.Items.Count, 0);
     }
 
+    /// <summary>
+    /// A plan that extracts archive files again into an extraction (<see cref="ActionOp.Extract"/>): damaged copies are replaced — the
+    /// damaged file goes to the trash, or with <paramref name="keepTemplate"/> (e.g. <c>{relDir}/~{name}</c>) is kept there — and missing
+    /// files are created. <paramref name="planId"/> adds to that draft instead.
+    /// </summary>
+    public async Task<PlanAddResult> PlanArchiveAsync(int? planId, string? name, IReadOnlyList<ArchivePick> picks, string? keepTemplate, CancellationToken ct)
+    {
+        if (picks.Count == 0)
+        {
+            throw new ArgumentException("Nothing to repair: every file of the archive is there and fine.");
+        }
+
+        if (picks.Count > MaxItems)
+        {
+            throw new ArgumentException($"Too many items (max {MaxItems}).");
+        }
+
+        await using var db = await dbf.CreateDbContextAsync(ct);
+        var plan = planId is { } pid ? await LoadDraftAsync(db, pid, ct) : null;
+        var taken = plan?.Items.Where(i => i.Op == ActionOp.Move && i.TargetPath is not null).Select(i => i.TargetPath!)
+            .Concat(plan.Items.Where(i => i.Op is ActionOp.Restore or ActionOp.Extract && i.KeepPath is not null).Select(i => i.KeepPath!))
+            .Concat(plan.Items.Where(i => i.Op == ActionOp.Extract && i.EntryId is null).Select(i => i.SourcePath))
+            .ToHashSet(StringComparer.Ordinal) ?? new HashSet<string>(StringComparer.Ordinal);
+        var categories = await db.Categories.AsNoTracking().ToDictionaryAsync(c => c.Id, c => c.Name, ct);
+        var ids = picks.Where(p => p.EntryId is not null).Select(p => p.EntryId!.Value).Distinct().ToList();
+        var entries = new Dictionary<long, Entry>(ids.Count);
+        foreach (var chunk in ids.Chunk(5000))
+        {
+            foreach (var e in await db.Entries.AsNoTracking().Where(e => chunk.Contains(e.Id)).ToListAsync(ct))
+            {
+                entries[e.Id] = e;
+            }
+        }
+
+        var items = new List<ActionItem>(picks.Count);
+        // The same disk path from two copies of one archive: planned once.
+        foreach (var p in picks.DistinctBy(p => (p.RootId, p.DiskPath)))
+        {
+            var item = new ActionItem
+            {
+                RootId = p.RootId,
+                Op = ActionOp.Extract,
+                SourcePath = p.DiskPath,
+                TargetPath = p.MemberPath,
+                ArchiveId = p.ArchiveId,
+                ExpectedSize = p.Size,
+                Warning = p.Crc is null ? "The archive has no CRC32 for it: only the size is checked" : null,
+            };
+            if (p.EntryId is { } id)
+            {
+                if (!entries.TryGetValue(id, out var e))
+                {
+                    continue;
+                }
+
+                item.EntryId = e.Id;
+                (item.ExpectedSize, item.ExpectedMTime) = (e.Size, e.MTime);
+                if (e.IsDir || e.IsSymlink)
+                {
+                    (item.Included, item.Warning) = (false, e.IsDir ? "A folder is where the file belongs" : "A symbolic link is where the file belongs");
+                }
+                else if (!string.IsNullOrWhiteSpace(keepTemplate))
+                {
+                    var facts = new TemplateFacts(e.Name, e.RelPath, e.Ext, e.CategoryId is { } c && categories.TryGetValue(c, out var n) ? n : null, e.Kind.ToString(), e.MTime, e.Size);
+                    var warning = item.Warning;
+                    item.Warning = null;
+                    KeepLocal(item, keepTemplate, facts, taken);
+                    item.Warning = (warning, item.Warning) switch
+                    {
+                        (null, var w) => w,
+                        (var w, null) => w,
+                        var (a, b) => $"{a}; {b}",
+                    };
+                }
+            }
+            else
+            {
+                var root = roots.Get(p.RootId);
+                if (taken.Contains(p.DiskPath))
+                {
+                    (item.Included, item.Warning) = (false, "This plan already puts a file there");
+                }
+                else if (root is not null && Path.Exists(RootRegistry.Combine(root.Path, p.DiskPath)))
+                {
+                    (item.Included, item.Warning) = (false, "Something is at that path now (scan again)");
+                }
+
+                taken.Add(p.DiskPath);
+            }
+
+            MarkReadOnly(item);
+            items.Add(item);
+        }
+
+        if (plan is not null)
+        {
+            return await MergeAsync(db, plan, items, [], ct);
+        }
+
+        var created = new ActionPlan
+        {
+            Name = string.IsNullOrWhiteSpace(name) ? $"Extract {items.Count} file(s) again from the archive" : name.Trim(),
+            Source = PlanSource.Manual,
+            Status = PlanStatus.Draft,
+            Conflict = ConflictPolicy.Skip,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        created.Items.AddRange(items);
+        db.ActionPlans.Add(created);
+        await db.SaveChangesAsync(ct);
+        return new PlanAddResult(created.Id, created.Name, created.Items.Count, created.Items.Count, 0);
+    }
+
     private static async Task<ActionPlan> LoadDraftAsync(AnalyzeDbContext db, int planId, CancellationToken ct)
     {
         var plan = await db.ActionPlans.Include(p => p.Items).FirstOrDefaultAsync(p => p.Id == planId, ct)
@@ -320,6 +441,11 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
         if (req.Op == ActionOp.Hardlink)
         {
             throw new ArgumentException("Hard links are created by the dedupe planner.");
+        }
+
+        if (req.Op == ActionOp.Extract)
+        {
+            throw new ArgumentException("Files are extracted again from an extracted archive's page (Repair from the archive).");
         }
 
         if (req.Op == ActionOp.Move && string.IsNullOrWhiteSpace(req.Destination))

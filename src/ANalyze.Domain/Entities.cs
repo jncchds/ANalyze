@@ -197,6 +197,8 @@ public sealed class ActionItem
     public string? Error { get; set; }
     /// <summary>Where the item went (trash or move target) so it can be undone.</summary>
     public string? UndoPath { get; set; }
+    /// <summary>For Extract: the archive (entry id) the file comes from; <see cref="TargetPath"/> is its path inside the archive.</summary>
+    public long? ArchiveId { get; set; }
 }
 
 /// <summary>

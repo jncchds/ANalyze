@@ -75,6 +75,11 @@ public enum ActionOp
     Hardlink,
     /// <summary>Replace a damaged file with its copy on the backup server; the damaged file goes to the trash (undoable).</summary>
     Restore,
+    /// <summary>
+    /// Extract a file from an archive (<see cref="ActionItem.ArchiveId"/>, member path in <see cref="ActionItem.TargetPath"/>): over a damaged
+    /// extracted copy (which goes to the trash or is kept), or where a missing one belongs (no entry yet). Undoable.
+    /// </summary>
+    Extract,
 }
 
 public enum ConflictPolicy

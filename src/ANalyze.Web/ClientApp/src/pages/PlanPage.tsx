@@ -17,7 +17,8 @@ import { OP_LABEL, STATUS_STYLE } from './Actions'
 function ChangeAction({ planId, ids, filter, q, initial, onDone }: { planId: number; ids?: number[]; filter?: string; q?: string; initial?: PlanItem; onDone: () => void }) {
   const qc = useQueryClient()
   const ops = usePlanOps(initial?.op)
-  const [op, setOp] = useState<ActionOp>(initial && initial.op !== 'hardlink' ? initial.op : 'trash')
+  // A hard link or an extraction is planned from its own page; changing one picks another action.
+  const [op, setOp] = useState<ActionOp>(initial && initial.op !== 'hardlink' && initial.op !== 'extract' ? initial.op : 'trash')
   const [destination, setDestination] = useState(initial?.op === 'move' && initial.targetPath ? initial.targetPath : 'Archive/{relDir}/{name}')
   const keep = useKeepLocal()
   const change = useMutation({
@@ -238,13 +239,19 @@ export default function PlanPage() {
                     {i.isDir ? '📁 ' : ''}
                     {i.sourcePath}
                   </div>
-                  {i.targetPath && <div className="break-all text-xs text-accent">{i.op === 'restore' ? '← from ' : '→ '}{i.targetPath}</div>}
-                  {i.keepPath && (
-                    <div className="break-all text-xs muted">
-                      {i.op === 'hardlink' ? 'linked to' : i.op === 'restore' ? 'the local file is kept as' : 'kept copy:'} {i.keepPath}
+                  {i.targetPath && (
+                    <div className="break-all text-xs text-accent">
+                      {i.op === 'restore' ? '← from ' : i.op === 'extract' ? '← extracted from the archive: ' : '→ '}
+                      {i.targetPath}
                     </div>
                   )}
-                  {i.op === 'restore' && !i.keepPath && <div className="text-xs muted">the local file goes to the trash</div>}
+                  {i.keepPath && (
+                    <div className="break-all text-xs muted">
+                      {i.op === 'hardlink' ? 'linked to' : i.op === 'restore' || i.op === 'extract' ? 'the local file is kept as' : 'kept copy:'} {i.keepPath}
+                    </div>
+                  )}
+                  {(i.op === 'restore' || (i.op === 'extract' && i.entryId != null)) && !i.keepPath && <div className="text-xs muted">the local file goes to the trash</div>}
+                  {i.op === 'extract' && i.entryId == null && <div className="text-xs muted">missing: the file is created</div>}
                   {i.warning && <div className="text-xs text-warning">⚠ {i.warning}</div>}
                   {i.error && <div className="text-xs text-danger">{i.error}</div>}
                 </div>

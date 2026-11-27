@@ -284,6 +284,99 @@ public class ArchiveTests
         return [.. d.GetProperty("groups").EnumerateArray().SelectMany(g => g.GetProperty("members").EnumerateArray()).Select(m => m.GetProperty("relPath").GetString()!)];
     }
 
+    [Fact]
+    public async Task Repair_extracts_damaged_and_missing_files_again_and_undo_puts_everything_back()
+    {
+        await using var app = new TestApp();
+        var lib = app.Library;
+        // x fine, y cut short, w damaged in place (same size and date), z never written (nor its folder).
+        var (x, y, w, z) = (Bytes(1_500_000, 21), Bytes(200_000, 22), Bytes(100_000, 23), Bytes(90_000, 24));
+        Zip(Path.Combine(lib, "Downloads", "fix.zip"), ("x.bin", x), ("y.bin", y), ("w.bin", w), ("deep/z.bin", z));
+        Write(Path.Combine(lib, "Fix", "x.bin"), x);
+        Write(Path.Combine(lib, "Fix", "y.bin"), y[..50_000]);
+        var badW = (byte[])w.Clone();
+        badW[10] ^= 0xFF;
+        Write(Path.Combine(lib, "Fix", "w.bin"), badW);
+        using var http = app.CreateClient();
+        await app.ScanAsync(http);
+        var id = ByArchive(await Extractions(http), "Downloads/fix.zip").GetProperty("id").GetInt64();
+        (await http.PostAsJsonAsync("/api/v1/archives/extractions/verify", new { ids = new[] { id } })).EnsureSuccessStatusCode();
+        await WaitAsync(async () => ByArchive(await Extractions(http), "Downloads/fix.zip").GetProperty("verifiedBad").GetInt32() == 1);
+
+        // Nothing chosen is refused; the generic plan endpoint does not extract.
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, (await http.PostAsJsonAsync("/api/v1/archives/extractions/repair", new { ids = new[] { id }, damaged = false, missing = false })).StatusCode);
+        var xId = (await http.GetFromJsonAsync<JsonElement>("/api/v1/search?q=Fix/x.bin")).GetProperty("items")[0].GetProperty("id").GetInt64();
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, (await http.PostAsJsonAsync("/api/v1/plans", new { op = "extract", entryIds = new[] { xId } }, TestApp.Json)).StatusCode);
+
+        // w is kept next to itself as ~w.bin; y goes to the trash.
+        var res = await http.PostAsJsonAsync("/api/v1/archives/extractions/repair", new { ids = new[] { id }, paths = new[] { "w.bin" }, keep = "{relDir}/~{name}" });
+        res.EnsureSuccessStatusCode();
+        var planId = (await res.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+        res = await http.PostAsJsonAsync("/api/v1/archives/extractions/repair", new { ids = new[] { id }, planId });
+        res.EnsureSuccessStatusCode();
+        var plan = await http.GetFromJsonAsync<JsonElement>($"/api/v1/plans/{planId}");
+        var items = plan.GetProperty("page").GetProperty("items").EnumerateArray().ToDictionary(i => i.GetProperty("sourcePath").GetString()!);
+        Assert.Equal(["Fix/deep/z.bin", "Fix/w.bin", "Fix/y.bin"], items.Keys.Order());
+        Assert.All(items.Values, i => Assert.Equal("extract", i.GetProperty("op").GetString()));
+        Assert.All(items.Values, i => Assert.True(i.GetProperty("included").GetBoolean()));
+        Assert.Equal("deep/z.bin", items["Fix/deep/z.bin"].GetProperty("targetPath").GetString());
+        // Adding the files again replaced w's item: it lost its kept path, like any item planned again.
+        Assert.False(items["Fix/w.bin"].TryGetProperty("keepPath", out var kp) && kp.ValueKind == JsonValueKind.String);
+
+        // Plan w's keep again on its own, so one damaged file is kept and one trashed.
+        (await http.PostAsJsonAsync("/api/v1/archives/extractions/repair", new { ids = new[] { id }, paths = new[] { "w.bin" }, keep = "{relDir}/~{name}", planId })).EnsureSuccessStatusCode();
+
+        (await http.PostAsync($"/api/v1/plans/{planId}/apply", null)).EnsureSuccessStatusCode();
+        plan = await app.WaitPlanAsync(http, planId, "done", "failed");
+        Assert.Equal(3, plan.GetProperty("summary").GetProperty("done").GetInt32());
+        Assert.Equal(y, File.ReadAllBytes(Path.Combine(lib, "Fix", "y.bin")));
+        Assert.Equal(w, File.ReadAllBytes(Path.Combine(lib, "Fix", "w.bin")));
+        Assert.Equal(z, File.ReadAllBytes(Path.Combine(lib, "Fix", "deep", "z.bin")));
+        Assert.Equal(badW, File.ReadAllBytes(Path.Combine(lib, "Fix", "~w.bin")));
+        Assert.Equal(50_000, new FileInfo(Path.Combine(lib, ".analyze-trash", planId.ToString(), "Fix", "y.bin")).Length);
+        Assert.False(Directory.Exists(Path.Combine(lib, ".analyze-trash", planId.ToString(), ".extracting")));
+        Assert.Equal(1, plan.GetProperty("summary").GetProperty("trashItems").GetInt32());
+        Assert.Equal("complete", ByArchive(await Extractions(http), "Downloads/fix.zip").GetProperty("state").GetString());
+
+        (await http.PostAsync($"/api/v1/plans/{planId}/undo", null)).EnsureSuccessStatusCode();
+        await app.WaitPlanAsync(http, planId, "undone");
+        Assert.Equal(50_000, new FileInfo(Path.Combine(lib, "Fix", "y.bin")).Length);
+        Assert.Equal(badW, File.ReadAllBytes(Path.Combine(lib, "Fix", "w.bin")));
+        Assert.False(File.Exists(Path.Combine(lib, "Fix", "~w.bin")));
+        Assert.False(Directory.Exists(Path.Combine(lib, "Fix", "deep")));
+        Assert.True(File.Exists(Path.Combine(lib, "Fix", "x.bin")));
+    }
+
+    [Fact]
+    public async Task Repair_reads_a_tar_once_for_all_its_missing_files()
+    {
+        await using var app = new TestApp();
+        var (a, b, c, d) = (Bytes(60_000, 31), Bytes(70_000, 32), Bytes(80_000, 33), Bytes(50_000, 34));
+        TarGz(Path.Combine(app.Library, "Downloads", "set.tar.gz"), ("set/a.bin", a), ("set/d.bin", d), ("set/b.bin", b), ("set/more/c.bin", c));
+        Write(Path.Combine(app.Library, "Out", "set", "c.bin"), c[..1]); // another file: the archive's c.bin is in more/
+        Write(Path.Combine(app.Library, "Out", "set", "a.bin"), a);
+        Write(Path.Combine(app.Library, "Out", "set", "d.bin"), d);
+        using var http = app.CreateClient();
+        var settings = await http.GetFromJsonAsync<JsonElement>("/api/v1/settings");
+        var body = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(settings.GetRawText())!;
+        body["listStreamedArchives"] = JsonSerializer.SerializeToElement(true);
+        (await http.PutAsJsonAsync("/api/v1/settings", body)).EnsureSuccessStatusCode();
+        await app.ScanAsync(http);
+        var x = ByArchive(await Extractions(http), "Downloads/set.tar.gz");
+        Assert.Equal("partial", x.GetProperty("state").GetString());
+
+        var res = await http.PostAsJsonAsync("/api/v1/archives/extractions/repair", new { ids = new[] { x.GetProperty("id").GetInt64() }, damaged = false });
+        res.EnsureSuccessStatusCode();
+        var planId = (await res.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+        (await http.PostAsync($"/api/v1/plans/{planId}/apply", null)).EnsureSuccessStatusCode();
+        var plan = await app.WaitPlanAsync(http, planId, "done", "failed");
+        Assert.Equal(2, plan.GetProperty("summary").GetProperty("done").GetInt32());
+        Assert.Equal(b, File.ReadAllBytes(Path.Combine(app.Library, "Out", "set", "b.bin")));
+        Assert.Equal(c, File.ReadAllBytes(Path.Combine(app.Library, "Out", "set", "more", "c.bin")));
+        Assert.Equal(1, new FileInfo(Path.Combine(app.Library, "Out", "set", "c.bin")).Length);
+        Assert.Equal("complete", ByArchive(await Extractions(http), "Downloads/set.tar.gz").GetProperty("state").GetString());
+    }
+
     private static async Task WaitAsync(Func<Task<bool>> done)
     {
         for (var i = 0; i < 200; i++)

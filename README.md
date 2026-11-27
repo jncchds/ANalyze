@@ -222,7 +222,12 @@ with every folder it was found extracted to under it, and shows:
   files of the chosen folder with their size in the archive and size and date on disk (click one to open it);
 - **Check against archive**: reads the extracted files and compares each with the CRC32 the archive stores for it, so
   you know the copy is intact without reading the archive; files that differ are listed;
-- plans to remove the archive (complete extractions only) or the extracted copy (only the files that came from the archive).
+- plans to remove the archive (complete extractions only) or the extracted copy (only the files that came from the archive);
+- **Repair from archive…** on the comparison page: extracts the damaged files again (cut short, another size, or another
+  CRC32 once checked) and the missing ones (with any missing folders), into a draft plan for review. Like replacing a
+  damaged file with the backup's copy, the damaged file goes to the trash or is kept (as `~name` by default); each file is
+  checked against the archive's size and CRC32 before it takes its place, and undo removes the created files and puts the
+  damaged ones back. A tar or `.gz` is read once for all the files a plan takes from it.
 
 tar, tar.gz, .gz, .xz, .zst… have no file index: turn on *Also list tar and compressed files* in **Settings → Archives**
 to decompress each one once (CRC32s are computed on the way; there is a size limit). Insights and the Search filter

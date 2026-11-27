@@ -52,6 +52,7 @@ export const OP_TEXT: Record<ActionOp, string> = {
   delete: '⚠️ Delete permanently',
   restore: "🛟 Replace with the backup's copy",
   hardlink: '🔗 Hard link',
+  extract: '🗜 Extract from the archive',
 }
 
 /** The actions a plan can take here: restore only with the backup server (the ANalyze parent integration). */

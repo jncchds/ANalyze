@@ -248,6 +248,18 @@ kept copy), then:
   file instead of trashing it: expanded into `KeepPath` (same root, " (2)" on clashes with the disk or the plan); apply moves the file
   there (its folder is rescanned, nothing goes to the trash, so such items don't count for trash bins), undo moves it back and drops it
   from the index.
+- **Extract**: put an archive's file in place in an extraction (`ActionItem.ArchiveId` = the archive's entry, `TargetPath` = the member's
+  path inside it, `SourcePath` = where it belongs on disk). With `EntryId` it replaces a damaged copy — like Restore: the new file gets
+  the damaged one's owner, mode and mtime, the damaged file goes to the trash or to `KeepPath`, `UpdateContent` stores the new hash,
+  undo is `UndoRestore` — and without one it creates a missing file (folders via `CreateDirectoryLikeParent`, the parent's owner, the
+  archive's date; `ExpectedSize`/`ExpectedMTime` are set after apply, and undo deletes it only while they still match, pruning folders
+  left empty). Before anything on disk changes, the bytes are checked against `ArchiveMembers` (size, CRC32 when listed). `Scanner.
+  ArchiveExtractor` reads the members: zip/rar/7z through one `IArchive` kept open while items come from the same archive; streamed
+  formats (tar, gz…) in one pass per plan run that writes every member the run announced (`Want`) to its temp file. Temp files live in
+  `<root>/.analyze-trash/<planId>/.extracting/` (removed after the run). Plans: `POST /archives/extractions/repair {ids, damaged, missing,
+  keep?, paths?, planId?}` → `PlanBuilder.PlanArchiveAsync(ArchivePick…)` (damaged = smaller, differs or in `BadPaths`; a folder or link
+  in the file's place, or something now at a missing file's path, is excluded); the generic plan endpoints refuse `extract`. Trash bins
+  and `undoable` count Extract items that replaced a file. UI: "Repair from archive…" on `ExtractionPage` (`RepairDialog`).
 
 Draft plans grow and change through `PlanBuilder.AddAsync` / `AddDedupeAsync` (both via `MergeAsync`; `planId` on `POST /plans`,
 `/plans/from-filter`, `/plans/restore-damaged`, `/plans/dedupe` and `/archives/extractions/plan`):

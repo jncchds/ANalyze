@@ -22,6 +22,9 @@ namespace ANalyze.Infrastructure.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<long?>("ArchiveId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<long?>("EntryId")
                         .HasColumnType("INTEGER");
 

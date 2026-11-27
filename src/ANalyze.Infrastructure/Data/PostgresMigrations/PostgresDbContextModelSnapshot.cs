@@ -31,6 +31,10 @@ namespace ANalyze.Infrastructure.Data.PostgresMigrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
 
+                    b.Property<long?>("ArchiveId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("archiveid");
+
                     b.Property<long?>("EntryId")
                         .HasColumnType("bigint")
                         .HasColumnName("entryid");

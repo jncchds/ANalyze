@@ -1,11 +1,13 @@
-import { useMemo } from 'react'
-import { Link, useParams } from 'react-router'
+import { useMemo, useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
+import { useConfig } from '../api/hooks'
 import { fileLabel, place, useExtractionPlan, verified, type Extraction } from '../components/ExtractedArchives'
 import { FolderCompare, type CompareRow, type CompareText } from '../components/FolderCompare'
-import { Empty, ErrorBox, Loading, PageTitle, ShareBar, Stat } from '../components/ui'
-import { useEntryPreview } from '../hooks/useUrlState'
+import { useKeepLocal, usePlanAdded, usePlanChoice } from '../components/PlanDialog'
+import { Empty, ErrorBox, Field, Loading, Modal, PageTitle, ShareBar, Stat } from '../components/ui'
+import { leaveOverlay, useEntryPreview, useUrlOverlay } from '../hooks/useUrlState'
 import { bytes, count, date } from '../lib/format'
 
 interface CompareResponse {
@@ -43,6 +45,7 @@ export default function ExtractionPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
   })
   const { plan, into } = useExtractionPlan()
+  const repair = useUrlOverlay('repair')
 
   const x = data.data?.extraction
   const files = useMemo(() => data.data?.files ?? [], [data.data])
@@ -80,6 +83,7 @@ export default function ExtractionPage() {
 
   const missingBytes = files.filter((f) => f.state === 'missing').reduce((n, f) => n + f.size, 0)
   const short = files.filter((f) => f.state === 'smaller' || f.state === 'differs')
+  const fixable = repairCounts(files)
   const removeArchive = () => {
     if (!verified(x) && !confirm('The extracted files have not been checked against the archive yet (or some differ). Create the plan anyway?')) return
     plan.mutate({ ids: [x.id], remove: 'archive' })
@@ -119,6 +123,20 @@ export default function ExtractionPage() {
               title="Read the extracted files and compare them with the CRC32s stored in the archive"
             >
               Check against archive
+            </button>
+            <button
+              className={x.state === 'complete' ? 'btn-secondary' : 'btn-primary'}
+              disabled={fixable.damaged + fixable.missing === 0}
+              onClick={() => repair.open('1')}
+              title={
+                fixable.damaged + fixable.missing
+                  ? 'Extract the missing and damaged files again from the archive (a draft plan for review)'
+                  : checked
+                    ? 'Nothing is missing or damaged'
+                    : 'Nothing is missing or cut short; “Check against archive” finds files with other content'
+              }
+            >
+              Repair from archive…
             </button>
             <button
               className="btn-secondary"
@@ -177,7 +195,113 @@ export default function ExtractionPage() {
       </div>
 
       <FolderCompare files={files} text={text} defaultShow={x.state === 'partial' ? 'problems' : 'all'} />
+      {repair.value && <RepairDialog x={x} counts={fixable} checked={checked} onClose={repair.close} />}
     </>
+  )
+}
+
+/** What a repair would extract again, as `POST /archives/extractions/repair` picks it: damaged copies on disk and missing files. */
+function repairCounts(files: CompareRow[]) {
+  const c = { damaged: 0, damagedBytes: 0, missing: 0, missingBytes: 0 }
+  for (const f of files) {
+    if (f.entryId != null && (f.state === 'smaller' || f.state === 'differs' || f.state === 'corrupt')) {
+      c.damaged++
+      c.damagedBytes += f.size
+    } else if (f.state === 'missing') {
+      c.missing++
+      c.missingBytes += f.size
+    }
+  }
+  return c
+}
+
+/**
+ * Plans extracting files again from the archive, like replacing damaged files with the backup's copy: damaged copies (cut short,
+ * another size, CRC32 differs) go to the trash or are kept (e.g. as `~name`), missing files are created; each file is checked against the
+ * archive's size and CRC32 before it takes its place.
+ */
+function RepairDialog({ x, counts, checked, onClose }: { x: Extraction; counts: ReturnType<typeof repairCounts>; checked: boolean; onClose: () => void }) {
+  const navigate = useNavigate()
+  const added = usePlanAdded()
+  const config = useConfig()
+  const { existing, field } = usePlanChoice()
+  const keep = useKeepLocal()
+  const [damaged, setDamaged] = useState(counts.damaged > 0)
+  const [missing, setMissing] = useState(counts.missing > 0)
+  const create = useMutation({
+    mutationFn: () =>
+      api<{ id: number }>('/archives/extractions/repair', {
+        method: 'POST',
+        json: { ids: [x.id], damaged, missing, keep: damaged ? (keep.keep ?? undefined) : undefined, planId: existing?.id },
+      }),
+    onSuccess: (p) => {
+      added(p)
+      leaveOverlay(navigate, `/actions/${p.id}`)
+    },
+  })
+  const tokens = config.data?.pathTokens.map((t) => `{${t}}`).join(' ')
+  return (
+    <Modal open onClose={onClose} title="Repair from the archive">
+      <div className="space-y-4">
+        <p className="truncate text-sm muted" title={`${place(x.archive)} → ${place(x.folder)}`}>
+          🗜 {place(x.archive)} → 📁 {place(x.folder)}
+        </p>
+        {field}
+        <Field label="Extract again">
+          <div className="space-y-2 text-sm">
+            <label className="flex items-start gap-2">
+              <input type="checkbox" className="mt-1" checked={damaged} disabled={!counts.damaged} onChange={(e) => setDamaged(e.target.checked)} />
+              <span>
+                <span className="font-semibold">Damaged files</span> — {count(counts.damaged)} · {bytes(counts.damagedBytes)}
+                <span className="block text-xs muted">
+                  Cut short, another size, or another CRC32 than the archive{checked ? '' : ' (run “Check against archive” first to find files with other content)'}.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2">
+              <input type="checkbox" className="mt-1" checked={missing} disabled={!counts.missing} onChange={(e) => setMissing(e.target.checked)} />
+              <span>
+                <span className="font-semibold">Missing files</span> — {count(counts.missing)} · {bytes(counts.missingBytes)}
+                <span className="block text-xs muted">Created where the archive puts them, with any missing folders.</span>
+              </span>
+            </label>
+          </div>
+        </Field>
+        {damaged && (
+          <div className="space-y-2 rounded-md bg-surface-2 p-2 text-sm">
+            <label className="flex items-center gap-2">
+              <input type="radio" className="accent-accent" checked={keep.keep === null} onChange={() => keep.setKeep(false)} />
+              The damaged file goes to the trash (the plan can be undone)
+            </label>
+            <label className="flex flex-wrap items-center gap-2">
+              <input type="radio" className="accent-accent" checked={keep.keep !== null} onChange={() => keep.setKeep(true)} />
+              Keep the damaged file as
+              <input
+                className="input w-64 py-1 font-mono"
+                value={keep.template}
+                onChange={(e) => keep.setKeep(true, e.target.value)}
+                onFocus={() => keep.keep === null && keep.setKeep(true)}
+                aria-label="Where the damaged file is kept"
+              />
+            </label>
+            {keep.keep !== null && <p className="text-xs muted">Tokens: {tokens}. An existing name gets “(2)”. Undo puts the damaged file back.</p>}
+          </div>
+        )}
+        <p className="text-sm muted">
+          Each file is checked against the archive’s size and CRC32 before it takes its place; one that does not match is skipped and nothing changes for it. Undo
+          removes the files created and puts the damaged ones back.
+        </p>
+        {create.error && <ErrorBox error={create.error} />}
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn-primary" onClick={() => create.mutate()} disabled={create.isPending || (!damaged && !missing)}>
+            {existing ? `Add to “${existing.name}”` : 'Create plan for review'}
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 

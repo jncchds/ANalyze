@@ -45,6 +45,13 @@ public static class ArchiveEndpoints
 
     public sealed record PlanBody(long[] Ids, string Remove, ActionOp Op, int? PlanId);
 
+    /// <summary>
+    /// Which files of the extractions <see cref="Ids"/> to extract again: <see cref="Damaged"/> (cut short, other size, CRC32 differs) and/or
+    /// <see cref="Missing"/>; <see cref="Paths"/> narrows it to those archive paths. <see cref="Keep"/> is where a damaged file is kept
+    /// (a path template like <c>{relDir}/~{name}</c>) instead of the trash.
+    /// </summary>
+    public sealed record RepairBody(long[] Ids, bool Damaged = true, bool Missing = true, string? Keep = null, string[]? Paths = null, int? PlanId = null, string? Name = null);
+
     private const string Select = """
         SELECT x.Id, x.State, x.ArchiveId, a.RootId, a.RelPath, a.Size, a.MTime, l.Format, x.RootId, x.FolderId, x.FolderRelPath, x.BaseRelPath, x.Strip,
                x.Files, x.Matched, x.Missing, x.Smaller, x.Differs, x.Bytes, x.MatchedBytes, x.VerifiedAt, x.VerifiedOk, x.VerifiedBad, x.Unverified,
@@ -205,6 +212,65 @@ public static class ArchiveEndpoints
             var name = archives ? "Remove extracted archives" : "Remove extracted copies of archives";
             var req = new ManualPlanRequest(name, body.Op, entryIds.Distinct().ToList(), null);
             return await PlanEndpoints.Run(body.PlanId, () => builder.CreateAsync(req, ct), id => builder.AddAsync(id, req, ct));
+        });
+
+        // Draft plan that extracts files again from the archive into its extraction: damaged copies (cut short, another size, or a CRC32
+        // the check found different) are replaced, missing files created — like replacing damaged files with the backup's copy.
+        api.MapPost("/archives/extractions/repair", async (RepairBody body, DbSetup database, PlanBuilder builder, CancellationToken ct) =>
+        {
+            if (!body.Damaged && !body.Missing)
+            {
+                return Results.Problem("Choose damaged files, missing files or both.", statusCode: 400);
+            }
+
+            var only = body.Paths is { Length: > 0 } paths ? paths.ToHashSet(StringComparer.Ordinal) : null;
+            var picks = new List<ArchivePick>();
+            using (var c = database.Open())
+            {
+                foreach (var id in body.Ids.Distinct())
+                {
+                    var row = Sql.Query(c, "SELECT ArchiveId, RootId, BaseRelPath, Strip, BadPaths FROM ArchiveExtractions WHERE Id = @id",
+                        r => (Archive: r.GetInt64(0), Root: r.GetInt32(1), Base: r.GetString(2), Strip: r.GetString(3), Bad: r.NullableString(4)), ("@id", id)).FirstOrDefault();
+                    if (row.Archive == 0)
+                    {
+                        return Results.NotFound();
+                    }
+
+                    var bad = row.Bad is null ? [] : JsonSerializer.Deserialize<HashSet<string>>(row.Bad) ?? [];
+                    foreach (var m in ExtractionMatcher.Compare(c, ExtractionMatcher.LoadMembers(c, row.Archive), row.Root, row.Base, row.Strip))
+                    {
+                        if (m.Target is null || (only is not null && !only.Contains(m.Path)))
+                        {
+                            continue;
+                        }
+
+                        var damaged = m.EntryId is not null && (m.State is MemberState.Smaller or MemberState.Differs || (m.State == MemberState.Matched && bad.Contains(m.Path)));
+                        var missing = m.EntryId is null && m.State == MemberState.Missing;
+                        if ((damaged && body.Damaged) || (missing && body.Missing))
+                        {
+                            picks.Add(new ArchivePick(row.Archive, m.Path, m.Size, m.Crc, row.Root, m.Target, m.EntryId));
+                        }
+                    }
+                }
+            }
+
+            try
+            {
+                var r = await builder.PlanArchiveAsync(body.PlanId, body.Name, picks, body.Keep, ct);
+                return Results.Ok(new { r.Id, r.Name, r.Items, r.Added, r.Replaced });
+            }
+            catch (ArgumentException e)
+            {
+                return Results.Problem(e.Message, statusCode: 400);
+            }
+            catch (KeyNotFoundException e)
+            {
+                return Results.Problem(e.Message, statusCode: 404);
+            }
+            catch (InvalidOperationException e)
+            {
+                return Results.Problem(e.Message, statusCode: 409);
+            }
         });
     }
 

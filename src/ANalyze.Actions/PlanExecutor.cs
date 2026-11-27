@@ -74,7 +74,7 @@ public sealed class PlanExecutor(
         }
 
         var items = job.Undo
-            ? plan.Items.Where(i => i.Status == ItemStatus.Done && i.Op is ActionOp.Trash or ActionOp.Move or ActionOp.Restore).ToList()
+            ? plan.Items.Where(i => i.Status == ItemStatus.Done && i.Op is ActionOp.Trash or ActionOp.Move or ActionOp.Restore or ActionOp.Extract).ToList()
             : plan.Items.Where(i => i.Included && i.Status == ItemStatus.Pending).ToList();
         var title = (job.Undo ? "Undo: " : "") + plan.Name;
         var started = DateTimeOffset.UtcNow;
@@ -108,6 +108,19 @@ public sealed class PlanExecutor(
         }, force: state != JobStates.Running);
 
         Report(JobStates.Running);
+        // Files extracted from archives: a tar or .gz is read once for all of this plan's files from it.
+        using var extractor = new ArchiveExtractor();
+        if (!job.Undo)
+        {
+            foreach (var item in items.Where(i => i.Op == ActionOp.Extract && i.ArchiveId is not null && i.TargetPath is not null))
+            {
+                if (ArchiveOf(conn, item.ArchiveId!.Value) is { } a && roots.Get(a.RootId) is { } ar && roots.Get(item.RootId) is { } r)
+                {
+                    extractor.Want(RootRegistry.Combine(ar.Path, a.RelPath), item.TargetPath!, ExtractTmp(r.Path, plan.Id));
+                }
+            }
+        }
+
         // Kept copies the duplicates removed so far relied on: a later item of the plan must not trash or delete them.
         var relied = new HashSet<(int Root, string Path)>();
         foreach (var item in items)
@@ -138,7 +151,15 @@ public sealed class PlanExecutor(
                         throw new SkipException("Kept copy of a duplicate this plan removed");
                     }
 
-                    await ApplyAsync(plan, item, conn, rescan, replaced, ct);
+                    if (item.Op == ActionOp.Extract)
+                    {
+                        await ExtractAsync(plan, item, conn, rescan, replaced, extractor, ct);
+                    }
+                    else
+                    {
+                        await ApplyAsync(plan, item, conn, rescan, replaced, ct);
+                    }
+
                     item.Status = ItemStatus.Done;
                     bytes += item.ExpectedSize;
                     if (PlanBuilder.Removes(item) && item.KeepPath is not null)
@@ -187,6 +208,11 @@ public sealed class PlanExecutor(
 
         plan.Message = $"{done - failed - skipped} done, {skipped} skipped, {failed} failed" + (cancelled ? " (cancelled)" : "");
         await db.SaveChangesAsync(CancellationToken.None);
+        extractor.Dispose();
+        foreach (var r in items.Where(i => i.Op == ActionOp.Extract).Select(i => i.RootId).Distinct())
+        {
+            DropExtractTmp(r, plan.Id);
+        }
 
         if (replaced.Count > 0)
         {
@@ -449,6 +475,244 @@ public sealed class PlanExecutor(
         }
     }
 
+    /// <summary>
+    /// Extracts an archive member to its place: over a damaged copy (which goes to the trash or to <see cref="ActionItem.KeepPath"/>, like a
+    /// restore; the new file gets its owner, permissions and date) or where a missing one belongs (folders created with their parent's
+    /// owner, the archive's date). The bytes are checked against the archive's listing — size and, when it has one, CRC32 — before
+    /// anything on disk changes.
+    /// </summary>
+    private async Task ExtractAsync(ActionPlan plan, ActionItem item, System.Data.Common.DbConnection conn, HashSet<(int, string)> rescan, List<long> replaced,
+        ArchiveExtractor extractor, CancellationToken ct)
+    {
+        var root = roots.Require(item.RootId);
+        var dest = RootRegistry.Combine(root.Path, item.SourcePath);
+        var memberPath = item.TargetPath ?? throw new SkipException("No file of the archive given");
+        var archive = (item.ArchiveId is { } aid ? ArchiveOf(conn, aid) : null) ?? throw new SkipException("The archive is no longer indexed");
+        var archiveRoot = roots.Get(archive.RootId) ?? throw new SkipException("The archive's root is gone");
+        var archivePath = RootRegistry.Combine(archiveRoot.Path, archive.RelPath);
+        if (!File.Exists(archivePath))
+        {
+            throw new SkipException("The archive is gone");
+        }
+
+        var member = MemberOf(conn, item.ArchiveId!.Value, memberPath) ?? throw new SkipException("The archive no longer lists this file");
+        var st = Native.LStat(dest);
+        if (item.EntryId is not null)
+        {
+            if (!st.Exists)
+            {
+                throw new SkipException("The damaged file is gone");
+            }
+
+            if (!st.IsRegular)
+            {
+                throw new SkipException("Not a file any more");
+            }
+
+            if (st.Size != item.ExpectedSize || st.MTime != item.ExpectedMTime)
+            {
+                throw new SkipException("Source changed since the plan was made");
+            }
+        }
+        else if (st.Exists)
+        {
+            throw new SkipException("Something is at that path now");
+        }
+
+        var tmp = ExtractTmp(root.Path, plan.Id);
+        try
+        {
+            ExtractedMember x;
+            try
+            {
+                x = await extractor.ExtractAsync(archivePath, archive.Name, memberPath, tmp, ct);
+            }
+            catch (FileNotFoundException e)
+            {
+                throw new SkipException(e.Message);
+            }
+            catch (Exception e) when (e is not (OperationCanceledException or IOException or UnauthorizedAccessException or OutOfMemoryException))
+            {
+                // The archive library's own errors (damaged or unsupported archive).
+                throw new IOException("The archive could not be read: " + e.Message, e);
+            }
+
+            if (x.Size != member.Size)
+            {
+                throw new SkipException($"The archive gives {x.Size:N0} bytes for it, not {member.Size:N0} as listed: has the archive changed? Scan it again");
+            }
+
+            if (member.Crc is { } crc && crc != x.Crc)
+            {
+                throw new SkipException("The extracted file does not match the archive's CRC32: the archive itself may be damaged");
+            }
+
+            if (item.EntryId is { } id)
+            {
+                if (st.Uid >= 0)
+                {
+                    Native.SetOwner(tmp, st.Uid, st.Gid);
+                }
+
+                if (!OperatingSystem.IsWindows())
+                {
+                    File.SetUnixFileMode(tmp, File.GetUnixFileMode(dest));
+                }
+
+                // Its date, so undo can tell whether it was changed since.
+                File.SetLastWriteTimeUtc(tmp, File.GetLastWriteTimeUtc(dest));
+                var aside = item.KeepPath is { } keep ? RootRegistry.Combine(root.Path, keep) : RootRegistry.TrashPath(root.Path, plan.Id, item.SourcePath);
+                if (Path.Exists(aside))
+                {
+                    throw new SkipException(item.KeepPath is null ? "The trash of this plan already holds a file at that path" : $"{item.KeepPath} exists already");
+                }
+
+                Native.CreateDirectoryLikeParent(Path.GetDirectoryName(aside)!);
+                MovePath(dest, aside, isDir: false, overwrite: false);
+                try
+                {
+                    File.Move(tmp, dest);
+                }
+                catch
+                {
+                    MovePath(aside, dest, isDir: false, overwrite: false);
+                    throw;
+                }
+
+                item.UndoPath = Path.GetRelativePath(root.Path, aside).Replace('\\', '/');
+                var after = Native.LStat(dest);
+                EntryMaintenance.UpdateContent(conn, id, after, Hashing.QuickHash(dest, after.Size), x.Hash);
+                replaced.Add(id);
+                if (item.KeepPath is { } kept)
+                {
+                    rescan.Add((item.RootId, IndexedAncestor(conn, item.RootId, ParentOf(kept))));
+                }
+
+                return;
+            }
+
+            var dir = Path.GetDirectoryName(dest)!;
+            Native.CreateDirectoryLikeParent(dir);
+            var parent = Native.LStat(dir);
+            Native.SetOwner(tmp, parent.Uid, parent.Gid);
+            if (x.Modified is { } m && m.Year > 1980)
+            {
+                File.SetLastWriteTimeUtc(tmp, m.Kind == DateTimeKind.Local ? m.ToUniversalTime() : DateTime.SpecifyKind(m, DateTimeKind.Utc));
+            }
+
+            File.Move(tmp, dest);
+            var made = Native.LStat(dest);
+            // What undo checks before deleting the file again.
+            (item.ExpectedSize, item.ExpectedMTime, item.ExpectedHash) = (made.Size, made.MTime, x.Hash);
+            item.UndoPath = item.SourcePath;
+            rescan.Add((item.RootId, IndexedAncestor(conn, item.RootId, ParentOf(item.SourcePath))));
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(tmp);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // best effort
+            }
+        }
+    }
+
+    /// <summary>Deletes a file a plan extracted where none was, unless it was changed since; folders left empty go too.</summary>
+    private static void UndoCreated(ActionItem item, string rootPath, System.Data.Common.DbConnection conn)
+    {
+        var path = RootRegistry.Combine(rootPath, item.SourcePath);
+        var st = Native.LStat(path);
+        if (!st.Exists)
+        {
+            throw new SkipException("The extracted file is gone already");
+        }
+
+        if (!st.IsRegular || st.Size != item.ExpectedSize || st.MTime != item.ExpectedMTime)
+        {
+            throw new SkipException("The extracted file was changed since; it is left as it is");
+        }
+
+        File.Delete(path);
+        var pruned = PruneEmptyParents(Path.GetDirectoryName(path)!, rootPath);
+        DropIndexed(conn, item.RootId, pruned is null ? item.SourcePath : Path.GetRelativePath(rootPath, pruned).Replace('\\', '/'));
+    }
+
+    private sealed record ArchiveInfo(int RootId, string RelPath, string Name);
+
+    private static ArchiveInfo? ArchiveOf(System.Data.Common.DbConnection conn, long archiveId)
+    {
+        using var q = conn.CreateCommand();
+        q.CommandText = "SELECT RootId, RelPath, Name FROM Entries WHERE Id = @id AND IsDir = FALSE";
+        q.Parameters.AddWithValue("@id", archiveId);
+        using var r = q.ExecuteReader();
+        return r.Read() ? new ArchiveInfo(r.GetInt32(0), r.GetString(1), r.GetString(2)) : null;
+    }
+
+    private static (long Size, long? Crc)? MemberOf(System.Data.Common.DbConnection conn, long archiveId, string path)
+    {
+        using var q = conn.CreateCommand();
+        q.CommandText = "SELECT Size, Crc FROM ArchiveMembers WHERE ArchiveId = @a AND Path = @p";
+        q.Parameters.AddWithValue("@a", archiveId);
+        q.Parameters.AddWithValue("@p", path);
+        using var r = q.ExecuteReader();
+        return r.Read() ? (r.GetInt64(0), r.IsDBNull(1) ? null : r.GetInt64(1)) : null;
+    }
+
+    /// <summary>The path itself or the closest folder above it that is in the index (a rescan starts from there).</summary>
+    private static string IndexedAncestor(System.Data.Common.DbConnection conn, int rootId, string relPath)
+    {
+        using var q = conn.CreateCommand();
+        q.CommandText = "SELECT 1 FROM Entries WHERE RootId = @r AND RelPath = @p AND IsDir = TRUE";
+        var pr = q.Parameters.AddWithValue("@p", relPath);
+        q.Parameters.AddWithValue("@r", rootId);
+        while (relPath.Length > 0)
+        {
+            pr.Value = relPath;
+            if (q.ExecuteScalar() is not null)
+            {
+                return relPath;
+            }
+
+            relPath = ParentOf(relPath);
+        }
+
+        return "";
+    }
+
+    /// <summary>A new temporary file name for an extraction, in the plan's trash folder of the root (which the scanner skips).</summary>
+    private static string ExtractTmp(string rootPath, int planId)
+    {
+        var dir = RootRegistry.TrashPath(rootPath, planId, ".extracting");
+        Native.CreateDirectoryLikeParent(dir);
+        return Path.Combine(dir, Guid.NewGuid().ToString("N"));
+    }
+
+    /// <summary>Removes the temporary folder of a plan's extractions, and the plan's trash folder when nothing else is in it.</summary>
+    private void DropExtractTmp(int rootId, int planId)
+    {
+        if (roots.Get(rootId) is not { } root)
+        {
+            return;
+        }
+
+        var dir = RootRegistry.TrashPath(root.Path, planId, ".extracting");
+        try
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+                PruneEmptyParents(Path.GetDirectoryName(dir)!, root.Path);
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            log.LogWarning("Could not remove {Dir}: {Error}", dir, e.Message);
+        }
+    }
+
     private async Task VerifyDuplicateAsync(ActionPlan plan, ActionItem item, string src, CancellationToken ct)
     {
         if (item.KeepPath is null)
@@ -490,6 +754,12 @@ public sealed class PlanExecutor(
             throw new SkipException("Nothing to undo");
         }
 
+        if (item.Op == ActionOp.Extract && item.EntryId is null)
+        {
+            UndoCreated(item, root.Path, conn);
+            return;
+        }
+
         var from = RootRegistry.Combine(root.Path, item.UndoPath);
         var to = RootRegistry.Combine(root.Path, item.SourcePath);
         if (!Path.Exists(from))
@@ -497,7 +767,7 @@ public sealed class PlanExecutor(
             throw new SkipException("The moved/trashed copy is gone (trash emptied?)");
         }
 
-        if (item.Op == ActionOp.Restore)
+        if (item.Op is ActionOp.Restore or ActionOp.Extract)
         {
             UndoRestore(item, from, to, root.Path, conn);
             replaced.Add(item.EntryId!.Value);

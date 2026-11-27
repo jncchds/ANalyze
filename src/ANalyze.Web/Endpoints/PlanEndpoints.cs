@@ -69,7 +69,8 @@ public static class PlanEndpoints
             var total = await items.CountAsync(ct);
             var page = await items.OrderBy(i => i.SourcePath).Skip(Math.Max(0, offset ?? 0)).Take(Math.Clamp(limit ?? 200, 1, 2000)).ToListAsync(ct);
             var all = db.ActionItems.AsNoTracking().Where(i => i.PlanId == id);
-            var inTrash = all.Where(i => i.Status == ItemStatus.Done && (i.Op == ActionOp.Trash || (i.Op == ActionOp.Restore && i.KeepPath == null)));
+            var inTrash = all.Where(i => i.Status == ItemStatus.Done
+                && (i.Op == ActionOp.Trash || (i.Op == ActionOp.Restore && i.KeepPath == null) || (i.Op == ActionOp.Extract && i.EntryId != null && i.KeepPath == null)));
             var summary = new
             {
                 items = await all.CountAsync(ct),
@@ -80,7 +81,7 @@ public static class PlanEndpoints
                 skipped = await all.CountAsync(i => i.Status == ItemStatus.Skipped, ct),
                 failed = await all.CountAsync(i => i.Status == ItemStatus.Failed, ct),
                 undone = await all.CountAsync(i => i.Status == ItemStatus.Undone, ct),
-                undoable = await all.CountAsync(i => i.Status == ItemStatus.Done && (i.Op == ActionOp.Trash || i.Op == ActionOp.Move || i.Op == ActionOp.Restore), ct),
+                undoable = await all.CountAsync(i => i.Status == ItemStatus.Done && (i.Op == ActionOp.Trash || i.Op == ActionOp.Move || i.Op == ActionOp.Restore || i.Op == ActionOp.Extract), ct),
                 // What this plan's trash holds (0 once emptied); trashPending: queued or being emptied now.
                 trashItems = plan.TrashPurgedAt is null ? await inTrash.CountAsync(ct) : 0,
                 trashBytes = plan.TrashPurgedAt is null ? await inTrash.SumAsync(i => (long?)i.ExpectedSize, ct) ?? 0 : 0,
@@ -238,7 +239,9 @@ public static class PlanEndpoints
                 return Results.Problem("The plan is running", statusCode: 409);
             }
 
-            var hasTrash = plan.TrashPurgedAt is null && await db.ActionItems.AnyAsync(i => i.PlanId == id && (i.Op == ActionOp.Trash || (i.Op == ActionOp.Restore && i.KeepPath == null)) && i.Status == ItemStatus.Done, ct);
+            var hasTrash = plan.TrashPurgedAt is null && await db.ActionItems.AnyAsync(i => i.PlanId == id
+                && (i.Op == ActionOp.Trash || (i.Op == ActionOp.Restore && i.KeepPath == null) || (i.Op == ActionOp.Extract && i.EntryId != null && i.KeepPath == null))
+                && i.Status == ItemStatus.Done, ct);
             if (hasTrash)
             {
                 return Results.Problem("Empty this plan's trash first (or undo it)", statusCode: 409);
