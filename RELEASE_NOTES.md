@@ -4,6 +4,9 @@
 
 - fix: every job in the sidebar's Activity can be stopped on its own with its ✕ — a scan, processing, a plan being applied, emptying the trash, an integration sync, applying rules and an AI run; before, the only button stopped the scan and the processing together, a plan or the trash could only be stopped from their own pages, and integration syncs and applying rules could not be stopped at all. "Stop all" stops everything listed once more than one job runs or waits
 - fix: applying rules shows as its own job ("Applying rules") instead of taking the scan's place in the sidebar, and pressing it again while it runs is refused instead of starting a second pass
+- feat: "Clean up A…" on the folder comparison page plans what to do with folder A: remove A's copies of the files B has (same content hash, at the same path or moved/renamed in B), or merge A into B — the files only A has also move into B at the same path below it, so A keeps nothing B lacks. Trash, delete or hard-link the copies, into a new draft or an existing one; files with another size or content at the same path, or not hashed yet, are left alone and counted in the dialog. Every copy is re-hashed together with B's right before it is removed
+- feat: Duplicates → Similar folders says how alike each pair is ("92% alike": shared bytes of the larger folder's own files) with each folder's file count and size, sorts by most shared space or most alike, and filters to pairs at least half the same, near copies (90%+) or the same files
+- fix: Similar folders no longer counts a file twice when the other folder holds several copies of it
 
 ## v0.1.15 — 2026-11-23
 

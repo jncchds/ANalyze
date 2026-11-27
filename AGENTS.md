@@ -307,6 +307,15 @@ ids and mtimes and `elsewhere` (a path on the other side with the same hash, for
 one leaves out the inner subtree; `a`/`b` carry `parentId` (one level up), `copies` the group's files with `hash`. UI `pages/FolderComparePage.tsx`
 at `/duplicates/compare` (from a duplicate group's "Compare folders" and a similar-folder pair), built on `components/FolderCompare.tsx`, the
 tree + file list shared with `ExtractionPage` (each page passes its words: filters, labels, column headings, footer).
+`POST /duplicates/compare/plan {a, b, mode: copies|merge, op: trash|delete|hardlink, planId?, name?}` plans folder A's cleanup from the same
+comparison (400 when `capped`): `PicksFor` turns each A file whose content B has — `matched` with `crc` match, or `missing` with `elsewhere` —
+into a removal kept by B's file, and with `merge` (same root only) each other `missing` file into a move to the same path below B; `corrupt`,
+`differs` and size-only matches are left out. `PlanBuilder.PlanFolderAsync(FolderPick…)` builds removals like dedupe items (`KeepPath`/
+`KeepRootId`, `ExpectedHash`, so apply re-hashes both; excluded when the hashes differ, the files are hard links of each other, or a hard link
+would cross filesystems) and moves with the Skip policy, then creates a draft (`Conflict = Skip`) or merges into `planId`. UI: "Clean up A…"
+on the compare page (`CleanupDialog`; ⇄ Swap cleans up the other side). `GET /duplicates/folders?sort=similar&min=&limit=` lists folder
+pairs sharing files (by `ParentId`, each A file counted once however many copies B has) with `ownFiles`/`ownBytes` per side (files directly
+inside) and `similarity` = shared bytes / the larger side's own bytes; `sort=similar` or `min` rank the 1,000 pairs sharing the most bytes.
 
 Browse also calls `GET /entries/{id}/disk` (the folder listed on disk now via `ResolveForRead`: names not in the index with lstat data and whether
 they are ignored, plus the count of indexed children gone from disk; `?sub=a/b` lists a folder further down that is not in the index,

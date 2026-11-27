@@ -1,3 +1,5 @@
+using ANalyze.Actions;
+using ANalyze.Domain;
 using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Roots;
 using ANalyze.Web.Api;
@@ -49,24 +51,60 @@ public static class DuplicateEndpoints
             return new { groups, total = totals.Item1, wasted = totals.Item2 };
         });
 
-        // Pairs of folders that share many identical files: usually a copied backup or an extracted archive.
-        api.MapGet("/duplicates/folders", (int? limit, DbSetup database, RootRegistry roots) =>
+        // Pairs of folders that share many identical files: usually a copied backup or an extracted archive. Each side carries its
+        // own files (directly inside, not below) as `ownFiles`/`ownBytes`; `similarity` is the shared bytes over the larger side's, so
+        // 1 means the same files and "0.9" a near copy. sort=similar ranks by it (among the pairs sharing the most bytes), min drops the
+        // pairs below a similarity.
+        api.MapGet("/duplicates/folders", (int? limit, string? sort, double? min, DbSetup database, RootRegistry roots) =>
         {
             using var c = database.Open();
+            var take = Math.Clamp(limit ?? 30, 1, 200);
+            var bySimilarity = sort == "similar" || min > 0;
             var rows = Sql.Query(c, $"""
-                SELECT a.ParentId, b.ParentId, COUNT(*) AS n, SUM(a.Size) AS bytes FROM Entries a
-                JOIN Entries b ON b.FullHash = a.FullHash AND b.ParentId > a.ParentId AND b.IsDir = FALSE
-                WHERE a.FullHash IS NOT NULL AND a.IsDir = FALSE AND a.Size > 0
-                  AND NOT (a.Inode <> 0 AND a.Inode = b.Inode AND a.Dev = b.Dev)
-                GROUP BY a.ParentId, b.ParentId ORDER BY bytes DESC LIMIT {Math.Clamp(limit ?? 30, 1, 200)}
+                SELECT pa, pb, COUNT(*) AS n, SUM(sz) AS bytes FROM (
+                  SELECT DISTINCT a.ParentId AS pa, b.ParentId AS pb, a.Id AS id, a.Size AS sz FROM Entries a
+                  JOIN Entries b ON b.FullHash = a.FullHash AND b.ParentId > a.ParentId AND b.IsDir = FALSE
+                  WHERE a.FullHash IS NOT NULL AND a.IsDir = FALSE AND a.Size > 0
+                    AND NOT (a.Inode <> 0 AND a.Inode = b.Inode AND a.Dev = b.Dev)
+                ) x
+                GROUP BY pa, pb ORDER BY bytes DESC LIMIT {(bySimilarity ? 1000 : take)}
                 """, r => (A: r.GetInt64(0), B: r.GetInt64(1), Files: r.GetInt64(2), Bytes: r.GetInt64(3)));
             var ids = rows.SelectMany(r => new[] { r.A, r.B }).Distinct().ToList();
-            var info = ids.Count == 0 ? [] : Sql.Query(c, $"SELECT Id, RootId, RelPath, FileCount, TotalSize FROM Entries WHERE Id IN ({string.Join(",", ids)})",
-                r => (Id: r.GetInt64(0), RootId: r.GetInt32(1), RelPath: r.GetString(2), Files: r.GetInt64(3), Size: r.GetInt64(4))).ToDictionary(x => x.Id);
-            object Dir(long id) => info.TryGetValue(id, out var d)
-                ? new { id, d.RootId, root = roots.Get(d.RootId)?.Name, d.RelPath, d.Files, d.Size }
-                : new { id, RootId = 0, root = (string?)null, RelPath = "?", Files = 0L, Size = 0L };
-            return rows.Select(r => new { a = Dir(r.A), b = Dir(r.B), sharedFiles = r.Files, sharedBytes = r.Bytes });
+            var info = new Dictionary<long, (long Id, int RootId, string RelPath, long Files, long Size)>();
+            var own = new Dictionary<long, (long Files, long Bytes)>();
+            foreach (var chunk in ids.Chunk(500))
+            {
+                var list = string.Join(",", chunk);
+                foreach (var d in Sql.Query(c, $"SELECT Id, RootId, RelPath, FileCount, TotalSize FROM Entries WHERE Id IN ({list})",
+                    r => (Id: r.GetInt64(0), RootId: r.GetInt32(1), RelPath: r.GetString(2), Files: r.GetInt64(3), Size: r.GetInt64(4))))
+                {
+                    info[d.Id] = d;
+                }
+
+                foreach (var o in Sql.Query(c, $"SELECT ParentId, COUNT(*), COALESCE(SUM(Size), 0) FROM Entries WHERE ParentId IN ({list}) AND IsDir = FALSE AND IsSymlink = FALSE GROUP BY ParentId",
+                    r => (Id: r.GetInt64(0), Files: r.GetInt64(1), Bytes: r.GetInt64(2))))
+                {
+                    own[o.Id] = (o.Files, o.Bytes);
+                }
+            }
+
+            object Dir(long id)
+            {
+                var (ownFiles, ownBytes) = own.GetValueOrDefault(id);
+                return info.TryGetValue(id, out var d)
+                    ? new { id, d.RootId, root = roots.Get(d.RootId)?.Name, d.RelPath, d.Files, d.Size, ownFiles, ownBytes }
+                    : new { id, RootId = 0, root = (string?)null, RelPath = "?", Files = 0L, Size = 0L, ownFiles, ownBytes };
+            }
+
+            // A file matched by several copies on the other side counts once; the bytes are a's.
+            double Similarity((long A, long B, long Files, long Bytes) r) =>
+                Math.Min(1, (double)Math.Min(r.Bytes, own.GetValueOrDefault(r.A).Bytes) / Math.Max(1, Math.Max(own.GetValueOrDefault(r.A).Bytes, own.GetValueOrDefault(r.B).Bytes)));
+            var pairs = rows.Select(r => (Row: r, Similarity: Similarity(r))).Where(p => p.Similarity >= (min ?? 0));
+            pairs = sort == "similar" ? pairs.OrderByDescending(p => p.Similarity).ThenByDescending(p => p.Row.Bytes) : pairs.OrderByDescending(p => p.Row.Bytes);
+            return pairs.Take(take).Select(p => new
+            {
+                a = Dir(p.Row.A), b = Dir(p.Row.B), sharedFiles = p.Row.Files, sharedBytes = p.Row.Bytes, similarity = Math.Round(p.Similarity, 4),
+            });
         });
 
         // Two folders compared file by file, by path below each (the comparison view of extracted archives): usually the parent folders of
@@ -93,6 +131,93 @@ public static class DuplicateEndpoints
                 r => new { id = r.GetInt64(0), rootId = r.GetInt32(1), root = roots.Get(r.GetInt32(1))?.Name, relPath = r.GetString(2), parentId = r.NullableLong(3) }, ("@h", hash));
             return Results.Ok(new { a = fa, b = fb, files, capped = capA || capB, copies });
         });
+
+        // A plan from a comparison, cleaning up folder A: mode "copies" removes A's files whose content B has (at the same path or
+        // elsewhere in B, by content hash); "merge" also moves the files only A has into B at the same path below it (same root
+        // only), so A ends up holding nothing B lacks. Files at the same path with another size or content are left alone.
+        api.MapPost("/duplicates/compare/plan", async (ComparePlanBody body, DbSetup database, RootRegistry roots, PlanBuilder builder, CancellationToken ct) =>
+        {
+            if (body.Mode is not ("copies" or "merge"))
+            {
+                return Results.Problem("mode is \"copies\" or \"merge\".", statusCode: 400);
+            }
+
+            List<FolderPick> picks;
+            using (var c = database.Open())
+            {
+                var (fa, fb) = (FolderOf(c, body.A, roots), FolderOf(c, body.B, roots));
+                if (fa is null || fb is null)
+                {
+                    return Results.NotFound();
+                }
+
+                if (fa.Id == fb.Id)
+                {
+                    return Results.Problem("Both sides are the same folder.", statusCode: 400);
+                }
+
+                var (la, capA) = FilesBelow(c, fa, Inner(fa, fb));
+                var (lb, capB) = FilesBelow(c, fb, Inner(fb, fa));
+                if (capA || capB)
+                {
+                    return Results.Problem($"A folder has more than {MaxCompareFiles:N0} files: plan from smaller folders.", statusCode: 400);
+                }
+
+                picks = PicksFor(CompareFolders(la, lb), lb, body.Mode == "merge" && fa.RootId == fb.RootId ? fb.RelPath : null);
+            }
+
+            try
+            {
+                var r = await builder.PlanFolderAsync(body.PlanId, body.Name, picks, body.Op, ct);
+                return Results.Ok(new { r.Id, r.Name, r.Items, r.Added, r.Replaced });
+            }
+            catch (ArgumentException e)
+            {
+                return Results.Problem(e.Message, statusCode: 400);
+            }
+            catch (KeyNotFoundException e)
+            {
+                return Results.Problem(e.Message, statusCode: 404);
+            }
+            catch (InvalidOperationException e)
+            {
+                return Results.Problem(e.Message, statusCode: 409);
+            }
+        });
+    }
+
+    public sealed record ComparePlanBody(long A, long B, string Mode, ActionOp Op = ActionOp.Trash, int? PlanId = null, string? Name = null);
+
+    /// <summary>
+    /// What a comparison plans for A: each file whose content B has is removed in favour of B's copy (the one at the same path, else the
+    /// one <c>elsewhere</c> names); with <paramref name="mergeInto"/> (B's path, same root) each file only A has moves there.
+    /// </summary>
+    private static List<FolderPick> PicksFor(List<CompareFile> files, List<FileAt> b, string? mergeInto)
+    {
+        var bByPath = b.ToDictionary(x => x.Path, x => x.Id, StringComparer.Ordinal);
+        var picks = new List<FolderPick>();
+        foreach (var f in files)
+        {
+            if (f.SourceId is not { } aId)
+            {
+                continue;
+            }
+
+            if (f is { State: "matched", Crc: "match", EntryId: { } keep })
+            {
+                picks.Add(new FolderPick(aId, keep, null));
+            }
+            else if (f.State == "missing" && f.Elsewhere is { } other && bByPath.TryGetValue(other, out var elsewhere))
+            {
+                picks.Add(new FolderPick(aId, elsewhere, null));
+            }
+            else if (f.State == "missing" && mergeInto is not null)
+            {
+                picks.Add(new FolderPick(aId, null, mergeInto.Length == 0 ? f.Path : mergeInto + "/" + f.Path));
+            }
+        }
+
+        return picks;
     }
 
     /// <summary>A folder of a comparison: <see cref="ParentId"/> for going one level up, <see cref="Files"/> and <see cref="Size"/> of its whole subtree.</summary>

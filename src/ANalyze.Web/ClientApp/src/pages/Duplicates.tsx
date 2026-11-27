@@ -6,7 +6,7 @@ import type { DedupeKeep } from '../api/types'
 import { EntryDrawer } from '../components/EntryDrawer'
 import { ExtractedArchives } from '../components/ExtractedArchives'
 import { usePlanAdded, usePlanChoice } from '../components/PlanDialog'
-import { Empty, ErrorBox, Field, FilterInput, Loading, Modal, PageTitle, Section, Stat, Tabs } from '../components/ui'
+import { Empty, ErrorBox, Field, FilterInput, Loading, Modal, PageTitle, Section, ShareBar, Stat, Tabs } from '../components/ui'
 import { useScope } from '../hooks/useScope'
 import { leaveOverlay, useEntryPreview, useUrlEnum, useUrlNumber, useUrlOverlay, useUrlParam } from '../hooks/useUrlState'
 import { bytes, count, date } from '../lib/format'
@@ -29,12 +29,27 @@ interface Group {
   members: Member[]
 }
 
+interface PairSide {
+  id: number
+  root?: string
+  relPath: string
+  files: number
+  size: number
+  /** Files directly inside the folder (not below), which the pair is compared on. */
+  ownFiles: number
+  ownBytes: number
+}
+
 interface FolderPair {
-  a: { id: number; root?: string; relPath: string; files: number; size: number }
-  b: { id: number; root?: string; relPath: string; files: number; size: number }
+  a: PairSide
+  b: PairSide
   sharedFiles: number
   sharedBytes: number
+  /** Shared bytes over the larger folder's own bytes: 1 = the same files. */
+  similarity: number
 }
+
+const pctOf = (v: number) => (v >= 1 ? '100%' : `${Math.floor(v * 100)}%`)
 
 const PAGE = 50
 const folderOf = (m: Member) => `${m.rootId}:${m.relPath.includes('/') ? m.relPath.slice(0, m.relPath.lastIndexOf('/')) : ''}`
@@ -64,7 +79,14 @@ export default function Duplicates() {
     queryFn: () => api<{ groups: Group[]; total: number; wasted: number }>('/duplicates', { query: { rootId, sort, offset, limit: PAGE, q } }),
     placeholderData: keepPreviousData,
   })
-  const folders = useQuery({ queryKey: ['duplicate-folders'], queryFn: () => api<FolderPair[]>('/duplicates/folders'), enabled: tab === 'folders' })
+  const [folderSort, setFolderSort] = useUrlEnum('fsort', ['shared', 'similar'] as const, 'shared')
+  const [folderMin, setFolderMin] = useUrlParam('fmin', '0')
+  const folders = useQuery({
+    queryKey: ['duplicate-folders', folderSort, folderMin],
+    queryFn: () => api<FolderPair[]>('/duplicates/folders', { query: { sort: folderSort === 'similar' ? 'similar' : undefined, min: Number(folderMin) || undefined, limit: 60 } }),
+    enabled: tab === 'folders',
+    placeholderData: keepPreviousData,
+  })
   const d = groups.data
 
   return (
@@ -171,21 +193,51 @@ export default function Duplicates() {
 
       {tab === 'folders' && (
         <Section title="Folder pairs sharing identical files" actions={<span className="text-xs muted">often copied backups or extracted archives</span>}>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <select className="input w-auto" value={folderSort} onChange={(e) => setFolderSort(e.target.value as 'shared' | 'similar')}>
+              <option value="shared">Most shared space</option>
+              <option value="similar">Most alike</option>
+            </select>
+            <select className="input w-auto" value={folderMin} onChange={(e) => setFolderMin(e.target.value, { replace: true })} title="How much of the larger folder's own files the other one has too">
+              <option value="0">Any overlap</option>
+              <option value="0.5">At least half the same</option>
+              <option value="0.9">Near copies (90%+)</option>
+              <option value="1">The same files</option>
+            </select>
+          </div>
           {folders.isLoading ? (
             <Loading />
+          ) : folders.error ? (
+            <ErrorBox error={folders.error} />
           ) : !folders.data?.length ? (
-            <Empty>No folder pairs share files.</Empty>
+            <Empty>{folderMin !== '0' ? 'No folder pairs are this much alike.' : 'No folder pairs share files.'}</Empty>
           ) : (
             <ul className="divide-y divide-line/60">
               {folders.data.map((p) => (
                 <li key={`${p.a.id}-${p.b.id}`} className="flex flex-wrap items-center gap-3 py-2 text-sm">
                   <div className="min-w-0 flex-1 space-y-0.5">
-                    <Link to={`/browse/${p.a.id}`} className="block truncate hover:text-accent">📁 {p.a.relPath || '/'}</Link>
-                    <Link to={`/browse/${p.b.id}`} className="block truncate hover:text-accent">📁 {p.b.relPath || '/'}</Link>
+                    {[p.a, p.b].map((s) => (
+                      <div key={s.id} className="flex min-w-0 items-baseline gap-2">
+                        <Link to={`/browse/${s.id}`} className="min-w-0 flex-1 truncate hover:text-accent" title={`${s.root ?? '?'}/${s.relPath}`}>
+                          📁 {s.relPath || '/'}
+                        </Link>
+                        <span className="shrink-0 text-xs muted tabular" title="Files directly in this folder, which the pair is compared on">
+                          {count(s.ownFiles)} files · {bytes(s.ownBytes)}
+                        </span>
+                      </div>
+                    ))}
                   </div>
-                  <div className="text-right">
-                    <div className="font-semibold text-amber tabular">{bytes(p.sharedBytes)}</div>
-                    <div className="text-xs muted">{count(p.sharedFiles)} shared files</div>
+                  <div className="w-28 text-right">
+                    <div
+                      className={p.similarity >= 0.9 ? 'font-semibold text-success tabular' : 'font-semibold tabular'}
+                      title="Shared bytes over the larger folder's own files: 100% = the same files"
+                    >
+                      {pctOf(p.similarity)} alike
+                    </div>
+                    <ShareBar value={p.similarity} max={1} color="var(--success)" className="my-0.5" />
+                    <div className="text-xs muted">
+                      <span className="text-amber">{bytes(p.sharedBytes)}</span> · {count(p.sharedFiles)} shared
+                    </div>
                   </div>
                   <Link to={`/duplicates/compare?a=${p.a.id}&b=${p.b.id}`} className="btn-secondary px-2.5 py-1 text-xs" title="Compare the two folders file by file">
                     Compare

@@ -28,6 +28,12 @@ public sealed record DedupePlanRequest(
     string? PathPrefix,
     long MinSize = 0);
 
+/// <summary>
+/// One file of a folder comparison to plan: removed (with <see cref="RemoveOp"/>) because <see cref="KeepId"/> holds the same content, or moved
+/// to <see cref="MoveTo"/> (a path in the same root) because the other folder lacks it.
+/// </summary>
+public sealed record FolderPick(long EntryId, long? KeepId, string? MoveTo);
+
 /// <summary>What adding a selection to a plan did: items now in the plan, items added, items they replaced.</summary>
 public sealed record PlanAddResult(int Id, string Name, int Items, int Added, int Replaced);
 
@@ -85,6 +91,121 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
         var plan = await LoadDraftAsync(db, planId, ct);
         var items = await BuildDedupeItemsAsync(db, req, ct);
         return await MergeAsync(db, plan, items, [], ct);
+    }
+
+    /// <summary>
+    /// A plan from a folder comparison (<c>POST /duplicates/compare/plan</c>): removals are shaped like dedupe items (kept copy and content
+    /// hash, re-checked at apply), moves like manual ones with the Skip policy. <paramref name="planId"/> adds to that draft instead.
+    /// </summary>
+    public async Task<PlanAddResult> PlanFolderAsync(int? planId, string? name, IReadOnlyList<FolderPick> picks, ActionOp removeOp, CancellationToken ct)
+    {
+        if (removeOp is not (ActionOp.Trash or ActionOp.Delete or ActionOp.Hardlink))
+        {
+            throw new ArgumentException("Copies can be trashed, deleted or hard-linked.");
+        }
+
+        if (picks.Count == 0)
+        {
+            throw new ArgumentException("Nothing to plan: no file of this folder is in the other one, or missing from it.");
+        }
+
+        if (picks.Count > MaxItems)
+        {
+            throw new ArgumentException($"Too many items (max {MaxItems}).");
+        }
+
+        await using var db = await dbf.CreateDbContextAsync(ct);
+        var plan = planId is { } pid ? await LoadDraftAsync(db, pid, ct) : null;
+        var taken = plan?.Items.Where(i => i.Op == ActionOp.Move && i.TargetPath is not null).Select(i => i.TargetPath!).ToHashSet(StringComparer.Ordinal)
+            ?? new HashSet<string>(StringComparer.Ordinal);
+
+        var ids = picks.Select(p => p.EntryId).Concat(picks.Where(p => p.KeepId is not null).Select(p => p.KeepId!.Value)).Distinct().ToList();
+        var entries = new Dictionary<long, Entry>(ids.Count);
+        foreach (var chunk in ids.Chunk(5000))
+        {
+            foreach (var e in await db.Entries.AsNoTracking().Where(e => chunk.Contains(e.Id)).ToListAsync(ct))
+            {
+                entries[e.Id] = e;
+            }
+        }
+
+        var items = new List<ActionItem>(picks.Count);
+        foreach (var p in picks)
+        {
+            if (!entries.TryGetValue(p.EntryId, out var e) || e.IsDir)
+            {
+                continue;
+            }
+
+            var item = new ActionItem
+            {
+                EntryId = e.Id,
+                RootId = e.RootId,
+                SourcePath = e.RelPath,
+                ExpectedSize = e.Size,
+                ExpectedMTime = e.MTime,
+            };
+            if (p.KeepId is { } kid)
+            {
+                item.Op = removeOp;
+                if (!entries.TryGetValue(kid, out var k))
+                {
+                    continue;
+                }
+
+                item.KeepPath = k.RelPath;
+                item.KeepRootId = k.RootId;
+                item.ExpectedHash = e.FullHash;
+                if (e.FullHash is null || e.FullHash != k.FullHash || e.Size == 0)
+                {
+                    (item.Included, item.Warning) = (false, "The other folder's file is not known to have the same content");
+                }
+                else if (e.Inode != 0 && e.Inode == k.Inode && e.Dev == k.Dev)
+                {
+                    (item.Included, item.Warning) = (false, "The same file (a hard link): removing it frees nothing");
+                }
+                else if (removeOp == ActionOp.Hardlink && (k.RootId != e.RootId || k.Dev != e.Dev))
+                {
+                    (item.Included, item.Warning) = (false, "Kept copy is on another filesystem; a hard link is impossible");
+                }
+            }
+            else if (p.MoveTo is { Length: > 0 } to)
+            {
+                item.Op = ActionOp.Move;
+                ResolveTarget(item, to, ConflictPolicy.Skip, taken);
+            }
+            else
+            {
+                continue;
+            }
+
+            MarkReadOnly(item);
+            items.Add(item);
+        }
+
+        if (plan is not null)
+        {
+            return await MergeAsync(db, plan, items, [], ct);
+        }
+
+        var moves = items.Count(i => i.Op == ActionOp.Move);
+        var created = new ActionPlan
+        {
+            Name = string.IsNullOrWhiteSpace(name)
+                ? moves == 0 ? $"Folder copies: {removeOp.ToString().ToLowerInvariant()} {items.Count} file(s)" : $"Merge folders: move {moves}, {removeOp.ToString().ToLowerInvariant()} {items.Count - moves}"
+                : name.Trim(),
+            Source = moves == 0 ? PlanSource.Dedupe : PlanSource.Manual,
+            Status = PlanStatus.Draft,
+            Conflict = ConflictPolicy.Skip,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        created.Items.AddRange(items);
+        await MarkInUseAsync(db, created.Items, ct);
+        MarkKeptConflicts(created);
+        db.ActionPlans.Add(created);
+        await db.SaveChangesAsync(ct);
+        return new PlanAddResult(created.Id, created.Name, created.Items.Count, created.Items.Count, 0);
     }
 
     private static async Task<ActionPlan> LoadDraftAsync(AnalyzeDbContext db, int planId, CancellationToken ct)

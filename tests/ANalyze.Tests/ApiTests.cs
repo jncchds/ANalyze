@@ -348,3 +348,63 @@ public class JobCancelTests
         }
     }
 }
+
+public class FolderCleanupTests
+{
+    [Fact]
+    public async Task Similar_folders_are_ranked_and_merging_a_into_b_leaves_a_only_what_b_lacks()
+    {
+        await using var app = new TestApp();
+        var (a, b) = (Path.Combine(app.Library, "cmpA"), Path.Combine(app.Library, "cmpB"));
+        Directory.CreateDirectory(a);
+        Directory.CreateDirectory(b);
+        byte[] Bytes(int n, byte seed) => Enumerable.Range(0, n).Select(i => (byte)(i * 7 + seed)).ToArray();
+        File.WriteAllBytes(Path.Combine(a, "same.bin"), Bytes(5_000, 1));
+        File.WriteAllBytes(Path.Combine(b, "same.bin"), Bytes(5_000, 1));
+        File.WriteAllBytes(Path.Combine(a, "renamed.bin"), Bytes(3_001, 2));
+        File.WriteAllBytes(Path.Combine(b, "other-name.bin"), Bytes(3_001, 2));
+        File.WriteAllBytes(Path.Combine(a, "diff.bin"), Bytes(4_003, 3));
+        File.WriteAllBytes(Path.Combine(b, "diff.bin"), Bytes(4_003, 4));
+        File.WriteAllText(Path.Combine(a, "onlyA.txt"), "only in A");
+        using var http = app.CreateClient();
+        await app.ScanAsync(http);
+
+        // The pair is listed with how alike the two are: 8,001 shared bytes of A's 12,013 (A is the larger, with onlyA.txt).
+        var pairs = await http.GetFromJsonAsync<JsonElement>("/api/v1/duplicates/folders?sort=similar");
+        var pair = pairs.EnumerateArray().Single(p => p.GetProperty("a").GetProperty("relPath").GetString() is "cmpA" or "cmpB"
+            && p.GetProperty("b").GetProperty("relPath").GetString() is "cmpA" or "cmpB");
+        Assert.Equal(8_001, pair.GetProperty("sharedBytes").GetInt64());
+        Assert.Equal(2, pair.GetProperty("sharedFiles").GetInt64());
+        Assert.Equal(Math.Round(8_001d / 12_013, 4), pair.GetProperty("similarity").GetDouble());
+        var none = await http.GetFromJsonAsync<JsonElement>("/api/v1/duplicates/folders?min=0.99");
+        Assert.DoesNotContain(none.EnumerateArray(), p => p.GetProperty("a").GetProperty("relPath").GetString() is "cmpA" or "cmpB");
+
+        async Task<long> Id(string q) => (await http.GetFromJsonAsync<JsonElement>($"/api/v1/search?q={q}")).GetProperty("items")[0].GetProperty("id").GetInt64();
+        var (idA, idB) = (await Id("cmpA/same.bin"), await Id("cmpB/same.bin"));
+        Assert.Equal(HttpStatusCode.BadRequest, (await http.PostAsJsonAsync("/api/v1/duplicates/compare/plan", new { a = idA, b = idB, mode = "everything" }, TestApp.Json)).StatusCode);
+
+        var res = await http.PostAsJsonAsync("/api/v1/duplicates/compare/plan", new { a = idA, b = idB, mode = "merge", op = "trash" }, TestApp.Json);
+        res.EnsureSuccessStatusCode();
+        var id = (await res.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+        var plan = await http.GetFromJsonAsync<JsonElement>($"/api/v1/plans/{id}");
+        var items = plan.GetProperty("page").GetProperty("items").EnumerateArray().ToDictionary(i => i.GetProperty("sourcePath").GetString()!);
+        // diff.bin has other content at the same path in B: left alone.
+        Assert.Equal(["cmpA/onlyA.txt", "cmpA/renamed.bin", "cmpA/same.bin"], items.Keys.Order());
+        Assert.Equal("cmpB/same.bin", items["cmpA/same.bin"].GetProperty("keepPath").GetString());
+        Assert.Equal("cmpB/other-name.bin", items["cmpA/renamed.bin"].GetProperty("keepPath").GetString());
+        Assert.Equal("move", items["cmpA/onlyA.txt"].GetProperty("op").GetString());
+        Assert.Equal("cmpB/onlyA.txt", items["cmpA/onlyA.txt"].GetProperty("targetPath").GetString());
+        Assert.All(items.Values, i => Assert.True(i.GetProperty("included").GetBoolean()));
+
+        (await http.PostAsync($"/api/v1/plans/{id}/apply", null)).EnsureSuccessStatusCode();
+        plan = await app.WaitPlanAsync(http, id, "done", "failed");
+        Assert.Equal(3, plan.GetProperty("summary").GetProperty("done").GetInt32());
+        Assert.Equal(["diff.bin"], Directory.GetFiles(a).Select(Path.GetFileName));
+        Assert.Equal("only in A", File.ReadAllText(Path.Combine(b, "onlyA.txt")));
+        Assert.True(File.Exists(Path.Combine(b, "same.bin")));
+
+        // Nothing is left to plan now: A's only file differs from B's.
+        var again = await http.PostAsJsonAsync("/api/v1/duplicates/compare/plan", new { a = await Id("cmpA/diff.bin"), b = idB, mode = "copies" }, TestApp.Json);
+        Assert.Equal(HttpStatusCode.BadRequest, again.StatusCode);
+    }
+}
