@@ -1,5 +1,10 @@
 # Release Notes
 
+## v0.1.16 — 2026-11-27
+
+- fix: every job in the sidebar's Activity can be stopped on its own with its ✕ — a scan, processing, a plan being applied, emptying the trash, an integration sync, applying rules and an AI run; before, the only button stopped the scan and the processing together, a plan or the trash could only be stopped from their own pages, and integration syncs and applying rules could not be stopped at all. "Stop all" stops everything listed once more than one job runs or waits
+- fix: applying rules shows as its own job ("Applying rules") instead of taking the scan's place in the sidebar, and pressing it again while it runs is refused instead of starting a second pass
+
 ## v0.1.15 — 2026-11-23
 
 - feat: emptying a plan's trash runs in the background and shows its progress like applying a plan: the file being deleted, space freed of the bin's size and files deleted, with Stop — on the plan's page (new "Empty trash" button), in Actions → Trash (each bin, "Waiting…" while queued) and in the sidebar's Activity; apply, undo and delete wait while a plan's trash is being emptied

@@ -116,6 +116,16 @@ public static class SystemEndpoints
         // Stops the walk and the background processing after it.
         api.MapPost("/scan/cancel", (ScanQueue queue, ScanProcessor processor) => queue.Cancel() | processor.Cancel() ? Results.NoContent() : Results.NotFound());
 
+        // Any job the sidebar lists, by its kind (scan, processing, apply, trash, ai, rules, integration:{id}).
+        api.MapPost("/jobs/{kind}/cancel", (string kind, IServiceProvider sp) => CancelJob(kind, sp) ? Results.NoContent() : Results.NotFound());
+
+        // Every running or queued job at once; answers which kinds were told to stop.
+        api.MapPost("/jobs/cancel", (JobBoard board, JobCancels cancels, IServiceProvider sp) =>
+        {
+            var kinds = board.All.Where(j => j.State is JobStates.Running or JobStates.Queued).Select(j => j.Kind).Concat(cancels.Running).Distinct();
+            return new { stopped = kinds.Where(k => CancelJob(k, sp)).ToList() };
+        });
+
         api.MapGet("/scans", async (int? limit, AnalyzeDbContext db, CancellationToken ct) =>
             await db.Scans.AsNoTracking().OrderByDescending(s => s.Id).Take(Math.Clamp(limit ?? 20, 1, 200)).ToListAsync(ct));
 
@@ -214,6 +224,17 @@ public static class SystemEndpoints
             return Results.NoContent();
         });
     }
+
+    /// <summary>Stops one job by its kind; false when nothing of that kind runs or waits.</summary>
+    private static bool CancelJob(string kind, IServiceProvider sp) => kind switch
+    {
+        JobKinds.Scan => sp.GetRequiredService<ScanQueue>().Cancel(),
+        JobKinds.Processing => sp.GetRequiredService<ScanProcessor>().Cancel(),
+        JobKinds.Apply => sp.GetRequiredService<PlanQueue>().Cancel(),
+        JobKinds.Trash => sp.GetRequiredService<TrashService>().Cancel(),
+        JobKinds.Ai => sp.GetRequiredService<ANalyze.Ai.AiService>().Cancel(),
+        _ => sp.GetRequiredService<JobCancels>().Cancel(kind),
+    };
 
     private static object Masked(AppSettings s) => s with { Ai = s.Ai with { ApiKey = string.IsNullOrEmpty(s.Ai.ApiKey) ? null : MaskedKey } };
 

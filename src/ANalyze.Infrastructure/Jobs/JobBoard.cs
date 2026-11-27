@@ -13,6 +13,9 @@ public static class JobKinds
 
     /// <summary>What follows a scan's walk in the background: types, categories, archives, hashes, duplicates, verification.</summary>
     public const string Processing = "processing";
+
+    /// <summary>Re-applying every rule to every file (Rules → Apply to all files).</summary>
+    public const string Rules = "rules";
 }
 
 public static class JobStates

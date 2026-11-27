@@ -283,3 +283,68 @@ public class ScanAndActionTests
         Assert.Equal("ai", found.GetProperty("items")[0].GetProperty("categorySource").GetString());
     }
 }
+
+public class JobCancelTests
+{
+    [Fact]
+    public async Task Each_job_stops_on_its_own_and_stop_all_stops_every_one()
+    {
+        await using var app = new TestApp();
+        using var http = app.CreateClient();
+        await app.ScanAsync(http);
+        var board = app.Services.GetRequiredService<JobBoard>();
+
+        // Nothing runs: stopping one kind finds nothing, stopping all stops nothing.
+        Assert.Equal(HttpStatusCode.NotFound, (await http.PostAsync("/api/v1/jobs/scan/cancel", null)).StatusCode);
+        var none = await (await http.PostAsync("/api/v1/jobs/cancel", null)).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, none.GetProperty("stopped").GetArrayLength());
+
+        // Applying rules waits while the index is held exclusively; it is its own job ("rules"), not the scan's.
+        var held = await app.Services.GetRequiredService<JobLock>().AcquireAsync("test", CancellationToken.None);
+        try
+        {
+            Assert.Equal(HttpStatusCode.Accepted, (await http.PostAsync("/api/v1/rules/apply", null)).StatusCode);
+            await WaitStateAsync(board, JobKinds.Rules, JobStates.Queued);
+            Assert.Equal(HttpStatusCode.Conflict, (await http.PostAsync("/api/v1/rules/apply", null)).StatusCode);
+            Assert.Equal(HttpStatusCode.NoContent, (await http.PostAsync("/api/v1/jobs/rules/cancel", null)).StatusCode);
+            await WaitStateAsync(board, JobKinds.Rules, JobStates.Cancelled);
+            Assert.NotEqual("Applying rules", board.Get(JobKinds.Scan)?.Title);
+
+            // Stop all: the waiting rules job is stopped and named in the answer.
+            await WaitGoneAsync(app.Services.GetRequiredService<JobCancels>(), JobKinds.Rules);
+            Assert.Equal(HttpStatusCode.Accepted, (await http.PostAsync("/api/v1/rules/apply", null)).StatusCode);
+            await WaitStateAsync(board, JobKinds.Rules, JobStates.Queued);
+            var all = await (await http.PostAsync("/api/v1/jobs/cancel", null)).Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Contains("rules", all.GetProperty("stopped").EnumerateArray().Select(k => k.GetString()));
+            await WaitStateAsync(board, JobKinds.Rules, JobStates.Cancelled);
+        }
+        finally
+        {
+            held.Dispose();
+        }
+
+        // Once stopped, rules can be applied again and run to the end.
+        await WaitGoneAsync(app.Services.GetRequiredService<JobCancels>(), JobKinds.Rules);
+        Assert.Equal(HttpStatusCode.Accepted, (await http.PostAsync("/api/v1/rules/apply", null)).StatusCode);
+        await WaitStateAsync(board, JobKinds.Rules, JobStates.Completed);
+    }
+
+    private static async Task WaitStateAsync(JobBoard board, string kind, string state)
+    {
+        for (var i = 0; i < 400 && board.Get(kind)?.State != state; i++)
+        {
+            await Task.Delay(25);
+        }
+
+        Assert.Equal(state, board.Get(kind)?.State);
+    }
+
+    /// <summary>The cancelled job reports before its registration is disposed; wait for that too.</summary>
+    private static async Task WaitGoneAsync(JobCancels cancels, string kind)
+    {
+        for (var i = 0; i < 400 && cancels.Running.Contains(kind); i++)
+        {
+            await Task.Delay(25);
+        }
+    }
+}

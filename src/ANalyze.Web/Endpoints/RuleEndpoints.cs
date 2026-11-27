@@ -171,25 +171,39 @@ public static class RuleEndpoints
             return new { count, bytes, samples };
         });
 
-        // Re-applies all rules to all files in the background.
-        api.MapPost("/rules/apply", (Categorizer categorizer, JobBoard board, JobLock jobLock) =>
+        // Re-applies all rules to all files in the background, as its own job ("rules"), stoppable with POST /jobs/rules/cancel.
+        api.MapPost("/rules/apply", (Categorizer categorizer, JobBoard board, JobLock jobLock, JobCancels cancels) =>
         {
+            if (cancels.Running.Contains(JobKinds.Rules))
+            {
+                return Results.Conflict(new { error = "Rules are being applied already" });
+            }
+
+            var run = cancels.Begin(JobKinds.Rules);
             _ = Task.Run(async () =>
             {
+                using var _r = run;
+                var ct = run.Token;
                 var started = DateTimeOffset.UtcNow;
-                using var _ = await jobLock.AcquireSharedAsync("rules", CancellationToken.None);
-                board.Report(new JobProgress { Kind = JobKinds.Scan, State = JobStates.Running, Phase = "categorizing", Title = "Applying rules", StartedAt = started }, force: true);
+                const string title = "Applying rules";
+                board.Report(new JobProgress { Kind = JobKinds.Rules, State = JobStates.Queued, Title = title, StartedAt = started }, force: true);
                 try
                 {
+                    using var _ = await jobLock.AcquireSharedAsync("rules", ct);
+                    board.Report(new JobProgress { Kind = JobKinds.Rules, State = JobStates.Running, Phase = "categorizing", Title = title, StartedAt = started }, force: true);
                     var changed = await categorizer.RunAsync(Scope.Everything, (done, total) => board.Report(new JobProgress
                     {
-                        Kind = JobKinds.Scan, State = JobStates.Running, Phase = "categorizing", Title = "Applying rules", Done = done, Total = total, StartedAt = started,
-                    }), CancellationToken.None);
-                    board.Report(new JobProgress { Kind = JobKinds.Scan, State = JobStates.Completed, Phase = "completed", Title = "Applying rules", Message = $"{changed} files changed", StartedAt = started, FinishedAt = DateTimeOffset.UtcNow }, force: true);
+                        Kind = JobKinds.Rules, State = JobStates.Running, Phase = "categorizing", Title = title, Done = done, Total = total, StartedAt = started,
+                    }), ct);
+                    board.Report(new JobProgress { Kind = JobKinds.Rules, State = JobStates.Completed, Phase = "completed", Title = title, Message = $"{changed} files changed", StartedAt = started, FinishedAt = DateTimeOffset.UtcNow }, force: true);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    board.Report(new JobProgress { Kind = JobKinds.Rules, State = JobStates.Cancelled, Phase = "cancelled", Title = title, Message = "Stopped; files done so far keep their new categories", StartedAt = started, FinishedAt = DateTimeOffset.UtcNow }, force: true);
                 }
                 catch (Exception e)
                 {
-                    board.Report(new JobProgress { Kind = JobKinds.Scan, State = JobStates.Failed, Phase = "failed", Title = "Applying rules", Message = e.Message, StartedAt = started, FinishedAt = DateTimeOffset.UtcNow }, force: true);
+                    board.Report(new JobProgress { Kind = JobKinds.Rules, State = JobStates.Failed, Phase = "failed", Title = title, Message = e.Message, StartedAt = started, FinishedAt = DateTimeOffset.UtcNow }, force: true);
                 }
             });
             return Results.Accepted();

@@ -22,6 +22,7 @@ public sealed class IntegrationHost(
     SecretProtector secrets,
     JobBoard board,
     JobLock jobLock,
+    JobCancels cancels,
     Microsoft.Extensions.Configuration.IConfiguration config,
     ILogger<IntegrationHost> log)
 {
@@ -147,8 +148,12 @@ public sealed class IntegrationHost(
             _status[id] = previous with { Running = true };
         }
 
+        // Stoppable by job kind (POST /jobs/integration:{id}/cancel).
+        var run = cancels.Begin("integration:" + id);
         _ = Task.Run(async () =>
         {
+            using var _run = run;
+            var ct = run.Token;
             var started = DateTimeOffset.UtcNow;
             var kind = "integration:" + id;
             // Lines logged during the sync are filed under this integration in the activity log.
@@ -166,15 +171,26 @@ public sealed class IntegrationHost(
                     board.Report(new JobProgress { Kind = kind, State = JobStates.Queued, Title = integration.Name + " sync", Message = $"Waiting for {busy}", StartedAt = started }, force: true);
                 }
 
-                held = integration.LocksIndexItself ? null : await jobLock.AcquireSharedAsync(kind, CancellationToken.None);
+                held = integration.LocksIndexItself ? null : await jobLock.AcquireSharedAsync(kind, ct);
                 started = DateTimeOffset.UtcNow;
-                var settings = await LoadAsync(id, CancellationToken.None);
+                var settings = await LoadAsync(id, ct);
                 board.Report(new JobProgress { Kind = kind, State = JobStates.Running, Title = integration.Name + " sync", StartedAt = started }, force: true);
                 var progress = new Progress<IntegrationProgress>(p => board.Report(new JobProgress
                 {
                     Kind = kind, State = JobStates.Running, Title = integration.Name + " sync", Phase = p.Phase, Done = p.Done, Total = p.Total, Current = p.Current, StartedAt = started,
                 }));
-                result = await integration.SyncAsync(settings, progress, CancellationToken.None);
+                result = await integration.SyncAsync(settings, progress, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                log.LogInformation("{Integration} sync stopped", integration.Name);
+                _status[id] = Status(id) with { Running = false };
+                board.Report(new JobProgress
+                {
+                    Kind = kind, State = JobStates.Cancelled, Title = integration.Name + " sync", Message = "Stopped",
+                    StartedAt = started, FinishedAt = DateTimeOffset.UtcNow,
+                }, force: true);
+                return;
             }
             catch (Exception e)
             {

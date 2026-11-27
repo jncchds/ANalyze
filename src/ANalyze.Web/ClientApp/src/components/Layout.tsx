@@ -269,13 +269,13 @@ export function Layout({ onLogout }: { onLogout?: () => void }) {
 function ScanWidget() {
   const jobs = useJobs()
   const scan = useJob('scan')
-  // Types, categories, hashes and duplicates follow the walk in the background; Cancel stops both.
-  const processing = useJob('processing')
   const roots = useRoots()
   const { rootId } = useScope()
   const start = useMutation({ mutationFn: (only?: number) => api('/scan', { method: 'POST', json: { rootId: only } }) })
   const scoped = roots.data?.find((r) => r.id === rootId)
-  const cancel = useMutation({ mutationFn: () => api('/scan/cancel', { method: 'POST' }) })
+  // Each listed job has its own stop button (✕); "Stop all" appears once more than one runs or waits.
+  const stopOne = useMutation({ mutationFn: (kind: string) => api(`/jobs/${encodeURIComponent(kind)}/cancel`, { method: 'POST' }) })
+  const stopAll = useMutation({ mutationFn: () => api('/jobs/cancel', { method: 'POST' }) })
   const active = Object.values(jobs).filter(isActive)
   const lastScan = roots.data?.map((r) => r.lastScanAt).filter(Boolean).sort().at(-1)
   return (
@@ -298,6 +298,15 @@ function ScanWidget() {
                   {j.phase}
                 </span>
               )}
+              <button
+                className="btn-ghost -my-0.5 shrink-0 px-1 py-0 text-xs leading-none"
+                onClick={() => stopOne.mutate(j.kind)}
+                disabled={stopOne.isPending && stopOne.variables === j.kind}
+                title={stopHint(j.kind, j.title ?? j.kind)}
+                aria-label={`Stop ${j.title ?? j.kind}`}
+              >
+                ✕
+              </button>
             </div>
             {/* A job with a byte total but no item total (emptying the trash) shows its progress in bytes. */}
             <Progress value={!j.total && j.totalBytes ? j.bytes : j.done} max={j.total || j.totalBytes} className="mt-1" />
@@ -313,11 +322,12 @@ function ScanWidget() {
           </div>
         ))}
         <div className="flex gap-1.5">
-          {isActive(scan) ? (
-            <button className="btn-secondary px-2 py-1 text-xs" onClick={() => cancel.mutate()}>
-              Cancel scan
+          {active.length > 1 && (
+            <button className="btn-secondary px-2 py-1 text-xs" onClick={() => stopAll.mutate()} disabled={stopAll.isPending} title="Stop every job listed above; ✕ stops just one">
+              Stop all
             </button>
-          ) : (
+          )}
+          {!isActive(scan) && (
             <>
               {scoped && (roots.data?.length ?? 0) > 1 && (
                 <button className="btn-primary min-w-0 truncate px-2 py-1 text-xs" onClick={() => start.mutate(scoped.id)} disabled={start.isPending} title={`Scan only ${scoped.path}`}>
@@ -333,11 +343,6 @@ function ScanWidget() {
               </button>
             </>
           )}
-          {!isActive(scan) && isActive(processing) && (
-            <button className="btn-secondary px-2 py-1 text-xs" onClick={() => cancel.mutate()} title="Stop detecting types and hashing in the background; the next scan picks it up again">
-              Stop
-            </button>
-          )}
           <Link to="/logs" className="btn-ghost px-2 py-1 text-xs no-underline" title="What ANalyze is doing, step by step">
             Log
           </Link>
@@ -345,6 +350,24 @@ function ScanWidget() {
       </div>
     </>
   )
+}
+
+/** What the ✕ next to a job does, for its tooltip. */
+function stopHint(kind: string, title: string) {
+  switch (kind) {
+    case 'scan':
+      return 'Stop this scan (and any scan waiting to start); what was walked so far stays in the index'
+    case 'processing':
+      return 'Stop detecting types and hashing in the background; the next scan picks it up again'
+    case 'apply':
+      return 'Stop applying the plan; items done so far stay done'
+    case 'trash':
+      return 'Stop emptying the trash; what was deleted so far stays deleted'
+    case 'rules':
+      return 'Stop applying rules; files done so far keep their new categories'
+    default:
+      return `Stop ${title}`
+  }
 }
 
 function Label({ collapsed, children }: { collapsed: boolean; children: ReactNode }) {

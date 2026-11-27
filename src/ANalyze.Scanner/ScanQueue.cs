@@ -33,15 +33,22 @@ public sealed class ScanQueue(JobBoard board)
     public bool Cancel()
     {
         // Drop queued requests too: "cancel" means stop scanning now.
+        var dropped = false;
         while (_channel.Reader.TryRead(out _))
         {
             Interlocked.Decrement(ref _queued);
+            dropped = true;
         }
 
         var cts = _current;
         if (cts is null)
         {
-            return false;
+            if (dropped)
+            {
+                board.Report(new JobProgress { Kind = JobKinds.Scan, State = JobStates.Cancelled, Title = "Scan", Message = "Stopped before it started", FinishedAt = DateTimeOffset.UtcNow }, force: true);
+            }
+
+            return dropped;
         }
 
         cts.Cancel();

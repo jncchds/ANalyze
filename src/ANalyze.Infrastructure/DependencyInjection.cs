@@ -22,6 +22,7 @@ public static class DependencyInjection
         services.AddSingleton<JobLock>();
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton<JobBoard>();
+        services.AddSingleton<JobCancels>();
         services.AddSingleton<ActivityLog>();
         services.AddScoped<DatabaseInitializer>();
         return services;

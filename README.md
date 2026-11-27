@@ -85,7 +85,11 @@ later scans only look at what changed (size, mtime, inode), so they are much fas
 - **Walk first, the rest in the background** — a scan only holds the index to itself while it walks the folders. File
   types, categories, archives, hashes, duplicates and re-verification then run in the background (*Processing* in the
   sidebar), next to integration syncs and the AI, and step aside whenever the next scan or a plan needs the index;
-  they carry on afterwards where they were. **Stop** in the sidebar stops them; the next scan picks the work up again.
+  they carry on afterwards where they were. The **✕** next to *Processing* in the sidebar stops them; the next scan
+  picks the work up again.
+- **Stop any job** — every job in the sidebar's Activity (a scan, processing, a plan being applied, emptying the
+  trash, an integration sync, applying rules, an AI run) has its own **✕**; **Stop all** appears when more than one
+  runs or waits.
 - **Other filesystems** — disks, shares, ZFS datasets or btrfs subvolumes mounted *below* a root are entered unless
   *Descend into other filesystems* is turned off in **Settings → Scanning**. Then they are marked "not scanned" in Browse
   and listed in the activity log, and you choose the ones to enter under *Other filesystems to enter* (e.g.

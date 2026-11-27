@@ -130,7 +130,7 @@ index (`Detected = 0`, `FullHash IS NULL`, `HashedAt` older than…), so stoppin
 count to the scan's row and raises `Processed` (AI auto-classify; integrations with `IIntegration.SyncAfterProcessing`). At startup
 without a startup scan it queues a pass over everything (no categorizing) that resumes unfinished detection and hashing.
 `IHashListener`s are told the entry ids of every stored hash batch (the backup re-check). `GET /scan/status` says whether a scan walks
-and whether processing runs; `/scan/cancel` stops both.
+and whether processing runs; `/scan/cancel` stops both (`/jobs/{kind}/cancel` stops one, see below).
 
 1. **Walk** (`Walker`): depth-first; per directory it loads existing children by `ParentId`, `lstat`s every name (`Native.LStat` → `statx`),
    inserts new rows, updates changed files (size/mtime/inode/type) and resets their detection and hashes, deletes vanished subtrees,
@@ -193,6 +193,14 @@ busy"); an exclusive job waiting ends the wait.
 
 Progress is reported to `JobBoard` (kinds `scan` and `processing`), throttled, and pushed through SignalR (`progress` events). The UI refetches what is on
 screen when a job changes phase and every 10 s while a scan runs, never cancelling a request still in flight (`cancelRefetch: false`).
+
+Every job kind can be stopped on its own: `POST /jobs/{kind}/cancel` (`scan` → `ScanQueue.Cancel`, also dropping queued scans; `processing` →
+`ScanProcessor.Cancel`; `apply` → `PlanQueue`; `trash` → `TrashService`; `ai` → `AiService`; anything else → `JobCancels`), and
+`POST /jobs/cancel` stops every running or queued one and answers `{stopped: [kinds]}`. `JobCancels` (singleton) holds a token source per kind
+for the jobs with no queue of their own: integration syncs (`integration:{id}`, the token reaches the lock wait and `SyncAsync`; a stopped sync
+reports `cancelled` and keeps the previous result) and applying rules (its own kind `rules`, no longer reported as `scan`; a second apply
+while one runs gets 409; rules commit page by page, so a stop keeps what was done). The sidebar's Activity shows a ✕ per job and "Stop all"
+once more than one runs or waits; `/scan/cancel` (walk and processing together) stays for API callers.
 
 Whole-index aggregates (`/overview`, `/insights`, the sidebar's reclaimable space) go through `Caches` (singleton), stale-while-revalidate: a
 phase change only marks values stale; the next request gets the old value at once and starts one background computation per key (at most
