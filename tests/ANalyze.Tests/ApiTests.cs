@@ -349,6 +349,46 @@ public class JobCancelTests
     }
 }
 
+public class OverwriteKeepTests
+{
+    [Fact]
+    public async Task A_move_that_overwrites_keeps_the_old_file_renamed_and_undo_puts_both_back()
+    {
+        await using var app = new TestApp();
+        var dir = Path.Combine(app.Library, "ow");
+        Directory.CreateDirectory(Path.Combine(dir, "dst"));
+        File.WriteAllText(Path.Combine(dir, "note.txt"), "new version");
+        File.WriteAllText(Path.Combine(dir, "dst", "note.txt"), "old version");
+        File.WriteAllText(Path.Combine(dir, "dst", "~note.txt"), "already there");
+        using var http = app.CreateClient();
+        await app.ScanAsync(http);
+        var id = (await http.GetFromJsonAsync<JsonElement>("/api/v1/search?q=ow/note.txt")).GetProperty("items")[0].GetProperty("id").GetInt64();
+
+        var res = await http.PostAsJsonAsync("/api/v1/plans",
+            new { entryIds = new[] { id }, op = "move", destination = "ow/dst", conflict = "overwrite", keepOverwritten = "{relDir}/~{name}" }, TestApp.Json);
+        res.EnsureSuccessStatusCode();
+        var planId = (await res.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+        var item = (await http.GetFromJsonAsync<JsonElement>($"/api/v1/plans/{planId}")).GetProperty("page").GetProperty("items")[0];
+        Assert.Equal("ow/dst/note.txt", item.GetProperty("targetPath").GetString());
+        // "~note.txt" is taken: the kept copy gets " (2)".
+        Assert.Equal("ow/dst/~note (2).txt", item.GetProperty("keepPath").GetString());
+
+        (await http.PostAsync($"/api/v1/plans/{planId}/apply", null)).EnsureSuccessStatusCode();
+        var plan = await app.WaitPlanAsync(http, planId, "done", "failed");
+        Assert.Equal(1, plan.GetProperty("summary").GetProperty("done").GetInt32());
+        Assert.Equal("new version", File.ReadAllText(Path.Combine(dir, "dst", "note.txt")));
+        Assert.Equal("old version", File.ReadAllText(Path.Combine(dir, "dst", "~note (2).txt")));
+        Assert.False(File.Exists(Path.Combine(dir, "note.txt")));
+
+        (await http.PostAsync($"/api/v1/plans/{planId}/undo", null)).EnsureSuccessStatusCode();
+        await app.WaitPlanAsync(http, planId, "undone");
+        Assert.Equal("new version", File.ReadAllText(Path.Combine(dir, "note.txt")));
+        Assert.Equal("old version", File.ReadAllText(Path.Combine(dir, "dst", "note.txt")));
+        Assert.False(File.Exists(Path.Combine(dir, "dst", "~note (2).txt")));
+        Assert.Equal("already there", File.ReadAllText(Path.Combine(dir, "dst", "~note.txt")));
+    }
+}
+
 public class FolderCleanupTests
 {
     [Fact]

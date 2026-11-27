@@ -9,9 +9,10 @@ namespace ANalyze.Web.Endpoints;
 public static class PlanEndpoints
 {
     // PlanId: add to that draft plan instead of creating one. Destination of a restore: where the local file is kept (null = trash).
-    public sealed record FilterPlanBody(SearchFilter Filter, ActionOp Op, string? Destination, ConflictPolicy? Conflict, string? Name, int? TemplateId, int? PlanId);
+    // KeepOverwritten: with the Overwrite policy, where a move keeps the file it overwrites (template, e.g. "{relDir}/~{name}"; null = lost).
+    public sealed record FilterPlanBody(SearchFilter Filter, ActionOp Op, string? Destination, ConflictPolicy? Conflict, string? Name, int? TemplateId, int? PlanId, string? KeepOverwritten = null);
 
-    public sealed record ManualPlanBody(long[] EntryIds, ActionOp Op, string? Destination, ConflictPolicy? Conflict, string? Name, int? TemplateId, int? PlanId);
+    public sealed record ManualPlanBody(long[] EntryIds, ActionOp Op, string? Destination, ConflictPolicy? Conflict, string? Name, int? TemplateId, int? PlanId, string? KeepOverwritten = null);
 
     /// <summary>Every damaged file; any action (restore by default).</summary>
     public sealed record DamagedPlanBody(string? Name, ActionOp? Op, string? Destination, ConflictPolicy? Conflict, int? TemplateId, int? PlanId);
@@ -97,7 +98,7 @@ public static class PlanEndpoints
         api.MapPost("/plans", async (ManualPlanBody b, PlanBuilder builder, AnalyzeDbContext db, CancellationToken ct) =>
         {
             var (op, dest, conflict) = await FromTemplateAsync(db, b.TemplateId, b.Op, b.Destination, b.Conflict, ct);
-            return await Run(builder, b.PlanId, new ManualPlanRequest(b.Name, op, b.EntryIds, dest, conflict, b.TemplateId is null ? PlanSource.Manual : PlanSource.Template), ct);
+            return await Run(builder, b.PlanId, new ManualPlanRequest(b.Name, op, b.EntryIds, dest, conflict, b.TemplateId is null ? PlanSource.Manual : PlanSource.Template, b.KeepOverwritten), ct);
         });
 
         // Another action for some items of a draft plan: they are planned again from their entries.
@@ -124,7 +125,7 @@ public static class PlanEndpoints
                 return Results.Problem($"The filter matches more than {PlanBuilder.MaxItems} items; narrow it down.", statusCode: 400);
             }
 
-            return await Run(builder, b.PlanId, new ManualPlanRequest(b.Name, op, ids, dest, conflict, PlanSource.Insight), ct);
+            return await Run(builder, b.PlanId, new ManualPlanRequest(b.Name, op, ids, dest, conflict, PlanSource.Insight, b.KeepOverwritten), ct);
         });
 
         api.MapPost("/plans/dedupe", async (DedupePlanBody b, PlanBuilder builder, CancellationToken ct) =>

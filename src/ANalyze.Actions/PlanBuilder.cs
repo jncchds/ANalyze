@@ -1,4 +1,5 @@
 using ANalyze.Domain;
+using ANalyze.Infrastructure;
 using ANalyze.Infrastructure.Data;
 using ANalyze.Infrastructure.Roots;
 using ANalyze.Scanner;
@@ -8,7 +9,8 @@ namespace ANalyze.Actions;
 
 /// <summary>
 /// A selection to plan. <see cref="Destination"/> is the move target template; for a restore it is where the local file is kept
-/// instead of going to the trash (e.g. <c>{relDir}/~{name}</c>; null = the trash).
+/// instead of going to the trash (e.g. <c>{relDir}/~{name}</c>; null = the trash). <see cref="KeepOverwritten"/>: with the Overwrite policy,
+/// where a move keeps the file it would overwrite (a template on that file, e.g. <c>{relDir}/~{name}</c>; null = it is lost).
 /// </summary>
 public sealed record ManualPlanRequest(
     string? Name,
@@ -16,7 +18,8 @@ public sealed record ManualPlanRequest(
     IReadOnlyList<long> EntryIds,
     string? Destination,
     ConflictPolicy Conflict = ConflictPolicy.Rename,
-    PlanSource Source = PlanSource.Manual);
+    PlanSource Source = PlanSource.Manual,
+    string? KeepOverwritten = null);
 
 public sealed record DedupePlanRequest(
     string? Name,
@@ -83,7 +86,7 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
         var selected = req.EntryIds.ToHashSet();
         bool Kept(ActionItem i) => !(i.EntryId is { } e && selected.Contains(e));
         var taken = plan.Items.Where(i => i.Op == ActionOp.Move && i.TargetPath is not null && Kept(i)).Select(i => i.TargetPath!)
-            .Concat(plan.Items.Where(i => i.Op == ActionOp.Restore && i.KeepPath is not null && Kept(i)).Select(i => i.KeepPath!))
+            .Concat(plan.Items.Where(i => i.Op is ActionOp.Restore or ActionOp.Move or ActionOp.Extract && i.KeepPath is not null && Kept(i)).Select(i => i.KeepPath!))
             .ToHashSet(StringComparer.Ordinal);
 
         var items = await BuildItemsAsync(db, req, plan.Conflict, taken, ct);
@@ -529,7 +532,7 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
 
                 if (item.TargetPath is { } t)
                 {
-                    ResolveTarget(item, t, conflict, taken);
+                    ResolveTarget(item, t, conflict, taken, req.KeepOverwritten);
                 }
             }
 
@@ -776,8 +779,11 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
         }
     }
 
-    /// <summary>Applies the conflict policy against the disk and against other targets in the same plan.</summary>
-    private void ResolveTarget(ActionItem item, string target, ConflictPolicy policy, HashSet<string> taken)
+    /// <summary>
+    /// Applies the conflict policy against the disk and against other targets in the same plan. With Overwrite and
+    /// <paramref name="keepOverwritten"/>, a file at the target is kept at that template's path (expanded on it) as <see cref="ActionItem.KeepPath"/>.
+    /// </summary>
+    private void ResolveTarget(ActionItem item, string target, ConflictPolicy policy, HashSet<string> taken, string? keepOverwritten = null)
     {
         if (target == item.SourcePath)
         {
@@ -806,6 +812,11 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
                     break;
                 case ConflictPolicy.Overwrite:
                     item.Warning = "Will overwrite the existing destination";
+                    if (!string.IsNullOrWhiteSpace(keepOverwritten) && !item.IsDir)
+                    {
+                        KeepOverwrittenAt(item, target, keepOverwritten, taken);
+                    }
+
                     break;
                 default:
                     var n = 2;
@@ -823,6 +834,58 @@ public sealed class PlanBuilder(IDbContextFactory<AnalyzeDbContext> dbf, RootReg
 
         item.TargetPath = target;
         taken.Add(target);
+    }
+
+    /// <summary>
+    /// The file a move overwrites is kept instead: renamed per the template (facts of that file, e.g. <c>{relDir}/~{name}</c>), " (2)" on a
+    /// clash. Only a file on disk now can be kept; one another item of the plan puts there is overwritten.
+    /// </summary>
+    private void KeepOverwrittenAt(ActionItem item, string target, string template, HashSet<string> taken)
+    {
+        var root = roots.Get(item.RootId);
+        var st = root is null ? default : Native.LStat(RootRegistry.Combine(root.Path, target));
+        if (!st.Exists || !st.IsRegular)
+        {
+            item.Warning = st.Exists ? "Will overwrite what is at the destination (not a file: it cannot be kept)" : "Will overwrite a file another item puts there";
+            return;
+        }
+
+        var name = target[(target.LastIndexOf('/') + 1)..];
+        var dot = name.LastIndexOf('.');
+        var facts = new TemplateFacts(name, target, dot > 0 ? name[(dot + 1)..].ToLowerInvariant() : null, null, "", st.MTime, st.Size);
+        string keep;
+        try
+        {
+            keep = PathTemplate.Expand(template, facts);
+        }
+        catch (ArgumentException ex)
+        {
+            (item.Included, item.Warning) = (false, ex.Message);
+            return;
+        }
+
+        bool Exists(string rel) => taken.Contains(rel) || Path.Exists(RootRegistry.Combine(root!.Path, rel));
+        if (keep == target || keep == item.SourcePath)
+        {
+            (item.Included, item.Warning) = (false, "The kept file would take the destination's or the source's place");
+            return;
+        }
+
+        if (Exists(keep))
+        {
+            var n = 2;
+            var candidate = PathTemplate.WithSuffix(keep, n);
+            while (Exists(candidate) && n < 10_000)
+            {
+                candidate = PathTemplate.WithSuffix(keep, ++n);
+            }
+
+            keep = candidate;
+        }
+
+        (item.KeepPath, item.KeepRootId) = (keep, item.RootId);
+        item.Warning = $"Replaces the file at the destination, which is kept as {keep}";
+        taken.Add(keep);
     }
 
     internal static List<Entry> RemoveNested(List<Entry> entries)

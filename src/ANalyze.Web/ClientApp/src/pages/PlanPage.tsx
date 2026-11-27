@@ -247,7 +247,14 @@ export default function PlanPage() {
                   )}
                   {i.keepPath && (
                     <div className="break-all text-xs muted">
-                      {i.op === 'hardlink' ? 'linked to' : i.op === 'restore' || i.op === 'extract' ? 'the local file is kept as' : 'kept copy:'} {i.keepPath}
+                      {i.op === 'hardlink'
+                        ? 'linked to'
+                        : i.op === 'restore' || i.op === 'extract'
+                          ? 'the local file is kept as'
+                          : i.op === 'move'
+                            ? 'the file it overwrites is kept as'
+                            : 'kept copy:'}{' '}
+                      {i.keepPath}
                     </div>
                   )}
                   {(i.op === 'restore' || (i.op === 'extract' && i.entryId != null)) && !i.keepPath && <div className="text-xs muted">the local file goes to the trash</div>}

@@ -234,6 +234,10 @@ kept copy), then:
 - **Trash**: rename into `<root>/.analyze-trash/<planId>/<relPath>`; the scanner ignores that folder at depth 1.
 - **Delete**: remove file or folder.
 - **Move**: create parents (owner copied from the parent folder), `File.Move` (copy+delete across filesystems, owner restored), directory copy fallback.
+  With the Overwrite policy and `keepOverwritten` (a `PathTemplate` on `POST /plans` and `/plans/from-filter`, expanded on the file at the
+  destination by `KeepOverwrittenAt`, " (2)" on clashes), the item's `KeepPath` is where that file is set aside before the move (dropped
+  from the index; its folder rescanned); undo moves the item back, then the kept file to the destination. Only a regular file on disk at
+  planning can be kept; `KeepPath` is cleared at apply when nothing was there.
 - **Hardlink**: `link(keep, tmp)` then atomic rename over the duplicate (same device only).
 - **Restore**: replace a damaged file with the backup's copy through `Scanner.IBackupSource` (implemented by the parent integration,
   `BackupRestoreSource`: `FindAsync` from `BackupFiles`, `DamagedAsync` = corrupt there or `CorruptAt` set, `OpenAsync` streams the parent's

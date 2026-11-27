@@ -8,6 +8,7 @@
 - feat: Duplicates → Similar folders says how alike each pair is ("92% alike": shared bytes of the larger folder's own files) with each folder's file count and size, sorts by most shared space or most alike, and filters to pairs at least half the same, near copies (90%+) or the same files
 - fix: Similar folders no longer counts a file twice when the other folder holds several copies of it
 - feat: "Repair from archive…" on an extracted archive's comparison page extracts files again from the archive into a draft plan: damaged copies (cut short, another size, or another CRC32 after "Check against archive") and missing files (with any missing folders). Like replacing damaged files with the backup's copy, the damaged file goes to the trash or is kept (as `~name` by default, any path template); every file is checked against the archive's size and CRC32 before it takes its place, and undo removes the created files and puts the damaged ones back. A tar or .gz is decompressed once for all the files a plan takes from it
+- feat: a move that overwrites (policy "Overwrite") keeps the file it replaces, renamed as `{relDir}/~{name}` by default (any path template, " (2)" when the name is taken), instead of losing it; "Overwrite it: the old file is lost" is still a choice. The review shows where the old file goes, and undo moves the item back and returns the old file to its place
 
 ## v0.1.15 — 2026-11-23
 

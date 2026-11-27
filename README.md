@@ -192,7 +192,8 @@ To go back to SQLite, remove the two `ANalyze__Database__…` variables (the old
    says which draft plan has the file.
 2. The review page lists every item with its target; untick anything to keep, change an item's action (or the action of
    every item shown), and **Show** opens the file in Browse. Conflicts (destination exists) are resolved by the chosen
-   policy (rename/skip/overwrite); items on read-only roots are excluded.
+   policy (rename/skip/overwrite); with *overwrite* the file being replaced is kept renamed (`{relDir}/~{name}` by
+   default, any path template) unless you choose to lose it, and undo puts it back. Items on read-only roots are excluded.
 3. **Apply** re-checks each item right before it runs: still there, same size and mtime. Duplicate removals also re-hash
    both copies, so a file that changed since the scan is skipped. When one plan both removes a duplicate and trashes the
    copy it keeps, the review warns about both and applying skips whichever comes second, so one copy always stays.

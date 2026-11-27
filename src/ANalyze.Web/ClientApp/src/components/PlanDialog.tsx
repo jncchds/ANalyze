@@ -197,6 +197,9 @@ export function PlanDialog({ open, onClose, entryIds, filter, damaged, count, si
   const [destination, setDestination] = useState('Archive/{relDir}/{name}')
   const keep = useKeepLocal()
   const [conflict, setConflict] = useState<ConflictPolicy>('rename')
+  // With Overwrite: where the file at the destination is kept (null = it is lost).
+  const [keepOverwritten, setKeepOverwritten] = useState<string | null>(DEFAULT_KEEP)
+  const [keepTemplate, setKeepTemplate] = useState(DEFAULT_KEEP)
   const [name, setName] = useState('')
 
   const tpl = templates.data?.find((t) => t.id === templateId)
@@ -207,6 +210,7 @@ export function PlanDialog({ open, onClose, entryIds, filter, damaged, count, si
       const body = {
         ...(tpl ? { op: effectiveOp } : actionBody(op, destination, keep.keep)),
         conflict: existing ? undefined : conflict,
+        keepOverwritten: effectiveOp === 'move' && (existing || conflict === 'overwrite') ? (keepOverwritten ?? undefined) : undefined,
         name: existing ? undefined : name || undefined,
         templateId: templateId || undefined,
         planId: existing?.id,
@@ -253,6 +257,28 @@ export function PlanDialog({ open, onClose, entryIds, filter, damaged, count, si
               <option value="overwrite">Overwrite (files only)</option>
             </select>
           </Field>
+        )}
+        {effectiveOp === 'move' && (existing ? existing.conflict === 'overwrite' : conflict === 'overwrite') && (
+          <div className="space-y-2 rounded-md bg-surface-2 p-2 text-sm">
+            <label className="flex flex-wrap items-center gap-2">
+              <input type="radio" className="accent-accent" checked={keepOverwritten !== null} onChange={() => setKeepOverwritten(keepTemplate)} />
+              Keep the file being overwritten as
+              <input
+                className="input w-64 py-1 font-mono"
+                value={keepTemplate}
+                onChange={(e) => {
+                  setKeepTemplate(e.target.value)
+                  setKeepOverwritten(e.target.value)
+                }}
+                aria-label="Where the overwritten file is kept"
+              />
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="radio" className="accent-accent" checked={keepOverwritten === null} onChange={() => setKeepOverwritten(null)} />
+              Overwrite it: the old file is lost (undo cannot bring it back)
+            </label>
+            {keepOverwritten !== null && <p className="text-xs muted">The template is filled in for the file at the destination; an existing name gets “(2)”. Undo puts it back.</p>}
+          </div>
         )}
         {!existing && (
           <Field label="Plan name (optional)">

@@ -314,9 +314,40 @@ public sealed class PlanExecutor(
                     }
                 }
 
+                // With a kept path, the file being overwritten is set aside there first (undo puts it back).
+                string? aside = null;
+                if (item.KeepPath is { } keep && File.Exists(dest))
+                {
+                    aside = RootRegistry.Combine(root.Path, keep);
+                    if (Path.Exists(aside))
+                    {
+                        throw new SkipException($"{keep} exists already: the overwritten file cannot be kept there");
+                    }
+
+                    Native.CreateDirectoryLikeParent(Path.GetDirectoryName(aside)!);
+                    MovePath(dest, aside, isDir: false, overwrite: false);
+                    DropIndexed(conn, item.RootId, target);
+                    rescan.Add((item.RootId, IndexedAncestor(conn, item.RootId, ParentOf(keep))));
+                }
+
                 Native.CreateDirectoryLikeParent(Path.GetDirectoryName(dest)!);
-                MovePath(src, dest, item.IsDir, overwrite);
+                try
+                {
+                    MovePath(src, dest, item.IsDir, overwrite);
+                }
+                catch when (aside is not null)
+                {
+                    MovePath(aside, dest, isDir: false, overwrite: false);
+                    throw;
+                }
+
                 item.UndoPath = target;
+                if (aside is null)
+                {
+                    // Nothing was set aside (the destination was free): undo has nothing to put back.
+                    item.KeepPath = null;
+                }
+
                 RemoveFromIndex(conn, item);
                 rescan.Add((item.RootId, ParentOf(target)));
                 break;
@@ -787,6 +818,23 @@ public sealed class PlanExecutor(
         {
             // The moved copy is gone from the target: drop it (or the folders the move created) from the index directly.
             DropIndexed(conn, item.RootId, pruned is null ? item.UndoPath : Path.GetRelativePath(root.Path, pruned).Replace('\\', '/'));
+            if (item.KeepPath is { } keep)
+            {
+                // The file the move overwrote goes back to its place.
+                var kept = RootRegistry.Combine(root.Path, keep);
+                if (!File.Exists(kept))
+                {
+                    // The move itself is undone; only the old file cannot come back.
+                    log.LogWarning("Undo of plan {Plan}: the overwritten file kept as {Keep} is gone; {Target} stays empty", item.PlanId, keep, item.UndoPath);
+                    return;
+                }
+
+                Native.CreateDirectoryLikeParent(Path.GetDirectoryName(from)!);
+                MovePath(kept, from, isDir: false, overwrite: false);
+                var prunedKeep = PruneEmptyParents(Path.GetDirectoryName(kept)!, root.Path);
+                DropIndexed(conn, item.RootId, prunedKeep is null ? keep : Path.GetRelativePath(root.Path, prunedKeep).Replace('\\', '/'));
+                rescan.Add((item.RootId, IndexedAncestor(conn, item.RootId, ParentOf(item.UndoPath))));
+            }
         }
     }
 
